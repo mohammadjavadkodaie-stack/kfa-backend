@@ -145,7 +145,10 @@ describeWithDatabase('audit_log append-only guarantees (PostgreSQL)', () => {
     const row = await audit.record({ action: 'db.test.raw-probe' });
 
     await expect(
-      prisma.$executeRawUnsafe(`UPDATE audit_log SET action = 'tampered' WHERE id = $1`, row.id),
+      prisma.$executeRawUnsafe(
+        `UPDATE audit_log SET action = 'tampered' WHERE id = $1::uuid`,
+        row.id,
+      ),
     ).rejects.toThrow(/append-only|permission denied/i);
 
     await expect(
@@ -189,8 +192,11 @@ describeWithDatabase('audit_log append-only guarantees (PostgreSQL)', () => {
       );
     });
 
-    expect(rejection.message).toMatch(/duplicate key value/i);
-    expect(rejection.message).toMatch(/audit_log_prev_hash_key/);
+    // Prisma surfaces unique violations in its own shape, e.g.
+    // Raw query failed. Code: `23505`. Message: `Key (prev_hash)=(<hash>) already exists.`
+    expect(rejection.message).toMatch(/23505/);
+    expect(rejection.message).toMatch(/already exists/i);
+    expect(rejection.message).toMatch(/Key \(prev_hash\)=/);
   });
 
   it('rejects a second row with a NULL prev_hash (single genesis row)', async () => {
@@ -207,8 +213,11 @@ describeWithDatabase('audit_log append-only guarantees (PostgreSQL)', () => {
       );
     });
 
-    expect(rejection.message).toMatch(/duplicate key value/i);
-    expect(rejection.message).toMatch(/audit_log_single_genesis_key/);
+    // Same Prisma shape for the partial unique index on NULL prev_hash:
+    // Raw query failed. Code: `23505`. Message: `Key ((true))=(t) already exists.`
+    expect(rejection.message).toMatch(/23505/);
+    expect(rejection.message).toMatch(/already exists/i);
+    expect(rejection.message).toMatch(/Key \(\(true\)\)=/);
   });
 
   it('cannot INSERT, UPDATE or DELETE the migration history table', async () => {
