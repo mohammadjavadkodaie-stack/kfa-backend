@@ -1,0 +1,17 @@
+# pnpm 12 configuration for this single-package repository.
+#
+# Build scripts stay disabled (see .npmrc `ignore-scripts=true`). These two
+# dependencies ship optional native accelerators with postinstall scripts; the
+# JavaScript fallbacks are used instead, so the decision is recorded explicitly
+# to keep `pnpm install` deterministic and non-interactive.
+allowBuilds:
+  '@parcel/watcher': false
+  unrs-resolver: false
+
+# Packages allowed to bypass the release-age cooldown: the NestJS 12 line is
+# pinned intentionally (see package.json).
+minimumReleaseAgeExclude:
+  - '@nestjs/common@12.3.2'
+  - '@nestjs/core@12.3.2'
+  - '@nestjs/platform-express@12.3.2'
+  - '@nestjs/testing@12.3.2'
