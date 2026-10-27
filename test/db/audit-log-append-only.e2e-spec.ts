@@ -1,11 +1,61 @@
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { AuditService } from '../../src/audit/audit.service';
 import { createTestAuditService, createTestPrisma, describeWithDatabase } from './helpers/database';
 
+/** 64 lowercase hex characters: a format-valid audit hash / prev_hash value. */
+function randomHash(): string {
+  return randomBytes(32).toString('hex');
+}
+
+/**
+ * Chain-integrity checks can only fire on a real write, but audit_log is
+ * append-only: a probe row may never be deleted afterwards, and the table must
+ * not be assumed to be empty. Every attempt therefore runs inside an
+ * interactive transaction that is always rolled back, so no probe can persist or
+ * fork the chain for the neighbouring suites.
+ *
+ * Resolves with the error the conflicting write raised; fails loudly if a write
+ * that should have been rejected was accepted.
+ */
+async function expectWriteRejected(
+  prisma: PrismaClient,
+  attempt: (tx: Prisma.TransactionClient) => Promise<void>,
+): Promise<Error> {
+  const rollbackMarker = 'audit-log-probe-rollback';
+  let rejection: unknown = null;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      try {
+        await attempt(tx);
+      } catch (error) {
+        rejection = error;
+      }
+
+      // Abort unconditionally: this rolls back every probe row.
+      throw new Error(rollbackMarker);
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+
+    if (!message.includes(rollbackMarker)) {
+      throw error;
+    }
+  }
+
+  if (rejection === null) {
+    throw new Error('the conflicting write was accepted');
+  }
+
+  return rejection as Error;
+}
+
 /**
  * Proves the database itself refuses to rewrite history. Run against the
- * `kfa_app` role: UPDATE/DELETE/TRUNCATE must fail (privilege + trigger), and
- * the role must not be able to run DDL either.
+ * `kfa_app` role: UPDATE/DELETE/TRUNCATE must fail (privilege + trigger), the
+ * role must not be able to run DDL either, and the chain may neither fork nor
+ * grow a second genesis row.
  */
 describeWithDatabase('audit_log append-only guarantees (PostgreSQL)', () => {
   let prisma: PrismaClient;
@@ -116,6 +166,68 @@ describeWithDatabase('audit_log append-only guarantees (PostgreSQL)', () => {
 
     await expect(prisma.$executeRawUnsafe('DROP TABLE audit_log')).rejects.toThrow(
       /permission denied|must be owner/i,
+    );
+  });
+
+  it('rejects a second row that reuses an existing prev_hash (chain cannot fork)', async () => {
+    const prevHash = randomHash();
+
+    const rejection = await expectWriteRejected(prisma, async (tx) => {
+      // First row claims prevHash; the second one claims the same predecessor,
+      // which would fork history.
+      await tx.$executeRawUnsafe(
+        'INSERT INTO audit_log (action, prev_hash, hash) VALUES ($1, $2, $3)',
+        'db.test.fork.seed',
+        prevHash,
+        randomHash(),
+      );
+      await tx.$executeRawUnsafe(
+        'INSERT INTO audit_log (action, prev_hash, hash) VALUES ($1, $2, $3)',
+        'db.test.fork.duplicate',
+        prevHash,
+        randomHash(),
+      );
+    });
+
+    expect(rejection.message).toMatch(/duplicate key value/i);
+    expect(rejection.message).toMatch(/audit_log_prev_hash_key/);
+  });
+
+  it('rejects a second row with a NULL prev_hash (single genesis row)', async () => {
+    const rejection = await expectWriteRejected(prisma, async (tx) => {
+      await tx.$executeRawUnsafe(
+        'INSERT INTO audit_log (action, hash) VALUES ($1, $2)',
+        'db.test.genesis.seed',
+        randomHash(),
+      );
+      await tx.$executeRawUnsafe(
+        'INSERT INTO audit_log (action, hash) VALUES ($1, $2)',
+        'db.test.genesis.duplicate',
+        randomHash(),
+      );
+    });
+
+    expect(rejection.message).toMatch(/duplicate key value/i);
+    expect(rejection.message).toMatch(/audit_log_single_genesis_key/);
+  });
+
+  it('cannot INSERT, UPDATE or DELETE the migration history table', async () => {
+    await expect(
+      prisma.$executeRawUnsafe(
+        `INSERT INTO "_prisma_migrations" (id, checksum, migration_name, started_at, applied_steps_count)
+         VALUES ($1, $2, $3, now(), 0)`,
+        randomUUID(),
+        randomHash(),
+        'db_test_migration_probe',
+      ),
+    ).rejects.toThrow(/permission denied/i);
+
+    await expect(
+      prisma.$executeRawUnsafe('UPDATE "_prisma_migrations" SET applied_steps_count = 0'),
+    ).rejects.toThrow(/permission denied/i);
+
+    await expect(prisma.$executeRawUnsafe('DELETE FROM "_prisma_migrations"')).rejects.toThrow(
+      /permission denied/i,
     );
   });
 });

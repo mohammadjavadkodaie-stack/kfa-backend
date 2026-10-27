@@ -20,7 +20,7 @@ type RowData = Record<string, unknown>;
 
 function createHarness(lastRow: { hash: string; createdAt: Date } | null = null) {
   const tx = {
-    $queryRaw: jest.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]),
+    $executeRaw: jest.fn().mockResolvedValue(1),
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(lastRow),
       create: jest.fn(async ({ data }: { data: RowData }) => data),
@@ -98,12 +98,15 @@ describe('AuditService.record', () => {
 
     await service.record({ action: 'user.login' });
 
-    const [strings, ...args] = tx.$queryRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    const [strings, ...args] = tx.$executeRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
 
     expect(strings.join('?')).toContain('pg_advisory_xact_lock');
     expect(args).toEqual([AUDIT_CHAIN_LOCK_NAMESPACE, AUDIT_CHAIN_LOCK_ID]);
+    // One statement only: the lock function returns void, so it must go through
+    // $executeRaw (a $queryRaw result set could not be deserialized).
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
 
-    const lockOrder = tx.$queryRaw.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER;
+    const lockOrder = tx.$executeRaw.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER;
     const readOrder = tx.auditLog.findFirst.mock.invocationCallOrder[0] ?? -1;
 
     expect(lockOrder).toBeLessThan(readOrder);

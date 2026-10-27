@@ -124,7 +124,11 @@ export class AuditService {
 
     return this.prisma.$transaction(
       async (tx) => {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_NAMESPACE}::int, ${AUDIT_CHAIN_LOCK_ID}::int)`;
+        // `pg_advisory_xact_lock` returns `void`; $executeRaw is the correct
+        // entry point because $queryRaw tries to deserialize the returned column
+        // ("Failed to deserialize column of type 'void'"). The lock itself is the
+        // same and is still held until this transaction ends.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_NAMESPACE}::int, ${AUDIT_CHAIN_LOCK_ID}::int)`;
 
         const last = await tx.auditLog.findFirst({
           orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],

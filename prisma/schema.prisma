@@ -23,6 +23,11 @@ datasource db {
 ///
 /// `hash` = sha256(prevHash + canonical JSON of the immutable row fields).
 /// `prevHash` references the previous row, forming a chain.
+///
+/// Chain-integrity indexes are NOT declared here on purpose: they are partial /
+/// expression unique indexes (`audit_log_prev_hash_key`, `audit_log_single_genesis_key`)
+/// that Prisma cannot express. They live in
+/// prisma/migrations/20261028104500_audit_log_chain_integrity/migration.sql.
 model AuditLog {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
