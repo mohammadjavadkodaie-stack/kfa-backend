@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import {
   Inject,
   Injectable,
@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import type { ThrottlerStorage } from '@nestjs/throttler';
 import Redis, { type RedisOptions } from 'ioredis';
+import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 
 /**
@@ -25,14 +26,17 @@ export interface RateLimitRecord {
  * Redis-backed throttler storage that FAILS CLOSED.
  *
  * Design notes:
- * - Every counter lives in Redis under `kfa:rl:`; the tracker/key is hashed with
- *   SHA-256 so an IP address or any other identifier never appears in a key.
+ * - Every counter lives in Redis under `kfa:rl:`; the tracker is HMAC-SHA256
+ *   hashed with `RATE_LIMIT_HMAC_KEY` so an IP address never appears in a key
+ *   and cannot be recovered by brute-forcing an unkeyed digest.
  * - All counter mutations happen in one atomic Lua script (INCR + PEXPIRE on the
  *   first hit + block handling), executed through `defineCommand` so ioredis
  *   uses EVALSHA and transparently falls back to EVAL on NOSCRIPT.
  * - Any Redis failure (down, timeout, malformed reply) results in a thrown
  *   ServiceUnavailableException: the request is denied instead of being let
  *   through. There is no in-memory fallback once Redis is configured.
+ * - A missing `RATE_LIMIT_HMAC_KEY` denies too: unkeyed tracker hashes would be
+ *   brute-forceable for an IP address.
  * - Commands are never retried (`maxRetriesPerRequest: 0`), are rejected while
  *   the socket is not ready and are bounded by `commandTimeout`, so a request
  *   can never wait on Redis indefinitely. Reconnects use a capped backoff.
@@ -56,8 +60,8 @@ const REDIS_RECONNECT_MAX_DELAY_MS = 2_000;
  * INCR + PEXPIRE on the first hit + block handling, atomically.
  *
  * KEYS[1] window key, ARGV[1] limit, ARGV[2] window in ms, ARGV[3] block in ms.
- * Returns { totalHits, timeToExpire, isBlocked, timeToBlockExpire } with times
- * in milliseconds (the shape @nestjs/throttler expects).
+ * Returns { totalHits, timeToExpire, isBlocked, timeToBlockExpire } in
+ * milliseconds; `RedisThrottlerStorage` converts the two times to seconds.
  */
 export const INCREMENT_RATE_LIMIT_WINDOW_SCRIPT = `
 local key = KEYS[1]
@@ -81,7 +85,8 @@ local isBlocked = 0
 local timeToBlockExpire = 0
 if totalHits > limit then
   isBlocked = 1
-  if blockMs > timeToExpire then
+  -- Extend only at the first blocked hit, so retrying cannot keep the block alive.
+  if totalHits == limit + 1 and blockMs > timeToExpire then
     redis.call('PEXPIRE', key, blockMs)
     timeToExpire = blockMs
   end
@@ -130,11 +135,17 @@ export const REDIS_CLIENT_OPTIONS: RedisOptions = Object.freeze({
  * Hashes a namespace + raw value into a Redis key.
  *
  * SHA-256 is used for keyspaces (deterministic, non-reversible) and HMAC-SHA256
- * for caller-supplied identifiers (see `RateLimitService`).
+ * for caller-supplied trackers (see `RateLimitService` and
+ * `RedisThrottlerStorage`), so a guessable tracker cannot be reversed off-line.
  */
 export function buildRateLimitKey(namespace: string, value: string): string {
   const digest = createHash('sha256').update(`${namespace}:${value}`, 'utf8').digest('hex');
   return `${RATE_LIMIT_KEY_PREFIX}${namespace}:${digest}`;
+}
+
+/** Deterministic, non-reversible tracker hash. Never log the input. */
+function hashTracker(value: string, hmacKey: string): string {
+  return createHmac('sha256', hmacKey).update(value, 'utf8').digest('hex');
 }
 
 /**
@@ -199,9 +210,15 @@ export function parseRateLimitScriptReply(reply: unknown): RateLimitRecord {
 
 @Injectable()
 export class RedisThrottlerStorage implements ThrottlerStorage, OnModuleDestroy {
+  private readonly hmacKey: string | undefined;
   private closing = false;
 
-  constructor(@Inject(REDIS_CLIENT) private readonly client: RateLimitRedisClient | null) {}
+  constructor(
+    @Inject(REDIS_CLIENT) private readonly client: RateLimitRedisClient | null,
+    @Inject(ENV) env: Env,
+  ) {
+    this.hmacKey = env.RATE_LIMIT_HMAC_KEY;
+  }
 
   async increment(
     key: string,
@@ -211,17 +228,28 @@ export class RedisThrottlerStorage implements ThrottlerStorage, OnModuleDestroy 
     throttlerName: string,
   ): Promise<RateLimitRecord> {
     const client = this.client;
+    const hmacKey = this.hmacKey;
 
-    if (client === null) {
+    if (client === null || hmacKey === undefined) {
       // Fail closed: an unconfigured store must never degrade to "allow all".
       throw rateLimitUnavailable();
     }
 
-    const redisKey = buildRateLimitKey('throttle', `${throttlerName}:${key}`);
+    // HMAC so an IP tracker cannot be recovered by brute-forcing the key.
+    const redisKey = buildRateLimitKey('throttle', hashTracker(`${throttlerName}:${key}`, hmacKey));
 
     try {
-      const reply = await client.incrementRateLimitWindow(redisKey, limit, ttl, blockDuration);
-      return parseRateLimitScriptReply(reply);
+      const record = parseRateLimitScriptReply(
+        await client.incrementRateLimitWindow(redisKey, limit, ttl, blockDuration),
+      );
+
+      // The script counts in ms; the guard derives Retry-After from seconds.
+      return {
+        totalHits: record.totalHits,
+        timeToExpire: Math.ceil(record.timeToExpire / 1_000),
+        isBlocked: record.isBlocked,
+        timeToBlockExpire: Math.ceil(record.timeToBlockExpire / 1_000),
+      };
     } catch {
       // Deliberately swallows the cause: no connection strings, host names or
       // key material may reach the client or the logs.

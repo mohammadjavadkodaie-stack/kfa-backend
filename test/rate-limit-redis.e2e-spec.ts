@@ -6,6 +6,7 @@ import {
   RATE_LIMIT_KEY_PREFIX,
   REDIS_CLIENT_OPTIONS,
   RedisThrottlerStorage,
+  type RateLimitRecord,
   type RateLimitRedisClient,
 } from '../src/rate-limit/redis-throttler.storage';
 
@@ -46,7 +47,7 @@ describeWithRedis('Redis rate limiting (e2e)', () => {
     client = createRateLimitRedisClient({ REDIS_URL });
     otherClient = createRateLimitRedisClient({ REDIS_URL });
 
-    storage = new RedisThrottlerStorage(client);
+    storage = new RedisThrottlerStorage(client, { RATE_LIMIT_HMAC_KEY: HMAC_KEY } as Env);
     service = new RateLimitService(client, { RATE_LIMIT_HMAC_KEY: HMAC_KEY } as Env);
     // A second client simulates a second API instance sharing the same store.
     otherService = new RateLimitService(otherClient, { RATE_LIMIT_HMAC_KEY: HMAC_KEY } as Env);
@@ -168,5 +169,67 @@ describeWithRedis('Redis rate limiting (e2e)', () => {
 
     expect(record).toMatchObject({ totalHits: 1, isBlocked: false });
     expect(record.timeToExpire).toBeGreaterThan(0);
+    // Seconds, not ms: the guard turns this straight into Retry-After.
+    expect(record.timeToExpire).toBe(WINDOW_SECONDS);
+  });
+
+  it('does not extend the block while a client keeps retrying', async () => {
+    const tracker = '203.0.113.11';
+    const windowMs = 2_000;
+    const blockMs = 5_000;
+    const limit = 2;
+
+    await storage.increment(tracker, windowMs, limit, blockMs, 'default');
+    await expect(
+      storage.increment(tracker, windowMs, limit, blockMs, 'default'),
+    ).resolves.toMatchObject({ totalHits: 2, isBlocked: false });
+
+    const blocked: RateLimitRecord[] = [];
+    const pttls: number[] = [];
+    let redisKey = '';
+
+    for (let hit = 3; hit <= 5; hit += 1) {
+      if (hit > 3) {
+        // Space the retries out so an extended TTL would show up in PTTL.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      blocked.push(await storage.increment(tracker, windowMs, limit, blockMs, 'default'));
+
+      if (hit === 3) {
+        const [key] = await admin.keys(`${RATE_LIMIT_KEY_PREFIX}*`);
+        redisKey = key as string;
+      }
+
+      pttls.push(await admin.pttl(redisKey));
+    }
+
+    let previousTimeToBlockExpire = Number.POSITIVE_INFINITY;
+
+    for (const record of blocked) {
+      expect(record.isBlocked).toBe(true);
+      expect(record.timeToBlockExpire).toBeGreaterThan(0);
+      expect(record.timeToBlockExpire).toBeLessThanOrEqual(Math.ceil(blockMs / 1_000));
+      // Retrying must never push the release time out.
+      expect(record.timeToBlockExpire).toBeLessThanOrEqual(previousTimeToBlockExpire);
+      previousTimeToBlockExpire = record.timeToBlockExpire;
+    }
+
+    const firstHitPttl = pttls[0] as number;
+    const lastHitPttl = pttls[pttls.length - 1] as number;
+
+    // The first blocked hit replaced the window TTL with the block duration...
+    expect(firstHitPttl).toBeGreaterThan(windowMs);
+    expect(firstHitPttl).toBeLessThanOrEqual(blockMs);
+    // ...and the later ones only let it run down.
+    expect(lastHitPttl).toBeGreaterThan(0);
+    expect(lastHitPttl).toBeLessThan(firstHitPttl);
+
+    // The block must actually end, no matter how often the client retried.
+    await new Promise((resolve) => setTimeout(resolve, blockMs + 250));
+
+    await expect(
+      storage.increment(tracker, windowMs, limit, blockMs, 'default'),
+    ).resolves.toMatchObject({ totalHits: 1, isBlocked: false });
   });
 });
