@@ -1,0 +1,24 @@
+# Local development database ONLY. Not for staging or production.
+# Credentials are dev placeholders and can be overridden from the shell.
+# The port is bound to loopback so the container is never reachable from the LAN.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kfa-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-kfa_dev_superuser}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-dev-only-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-kfa}
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - kfa-postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  kfa-postgres-dev-data:

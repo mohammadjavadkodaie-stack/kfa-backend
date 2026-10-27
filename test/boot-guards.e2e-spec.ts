@@ -44,7 +44,10 @@ describe('Boot guards (e2e)', () => {
   });
 
   it('refuses to boot in production until a Redis throttler store is wired', async () => {
-    applyTestEnv({ NODE_ENV: 'production' });
+    applyTestEnv({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://kfa_app:test-only@db.internal:5432/kfa?sslmode=require',
+    });
 
     const error = await compileApp();
 

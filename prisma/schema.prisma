@@ -1,0 +1,44 @@
+// KFA database schema (stage 1: append-only audit log only).
+//
+// URL handling:
+// - `directUrl` is used by the Prisma CLI / Migrate, so migrations always run
+//   as the DDL-only role `kfa_migrator`.
+// - `url` is only a fallback for tools that do not override it. The running app
+//   always passes the validated DATABASE_URL (role `kfa_app`) explicitly in
+//   PrismaService; it must never connect with the migrator credentials.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("MIGRATION_DATABASE_URL")
+}
+
+/// Tamper-evident audit trail. Append-only is enforced twice:
+/// 1. the database trigger/privileges (prisma/migrations, db/roles.sql),
+/// 2. AuditService, which exposes no update or delete operation.
+///
+/// `hash` = sha256(prevHash + canonical JSON of the immutable row fields).
+/// `prevHash` references the previous row, forming a chain.
+model AuditLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  actorId    String?  @map("actor_id") @db.Uuid
+  actorRole  String?  @map("actor_role")
+  action     String
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  requestId  String?  @map("request_id")
+  ipHash     String?  @map("ip_hash")
+  metadata   Json     @default("{}")
+  prevHash   String?  @map("prev_hash")
+  hash       String   @unique
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([action])
+  @@map("audit_log")
+}

@@ -1,12 +1,20 @@
 # pnpm 12 configuration for this single-package repository.
 #
-# Build scripts stay disabled (see .npmrc `ignore-scripts=true`). These two
-# dependencies ship optional native accelerators with postinstall scripts; the
-# JavaScript fallbacks are used instead, so the decision is recorded explicitly
-# to keep `pnpm install` deterministic and non-interactive.
+# Build scripts stay disabled (see .npmrc `ignore-scripts=true`). Every package
+# that ships a lifecycle script is declared here with an explicit decision so
+# `pnpm install` stays deterministic and non-interactive.
+#
+# `@parcel/watcher` and `unrs-resolver` ship optional native accelerators; the
+# JavaScript fallbacks are used instead. The Prisma packages are deliberately
+# NOT allowed to run their install scripts either: Prisma Client is generated
+# explicitly with `pnpm prisma generate` (never during `pnpm install`), so no
+# dependency can execute code as a side effect of installing.
 allowBuilds:
   '@parcel/watcher': false
   unrs-resolver: false
+  prisma: false
+  '@prisma/client': false
+  '@prisma/engines': false
 
 # Packages allowed to bypass the release-age cooldown: the NestJS 12 line is
 # pinned intentionally (see package.json).

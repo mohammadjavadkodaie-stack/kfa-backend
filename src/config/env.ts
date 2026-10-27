@@ -14,6 +14,61 @@ const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'
 export const BODY_LIMIT_BYTES_MIN = 1024;
 export const BODY_LIMIT_BYTES_MAX = 1024 * 1024;
 
+/** Minimum accepted length of the audit hash-chain HMAC key. */
+export const AUDIT_HMAC_KEY_MIN_LENGTH = 32;
+
+/** Maximum accepted length of a database connection URL. */
+const DATABASE_URL_MAX_LENGTH = 2048;
+
+/** Postgres TLS modes that actually encrypt the connection. */
+const TLS_REQUIRED_SSLMODES = new Set(['require', 'verify-ca', 'verify-full']);
+
+/**
+ * Validates a PostgreSQL connection string without ever echoing its value.
+ * Only the shape is checked - credentials and TLS policy are environment
+ * specific (production additionally requires TLS, see below).
+ */
+const postgresConnectionUrlSchema = z
+  .string()
+  .max(DATABASE_URL_MAX_LENGTH, `must be at most ${DATABASE_URL_MAX_LENGTH} characters`)
+  .superRefine((value, ctx) => {
+    let url: URL;
+
+    try {
+      url = new URL(value);
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'must be a valid absolute connection URL' });
+      return;
+    }
+
+    if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') {
+      ctx.addIssue({ code: 'custom', message: 'must use the postgresql scheme' });
+      return;
+    }
+
+    if (url.username.length === 0) {
+      ctx.addIssue({ code: 'custom', message: 'must name a database user' });
+    }
+
+    if (url.pathname.length <= 1) {
+      ctx.addIssue({ code: 'custom', message: 'must name a database' });
+    }
+
+    if (url.hash.length > 0) {
+      ctx.addIssue({ code: 'custom', message: 'must not contain a URL fragment' });
+    }
+  });
+
+function hasRequiredTls(url: string): boolean {
+  try {
+    const mode = new URL(url).searchParams.get('sslmode')?.toLowerCase();
+    return mode !== undefined && TLS_REQUIRED_SSLMODES.has(mode);
+  } catch {
+    // Shape errors are reported by postgresConnectionUrlSchema already.
+    return false;
+  }
+}
+
 const httpOriginSchema = z.string().transform((value, ctx) => {
   let url: URL;
 
@@ -63,19 +118,60 @@ const appOriginsSchema = z
   .pipe(z.array(httpOriginSchema).min(1).max(20))
   .transform((origins) => [...new Set(origins)]);
 
-export const envSchema = z.object({
-  NODE_ENV: z.enum(NODE_ENVS).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  APP_ORIGINS: appOriginsSchema,
-  LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
-  TRUSTED_PROXY_COUNT: z.coerce.number().int().min(0).max(10).default(0),
-  BODY_LIMIT_BYTES: z.coerce
-    .number()
-    .int()
-    .min(BODY_LIMIT_BYTES_MIN)
-    .max(BODY_LIMIT_BYTES_MAX)
-    .default(100 * 1024),
-});
+export const envSchema = z
+  .object({
+    NODE_ENV: z.enum(NODE_ENVS).default('development'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    APP_ORIGINS: appOriginsSchema,
+    LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
+    TRUSTED_PROXY_COUNT: z.coerce.number().int().min(0).max(10).default(0),
+    BODY_LIMIT_BYTES: z.coerce
+      .number()
+      .int()
+      .min(BODY_LIMIT_BYTES_MIN)
+      .max(BODY_LIMIT_BYTES_MAX)
+      .default(100 * 1024),
+
+    /**
+     * Runtime connection string (role `kfa_app`, no DDL privileges).
+     * Production requires an encrypted connection.
+     */
+    DATABASE_URL: postgresConnectionUrlSchema,
+
+    /**
+     * Migration-only connection string (role `kfa_migrator`).
+     * Read by the Prisma CLI (`directUrl`); optional for the running app so a
+     * deployed process never needs DDL credentials.
+     */
+    MIGRATION_DATABASE_URL: postgresConnectionUrlSchema.optional(),
+
+    /** Key for HMAC-SHA256 of client IPs in the audit log (never the raw IP). */
+    AUDIT_HMAC_KEY: z
+      .string()
+      .min(AUDIT_HMAC_KEY_MIN_LENGTH, `must be at least ${AUDIT_HMAC_KEY_MIN_LENGTH} characters`)
+      .max(1024, 'must be at most 1024 characters'),
+  })
+  .superRefine((env, ctx) => {
+    if (env.NODE_ENV !== 'production') {
+      return;
+    }
+
+    if (!hasRequiredTls(env.DATABASE_URL)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DATABASE_URL'],
+        message: 'must set sslmode=require (or verify-ca / verify-full) in production',
+      });
+    }
+
+    if (env.MIGRATION_DATABASE_URL !== undefined && !hasRequiredTls(env.MIGRATION_DATABASE_URL)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MIGRATION_DATABASE_URL'],
+        message: 'must set sslmode=require (or verify-ca / verify-full) in production',
+      });
+    }
+  });
 
 export type Env = Readonly<z.infer<typeof envSchema>>;
 

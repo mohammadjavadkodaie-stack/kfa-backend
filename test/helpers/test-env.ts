@@ -1,6 +1,10 @@
 /**
  * Environment used by the test suites. Values are deliberately fake/local and
  * are applied to `process.env` before a test application is compiled.
+ *
+ * `DATABASE_URL` is never dialled from tests: the Prisma client provider is
+ * replaced in `create-test-app.ts`. It still has to be a valid URL because the
+ * environment is zod-validated at boot, exactly like production.
  */
 export const TEST_ENV = {
   NODE_ENV: 'test',
@@ -9,6 +13,8 @@ export const TEST_ENV = {
   LOG_LEVEL: 'silent',
   TRUSTED_PROXY_COUNT: '0',
   BODY_LIMIT_BYTES: '1024',
+  DATABASE_URL: 'postgresql://kfa_app:test-only-password@127.0.0.1:5432/kfa_test?schema=public',
+  AUDIT_HMAC_KEY: 'test-only-audit-hmac-key-0123456789',
 } as const;
 
 export type TestEnvOverrides = Partial<Record<keyof typeof TEST_ENV, string>>;

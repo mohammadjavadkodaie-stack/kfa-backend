@@ -3,10 +3,12 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { LoggerModule } from 'nestjs-pino';
+import { AuditModule } from './audit/audit.module';
 import { AuthGuard } from './auth/guards/auth.guard';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppConfigModule, ENV } from './config/config.module';
 import type { Env } from './config/env';
+import { PrismaModule } from './database/prisma.module';
 import { HealthModule } from './health/health.module';
 import { buildPinoParams } from './logging/pino.config';
 import { buildThrottlerModuleOptions } from './rate-limit/throttler.config';
@@ -22,6 +24,8 @@ import { buildThrottlerModuleOptions } from './rate-limit/throttler.config';
       inject: [ENV],
       useFactory: (env: Env) => buildThrottlerModuleOptions(env),
     }),
+    PrismaModule,
+    AuditModule,
     HealthModule,
   ],
   providers: [
