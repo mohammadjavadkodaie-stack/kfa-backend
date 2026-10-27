@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: nothing in this workflow writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Format, types, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # `prisma generate` needs the datasource variables to exist (schema.prisma
+      # uses `env(...)`); generate never opens a connection. Fake CI-only values.
+      DATABASE_URL: postgresql://kfa_app:ci-only-app-pw-2b8e6d4f019a@127.0.0.1:5432/kfa?schema=public
+      MIGRATION_DATABASE_URL: postgresql://kfa_migrator:ci-only-migrator-pw-7f3a9c1e54b2@127.0.0.1:5432/kfa?schema=public
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Install runs with ignore-scripts (see .npmrc), so the client is never a
+      # side effect of installing and has to be generated explicitly.
+      - name: Generate Prisma client
+        run: pnpm prisma generate
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Audit dependencies
+        run: pnpm audit --audit-level=high
+
+  integration:
+    name: Migrations and API e2e (Postgres + Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: verify
+    # Every credential in this job is a FAKE, CI-only value that exists nowhere
+    # else; the database roles are created from db/roles.sql at run time.
+    env:
+      DATABASE_URL: postgresql://kfa_app:ci-only-app-pw-2b8e6d4f019a@127.0.0.1:5432/kfa?schema=public
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci_superuser
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: kfa
+        ports:
+          - '5432:5432'
+        options: >-
+          --health-cmd "pg_isready -U ci_superuser -d kfa"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - '6379:6379'
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        env:
+          # Only present so the datasource in schema.prisma resolves; no connection.
+          MIGRATION_DATABASE_URL: postgresql://kfa_migrator:ci-only-migrator-pw-7f3a9c1e54b2@127.0.0.1:5432/kfa?schema=public
+        run: pnpm prisma generate
+
+      # Roles are never created by the application: run the tracked SQL as the
+      # superuser, substituting the placeholders in a runner-temp copy only.
+      - name: Create least-privilege database roles
+        env:
+          PGPASSWORD: ci-only-password
+          DB_MIGRATOR_PASSWORD: ci-only-migrator-pw-7f3a9c1e54b2
+          DB_APP_PASSWORD: ci-only-app-pw-2b8e6d4f019a
+        run: |
+          set -euo pipefail
+          sed \
+            -e "/CREATE ROLE kfa_migrator WITH LOGIN PASSWORD/ s/<SET-STRONG-PASSWORD>/${DB_MIGRATOR_PASSWORD}/" \
+            -e "/CREATE ROLE kfa_app WITH LOGIN PASSWORD/ s/<SET-STRONG-PASSWORD>/${DB_APP_PASSWORD}/" \
+            db/roles.sql > "$RUNNER_TEMP/roles.ci.sql"
+          if grep -Eq '^[[:space:]]*CREATE ROLE .*<SET-STRONG-PASSWORD>' "$RUNNER_TEMP/roles.ci.sql"; then
+            echo 'Unsubstituted password placeholder remains in a CREATE ROLE statement.' >&2
+            exit 1
+          fi
+          if command -v psql > /dev/null 2>&1; then
+            psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U ci_superuser -d kfa -f "$RUNNER_TEMP/roles.ci.sql"
+          else
+            # Fall back to the client of the already-pulled service image.
+            docker run --rm -i --network host -e PGPASSWORD postgres:16-alpine \
+              psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U ci_superuser -d kfa < "$RUNNER_TEMP/roles.ci.sql"
+          fi
+
+      # Migrate uses `directUrl` (kfa_migrator), while DATABASE_URL stays kfa_app.
+      - name: Apply migrations
+        env:
+          MIGRATION_DATABASE_URL: postgresql://kfa_migrator:ci-only-migrator-pw-7f3a9c1e54b2@127.0.0.1:5432/kfa?schema=public
+        run: pnpm prisma migrate deploy
+
+      - name: API, database and Redis e2e tests
+        env:
+          NODE_ENV: test
+          APP_ORIGINS: http://localhost:3000
+          LOG_LEVEL: silent
+          AUDIT_HMAC_KEY: ci-only-audit-hmac-key-0123456789abcdef
+          RATE_LIMIT_HMAC_KEY: ci-only-rate-limit-hmac-key-0123456789abcdef
+          DATABASE_URL_TEST: postgresql://kfa_app:ci-only-app-pw-2b8e6d4f019a@127.0.0.1:5432/kfa?schema=public
+          REDIS_URL_TEST: redis://127.0.0.1:6379
+          # MIGRATION_DATABASE_URL is deliberately not set here: the suites must
+          # see a runtime-only environment, otherwise the boot guards fail.
+        run: pnpm test:e2e

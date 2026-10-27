@@ -1,0 +1,21 @@
+# Additive config: keep the upstream rule set, allowlist only fake values.
+[extend]
+useDefault = true
+
+# Narrow global allowlist. Everything listed here is a placeholder that is
+# committed on purpose: local dev defaults, test fixtures and CI-only values.
+[allowlist]
+description = 'Fake placeholder credentials committed on purpose (dev template, tests, CI)'
+
+# The documented dev template; every value in it is a placeholder by design.
+paths = ['''(?:^|/)\.env\.example$''']
+
+# Matched as a substring of the reported secret, so it covers .env.example,
+# test fixtures and workflow files without allowlisting whole directories.
+stopwords = [
+  "dev-only-change-me",
+  "test-only",
+  "db-test-",
+  "unit-test-",
+  "ci-only-",
+]
