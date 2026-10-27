@@ -43,7 +43,7 @@ describe('Boot guards (e2e)', () => {
     expect((error as Error).message).toContain('APP_ORIGINS');
   });
 
-  it('refuses to boot in production until a Redis throttler store is wired', async () => {
+  it('refuses to boot in production without a shared Redis store', async () => {
     applyTestEnv({
       NODE_ENV: 'production',
       DATABASE_URL: 'postgresql://kfa_app:test-only@db.internal:5432/kfa?sslmode=require',
@@ -52,7 +52,24 @@ describe('Boot guards (e2e)', () => {
     const error = await compileApp();
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('Refusing to start');
-    expect((error as Error).message).toMatch(/Redis-backed throttler store/);
+    expect((error as Error).message).toContain('Invalid environment configuration');
+    expect((error as Error).message).toContain('REDIS_URL');
+  });
+
+  it('refuses a plaintext Redis URL in production without echoing its password', async () => {
+    const password = 'sentinel-redis-password-must-not-leak';
+
+    applyTestEnv({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://kfa_app:test-only@db.internal:5432/kfa?sslmode=require',
+      REDIS_URL: `redis://:${password}@redis.internal:6380/0`,
+    });
+
+    const error = await compileApp();
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('REDIS_URL');
+    expect((error as Error).message).toMatch(/rediss/);
+    expect((error as Error).message).not.toContain(password);
   });
 });

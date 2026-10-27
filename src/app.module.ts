@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { LoggerModule } from 'nestjs-pino';
 import { AuditModule } from './audit/audit.module';
@@ -11,7 +11,7 @@ import type { Env } from './config/env';
 import { PrismaModule } from './database/prisma.module';
 import { HealthModule } from './health/health.module';
 import { buildPinoParams } from './logging/pino.config';
-import { buildThrottlerModuleOptions } from './rate-limit/throttler.config';
+import { RateLimitModule } from './rate-limit/rate-limit.module';
 
 @Module({
   imports: [
@@ -20,10 +20,7 @@ import { buildThrottlerModuleOptions } from './rate-limit/throttler.config';
       inject: [ENV],
       useFactory: (env: Env) => buildPinoParams(env),
     }),
-    ThrottlerModule.forRootAsync({
-      inject: [ENV],
-      useFactory: (env: Env) => buildThrottlerModuleOptions(env),
-    }),
+    RateLimitModule,
     PrismaModule,
     AuditModule,
     HealthModule,

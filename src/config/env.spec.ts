@@ -4,6 +4,7 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   APP_ORIGINS: 'http://localhost:3000',
   DATABASE_URL: 'postgresql://kfa_app:app-secret@127.0.0.1:5432/kfa?schema=public',
   AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
+  RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
 };
 
 const VALID_ENV: NodeJS.ProcessEnv = {
@@ -14,6 +15,18 @@ const VALID_ENV: NodeJS.ProcessEnv = {
   LOG_LEVEL: 'debug',
   TRUSTED_PROXY_COUNT: '1',
   BODY_LIMIT_BYTES: '2048',
+  REDIS_URL: 'redis://:dev-only-change-me@127.0.0.1:6380/0',
+};
+
+const PROD_REDIS_URL = 'rediss://:prod-only-redis-password@redis.internal:6380/0';
+
+/** A production environment that satisfies every production-only rule. */
+const PROD_ENV: NodeJS.ProcessEnv = {
+  ...BASE_ENV,
+  NODE_ENV: 'production',
+  APP_ORIGINS: 'https://app.example',
+  DATABASE_URL: 'postgresql://kfa_app:app-secret@db.internal:5432/kfa?sslmode=require',
+  REDIS_URL: PROD_REDIS_URL,
 };
 
 const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
@@ -36,6 +49,20 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   ['an invalid MIGRATION_DATABASE_URL', { ...BASE_ENV, MIGRATION_DATABASE_URL: 'not-a-url' }],
   ['a missing AUDIT_HMAC_KEY', { ...BASE_ENV, AUDIT_HMAC_KEY: undefined }],
   ['a short AUDIT_HMAC_KEY', { ...BASE_ENV, AUDIT_HMAC_KEY: 'too-short' }],
+  ['an unparsable REDIS_URL', { ...BASE_ENV, REDIS_URL: 'not-a-url' }],
+  ['a non redis REDIS_URL', { ...BASE_ENV, REDIS_URL: 'https://redis.internal:6380' }],
+  ['a REDIS_URL with a fragment', { ...BASE_ENV, REDIS_URL: 'redis://:secret@redis:6380/0#x' }],
+  ['a short RATE_LIMIT_HMAC_KEY', { ...BASE_ENV, RATE_LIMIT_HMAC_KEY: 'too-short' }],
+  ['a missing REDIS_URL in production', { ...PROD_ENV, REDIS_URL: undefined }],
+  [
+    'a plaintext REDIS_URL in production',
+    { ...PROD_ENV, REDIS_URL: 'redis://:prod-only-redis-password@redis.internal:6380/0' },
+  ],
+  [
+    'a REDIS_URL without a password in production',
+    { ...PROD_ENV, REDIS_URL: 'rediss://redis.internal:6380/0' },
+  ],
+  ['a missing RATE_LIMIT_HMAC_KEY in production', { ...PROD_ENV, RATE_LIMIT_HMAC_KEY: undefined }],
 ];
 
 describe('loadEnv', () => {
@@ -49,6 +76,8 @@ describe('loadEnv', () => {
       BODY_LIMIT_BYTES: 2048,
       DATABASE_URL: 'postgresql://kfa_app:app-secret@127.0.0.1:5432/kfa?schema=public',
       AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
+      REDIS_URL: 'redis://:dev-only-change-me@127.0.0.1:6380/0',
+      RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
     });
   });
 
@@ -61,6 +90,13 @@ describe('loadEnv', () => {
     expect(env.TRUSTED_PROXY_COUNT).toBe(0);
     expect(env.BODY_LIMIT_BYTES).toBe(102_400);
     expect(env.MIGRATION_DATABASE_URL).toBeUndefined();
+  });
+
+  it('treats the shared Redis store and its HMAC key as optional outside production', () => {
+    const env = loadEnv({ ...BASE_ENV });
+
+    expect(env.REDIS_URL).toBeUndefined();
+    expect(env.RATE_LIMIT_HMAC_KEY).toBe('unit-test-rate-limit-hmac-key-0123456789');
   });
 
   it('deduplicates origins', () => {
@@ -93,8 +129,7 @@ describe('loadEnv', () => {
 
     try {
       loadEnv({
-        ...BASE_ENV,
-        NODE_ENV: 'production',
+        ...PROD_ENV,
         DATABASE_URL: `postgresql://kfa_app:${password}@db.internal:5432/kfa?sslmode=disable`,
       });
       throw new Error('expected loadEnv to reject a non-TLS production URL');
@@ -104,18 +139,47 @@ describe('loadEnv', () => {
     }
   });
 
+  it('never echoes a Redis password in validation errors', () => {
+    const password = 'super-secret-redis-password';
+
+    try {
+      loadEnv({ ...PROD_ENV, REDIS_URL: `redis://:${password}@redis.internal:6380/0` });
+      throw new Error('expected loadEnv to reject a plaintext production Redis URL');
+    } catch (error) {
+      expect((error as Error).message).toContain('REDIS_URL');
+      expect((error as Error).message).not.toContain(password);
+    }
+  });
+
+  it('requires a shared, TLS-protected Redis store in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, REDIS_URL: undefined })).toThrow(
+      /REDIS_URL.*required in production/,
+    );
+    expect(() =>
+      loadEnv({ ...PROD_ENV, REDIS_URL: 'redis://:prod-only-redis-password@redis:6380/0' }),
+    ).toThrow(/REDIS_URL.*rediss/);
+    expect(() => loadEnv({ ...PROD_ENV, REDIS_URL: 'rediss://redis:6380/0' })).toThrow(
+      /REDIS_URL.*password/,
+    );
+  });
+
+  it('requires a rate-limit HMAC key in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, RATE_LIMIT_HMAC_KEY: undefined })).toThrow(
+      /RATE_LIMIT_HMAC_KEY/,
+    );
+  });
+
   it('returns a frozen object', () => {
     expect(Object.isFrozen(loadEnv({ ...BASE_ENV }))).toBe(true);
   });
 
   it('requires TLS for database URLs in production', () => {
-    expect(() =>
-      loadEnv({ ...BASE_ENV, NODE_ENV: 'production', DATABASE_URL: 'postgresql://u:p@db/kfa' }),
-    ).toThrow(/DATABASE_URL.*sslmode=require/);
+    expect(() => loadEnv({ ...PROD_ENV, DATABASE_URL: 'postgresql://u:p@db/kfa' })).toThrow(
+      /DATABASE_URL.*sslmode=require/,
+    );
 
     const env = loadEnv({
-      ...BASE_ENV,
-      NODE_ENV: 'production',
+      ...PROD_ENV,
       DATABASE_URL: 'postgresql://u:p@db/kfa?sslmode=verify-full',
       MIGRATION_DATABASE_URL: 'postgresql://u:p@db/kfa?sslmode=require',
     });
@@ -126,9 +190,7 @@ describe('loadEnv', () => {
   it('requires TLS for MIGRATION_DATABASE_URL in production', () => {
     expect(() =>
       loadEnv({
-        ...BASE_ENV,
-        NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://u:p@db/kfa?sslmode=require',
+        ...PROD_ENV,
         MIGRATION_DATABASE_URL: 'postgresql://u:p@db/kfa?sslmode=disable',
       }),
     ).toThrow(/MIGRATION_DATABASE_URL.*sslmode=require/);
@@ -136,22 +198,17 @@ describe('loadEnv', () => {
 
   it('accepts an sslmode from the connection string case-insensitively', () => {
     const env = loadEnv({
-      ...BASE_ENV,
-      NODE_ENV: 'production',
+      ...PROD_ENV,
       DATABASE_URL: 'postgresql://u:p@db/kfa?sslmode=REQUIRE',
     });
 
     expect(env.DATABASE_URL).toContain('sslmode=REQUIRE');
   });
 
-  it('accepts production at schema level once TLS is configured', () => {
-    const env = loadEnv({
-      ...BASE_ENV,
-      APP_ORIGINS: 'https://app.example',
-      NODE_ENV: 'production',
-      DATABASE_URL: 'postgresql://u:p@db/kfa?sslmode=require',
-    });
+  it('accepts production once TLS databases and a Redis store are configured', () => {
+    const env = loadEnv({ ...PROD_ENV });
 
     expect(env.NODE_ENV).toBe('production');
+    expect(env.REDIS_URL).toBe(PROD_REDIS_URL);
   });
 });

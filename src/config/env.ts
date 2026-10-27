@@ -17,11 +17,49 @@ export const BODY_LIMIT_BYTES_MAX = 1024 * 1024;
 /** Minimum accepted length of the audit hash-chain HMAC key. */
 export const AUDIT_HMAC_KEY_MIN_LENGTH = 32;
 
+/** Minimum accepted length of the rate-limit identifier HMAC key. */
+export const RATE_LIMIT_HMAC_KEY_MIN_LENGTH = 32;
+
 /** Maximum accepted length of a database connection URL. */
 const DATABASE_URL_MAX_LENGTH = 2048;
 
+/** Maximum accepted length of a Redis connection URL. */
+const REDIS_URL_MAX_LENGTH = 2048;
+
 /** Postgres TLS modes that actually encrypt the connection. */
 const TLS_REQUIRED_SSLMODES = new Set(['require', 'verify-ca', 'verify-full']);
+
+/**
+ * Validates a Redis connection string without ever echoing its value.
+ * Only the shape is checked - TLS and credentials are mandatory in production
+ * (see the environment-wide refinement below).
+ */
+const redisConnectionUrlSchema = z
+  .string()
+  .max(REDIS_URL_MAX_LENGTH, `must be at most ${REDIS_URL_MAX_LENGTH} characters`)
+  .superRefine((value, ctx) => {
+    let url: URL;
+
+    try {
+      url = new URL(value);
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'must be a valid absolute connection URL' });
+      return;
+    }
+
+    if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') {
+      ctx.addIssue({ code: 'custom', message: 'must use the redis or rediss scheme' });
+      return;
+    }
+
+    if (url.hostname.length === 0) {
+      ctx.addIssue({ code: 'custom', message: 'must name a Redis host' });
+    }
+
+    if (url.hash.length > 0) {
+      ctx.addIssue({ code: 'custom', message: 'must not contain a URL fragment' });
+    }
+  });
 
 /**
  * Validates a PostgreSQL connection string without ever echoing its value.
@@ -65,6 +103,23 @@ function hasRequiredTls(url: string): boolean {
     return mode !== undefined && TLS_REQUIRED_SSLMODES.has(mode);
   } catch {
     // Shape errors are reported by postgresConnectionUrlSchema already.
+    return false;
+  }
+}
+
+function redisUrlUsesTls(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'rediss:';
+  } catch {
+    // Shape errors are reported by redisConnectionUrlSchema already.
+    return false;
+  }
+}
+
+function redisUrlHasPassword(url: string): boolean {
+  try {
+    return new URL(url).password.length > 0;
+  } catch {
     return false;
   }
 }
@@ -150,6 +205,26 @@ export const envSchema = z
       .string()
       .min(AUDIT_HMAC_KEY_MIN_LENGTH, `must be at least ${AUDIT_HMAC_KEY_MIN_LENGTH} characters`)
       .max(1024, 'must be at most 1024 characters'),
+
+    /**
+     * Shared rate-limit store (Redis). Optional outside production, where the
+     * throttler falls back to in-memory storage for a single process.
+     * Production requires `rediss://` (TLS) with a password.
+     */
+    REDIS_URL: redisConnectionUrlSchema.optional(),
+
+    /**
+     * Key for HMAC-SHA256 of rate-limit identifiers (phone/device). Raw
+     * identifiers are never stored in Redis keys. Required in production.
+     */
+    RATE_LIMIT_HMAC_KEY: z
+      .string()
+      .min(
+        RATE_LIMIT_HMAC_KEY_MIN_LENGTH,
+        `must be at least ${RATE_LIMIT_HMAC_KEY_MIN_LENGTH} characters`,
+      )
+      .max(1024, 'must be at most 1024 characters')
+      .optional(),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV !== 'production') {
@@ -169,6 +244,40 @@ export const envSchema = z
         code: 'custom',
         path: ['MIGRATION_DATABASE_URL'],
         message: 'must set sslmode=require (or verify-ca / verify-full) in production',
+      });
+    }
+
+    // A multi-instance deployment cannot rely on per-process counters, so the
+    // shared store is mandatory and must be encrypted + authenticated.
+    if (env.REDIS_URL === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['REDIS_URL'],
+        message: 'is required in production (shared rate-limit store)',
+      });
+    } else {
+      if (!redisUrlUsesTls(env.REDIS_URL)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['REDIS_URL'],
+          message: 'must use the rediss scheme (TLS) in production',
+        });
+      }
+
+      if (!redisUrlHasPassword(env.REDIS_URL)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['REDIS_URL'],
+          message: 'must include a password in production',
+        });
+      }
+    }
+
+    if (env.RATE_LIMIT_HMAC_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RATE_LIMIT_HMAC_KEY'],
+        message: 'is required in production',
       });
     }
   });

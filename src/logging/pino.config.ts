@@ -27,6 +27,19 @@ const SENSITIVE_FIELDS = [
 
 const WILDCARD_PREFIXES = ['', '*.', '*.*.', '*.*.*.'] as const;
 
+/**
+ * Connection strings / secrets that could be logged by accident (startup
+ * diagnostics, error context). Whole values are censored; the variable name
+ * stays visible so the log line is still actionable.
+ */
+const SENSITIVE_CONFIG_PATHS = [
+  'DATABASE_URL',
+  'MIGRATION_DATABASE_URL',
+  'REDIS_URL',
+  'AUDIT_HMAC_KEY',
+  'RATE_LIMIT_HMAC_KEY',
+] as const;
+
 export function buildRedactPaths(): string[] {
   const paths = new Set<string>(SENSITIVE_HEADER_PATHS);
 
@@ -41,6 +54,11 @@ export function buildRedactPaths(): string[] {
     for (const prefix of WILDCARD_PREFIXES) {
       paths.add(`${prefix}${field}`);
     }
+  }
+
+  for (const configPath of SENSITIVE_CONFIG_PATHS) {
+    paths.add(configPath);
+    paths.add(`env.${configPath}`);
   }
 
   return [...paths];

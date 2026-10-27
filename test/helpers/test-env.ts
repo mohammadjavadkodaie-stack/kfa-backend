@@ -15,9 +15,16 @@ export const TEST_ENV = {
   BODY_LIMIT_BYTES: '1024',
   DATABASE_URL: 'postgresql://kfa_app:test-only-password@127.0.0.1:5432/kfa_test?schema=public',
   AUDIT_HMAC_KEY: 'test-only-audit-hmac-key-0123456789',
+  RATE_LIMIT_HMAC_KEY: 'test-only-rate-limit-hmac-key-0123456789',
+  /**
+   * Unset by default: no test dials Redis unless it explicitly asks for it (the
+   * real-Redis suite is gated by `REDIS_URL_TEST`). Keeping the key here means
+   * `applyTestEnv()` also removes a leaked value between suites.
+   */
+  REDIS_URL: undefined,
 } as const;
 
-export type TestEnvOverrides = Partial<Record<keyof typeof TEST_ENV, string>>;
+export type TestEnvOverrides = Partial<Record<keyof typeof TEST_ENV, string | undefined>>;
 
 export function applyTestEnv(overrides: TestEnvOverrides = {}): void {
   const merged: Record<string, string | undefined> = { ...TEST_ENV, ...overrides };
