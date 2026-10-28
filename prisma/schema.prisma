@@ -1,4 +1,4 @@
-// KFA database schema (stage 1: append-only audit log only).
+// KFA database schema (stage 2: auth foundation and append-only audit log).
 //
 // URL handling:
 // - `directUrl` is used by the Prisma CLI / Migrate, so migrations always run
@@ -46,4 +46,78 @@ model AuditLog {
   @@index([actorId])
   @@index([action])
   @@map("audit_log")
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+}
+
+enum Role {
+  USER
+  ATHLETE
+  ADMIN
+  OWNER
+  IDENTITY_VERIFIER
+}
+
+model User {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone           String       @unique
+  username        String       @unique
+  role            Role         @default(USER)
+  status          UserStatus   @default(ACTIVE)
+  phoneVerifiedAt DateTime?    @map("phone_verified_at") @db.Timestamptz(6)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  devices         Device[]
+  sessions        Session[]
+  @@map("users")
+}
+
+model Device {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  deviceKeyHash String    @unique @map("device_key_hash")
+  uaHash        String?   @map("ua_hash")
+  label         String?
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt    DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(6)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions      Session[]
+  @@index([userId])
+  @@map("devices")
+}
+
+model Session {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String         @map("user_id") @db.Uuid
+  deviceId      String         @map("device_id") @db.Uuid
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt     DateTime       @map("expires_at") @db.Timestamptz(6)
+  lastUsedAt    DateTime       @default(now()) @map("last_used_at") @db.Timestamptz(6)
+  revokedAt     DateTime?      @map("revoked_at") @db.Timestamptz(6)
+  revokedReason String?        @map("revoked_reason")
+  ipHash        String?        @map("ip_hash")
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device        Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+  @@index([userId])
+  @@index([deviceId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model RefreshToken {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId  String    @map("session_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt     DateTime? @map("used_at") @db.Timestamptz(6)
+  session    Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  @@index([sessionId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }

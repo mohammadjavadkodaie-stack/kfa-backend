@@ -38,6 +38,7 @@ REVOKE ALL ON SCHEMA public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO kfa_app;
 
+-- audit_log remains the only append-only table.
 -- Future tables/sequences created by kfa_migrator: normal CRUD for the app.
 ALTER DEFAULT PRIVILEGES FOR ROLE kfa_migrator IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO kfa_app;

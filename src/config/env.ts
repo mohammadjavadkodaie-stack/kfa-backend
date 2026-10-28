@@ -186,6 +186,8 @@ export const envSchema = z
       .min(BODY_LIMIT_BYTES_MIN)
       .max(BODY_LIMIT_BYTES_MAX)
       .default(100 * 1024),
+    OTP_PROVIDER: z.string().min(1).default('fake'),
+    CAPTCHA_PROVIDER: z.string().min(1).default('fake'),
 
     /**
      * Runtime connection string (role `kfa_app`, no DDL privileges).
@@ -278,6 +280,21 @@ export const envSchema = z
         code: 'custom',
         path: ['RATE_LIMIT_HMAC_KEY'],
         message: 'is required in production',
+      });
+    }
+
+    if (env.OTP_PROVIDER === 'fake' || env.OTP_PROVIDER === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['OTP_PROVIDER'],
+        message: 'must be non-fake in production',
+      });
+    }
+    if (env.CAPTCHA_PROVIDER === 'fake' || env.CAPTCHA_PROVIDER === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CAPTCHA_PROVIDER'],
+        message: 'must be non-fake in production',
       });
     }
   });

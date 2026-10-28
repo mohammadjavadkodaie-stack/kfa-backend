@@ -5,6 +5,8 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgresql://kfa_app:app-secret@127.0.0.1:5432/kfa?schema=public',
   AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
   RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
+  OTP_PROVIDER: 'fake',
+  CAPTCHA_PROVIDER: 'fake',
 };
 
 const VALID_ENV: NodeJS.ProcessEnv = {
@@ -27,6 +29,8 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   APP_ORIGINS: 'https://app.example',
   DATABASE_URL: 'postgresql://kfa_app:app-secret@db.internal:5432/kfa?sslmode=require',
   REDIS_URL: PROD_REDIS_URL,
+  OTP_PROVIDER: 'twilio',
+  CAPTCHA_PROVIDER: 'recaptcha',
 };
 
 const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
@@ -74,6 +78,8 @@ describe('loadEnv', () => {
       LOG_LEVEL: 'debug',
       TRUSTED_PROXY_COUNT: 1,
       BODY_LIMIT_BYTES: 2048,
+      OTP_PROVIDER: 'fake',
+      CAPTCHA_PROVIDER: 'fake',
       DATABASE_URL: 'postgresql://kfa_app:app-secret@127.0.0.1:5432/kfa?schema=public',
       AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
       REDIS_URL: 'redis://:dev-only-change-me@127.0.0.1:6380/0',
@@ -171,6 +177,15 @@ describe('loadEnv', () => {
 
   it('returns a frozen object', () => {
     expect(Object.isFrozen(loadEnv({ ...BASE_ENV }))).toBe(true);
+  });
+
+  it('rejects fake OTP and CAPTCHA providers in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, OTP_PROVIDER: 'fake', CAPTCHA_PROVIDER: 'fake' })).toThrow(
+      /OTP_PROVIDER|CAPTCHA_PROVIDER/,
+    );
+    expect(() =>
+      loadEnv({ ...PROD_ENV, OTP_PROVIDER: 'twilio', CAPTCHA_PROVIDER: 'recaptcha' }),
+    ).not.toThrow();
   });
 
   it('requires TLS for database URLs in production', () => {
