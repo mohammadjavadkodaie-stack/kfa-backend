@@ -17,6 +17,13 @@ export const TEST_ENV = {
   AUDIT_HMAC_KEY: 'test-only-audit-hmac-key-0123456789',
   RATE_LIMIT_HMAC_KEY: 'test-only-rate-limit-hmac-key-0123456789',
   /**
+   * The fake providers are the only ones wired up so far, and production
+   * additionally requires non-fake values. Keeping both keys here means
+   * `applyTestEnv()` also resets a value leaked from a production-env test.
+   */
+  OTP_PROVIDER: 'fake',
+  CAPTCHA_PROVIDER: 'fake',
+  /**
    * Unset by default: no test dials Redis unless it explicitly asks for it (the
    * real-Redis suite is gated by `REDIS_URL_TEST`). Keeping the key here means
    * `applyTestEnv()` also removes a leaked value between suites.
