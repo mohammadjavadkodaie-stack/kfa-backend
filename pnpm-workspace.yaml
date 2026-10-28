@@ -16,6 +16,12 @@ allowBuilds:
   '@prisma/client': false
   '@prisma/engines': false
 
+# Overrides applied to every dependency graph in this repository.
+overrides:
+  # GHSA-ggr8-5vv4-36mx (high): deepmerge-ts < 8.0.0. Pulled in only by the
+  # build-time Prisma CLI chain (prisma > @prisma/config, which pins 7.1.5).
+  deepmerge-ts: 8.0.2
+
 # Packages allowed to bypass the release-age cooldown: the NestJS 12 line is
 # pinned intentionally (see package.json).
 minimumReleaseAgeExclude:
