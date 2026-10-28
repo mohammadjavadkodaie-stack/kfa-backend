@@ -13,7 +13,7 @@ CREATE TABLE "users" (
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
     "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
     CONSTRAINT "users_pkey" PRIMARY KEY ("id"),
-    CONSTRAINT "users_phone_format_check" CHECK ("phone" ~ '^\\+[1-9][0-9]{6,14}$'),
+    CONSTRAINT "users_phone_format_check" CHECK ("phone" ~ '^[+][1-9][0-9]{6,14}$'),
     CONSTRAINT "users_username_format_check" CHECK ("username" ~ '^[a-z0-9_]{3,30}$')
 );
 CREATE UNIQUE INDEX "users_phone_key" ON "users"("phone");
