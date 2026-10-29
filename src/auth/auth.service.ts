@@ -10,6 +10,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
+import { isUuid } from '../common/middleware/request-id.middleware';
 import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 import { RateLimitService } from '../rate-limit/rate-limit.service';
@@ -45,7 +46,10 @@ export const LOGIN_IP_LIMIT = { limit: 20, windowSeconds: 900 } as const;
 export const LOGIN_DEVICE_LIMIT = { limit: 10, windowSeconds: 900 } as const;
 export const REFRESH_IP_LIMIT = { limit: 60, windowSeconds: 300 } as const;
 export const LOGOUT_IP_LIMIT = { limit: 30, windowSeconds: 300 } as const;
+/** Shared per-user budget for listing and revoking sessions. */
+export const SESSIONS_USER_LIMIT = { limit: 30, windowSeconds: 60 } as const;
 
+const SESSIONS_USER_SCOPE = 'sessions-user';
 const SECONDS_PER_DAY = 86_400;
 const MAX_DEVICE_LABEL_LENGTH = 100;
 
@@ -81,12 +85,44 @@ export type LogoutResult =
   | { readonly outcome: 'ok' }
   | { readonly outcome: 'throttled'; readonly retryAfterSeconds: number };
 
+/** The caller behind the access token; never taken from a body or a query. */
+export interface SessionPrincipal {
+  readonly userId: string;
+  readonly sessionId: string;
+}
+
+/** One entry of the caller's device list. No hashes, no IPs. */
+export interface SessionSummary {
+  readonly id: string;
+  readonly deviceLabel: string | null;
+  readonly createdAt: string;
+  readonly lastUsedAt: string;
+  readonly expiresAt: string;
+  /** True for the session the access token was issued for. */
+  readonly current: boolean;
+}
+
+export type ListSessionsResult =
+  | { readonly outcome: 'ok'; readonly sessions: SessionSummary[] }
+  | { readonly outcome: 'throttled'; readonly retryAfterSeconds: number };
+
+export type RevokeSessionResult =
+  | { readonly outcome: 'revoked'; readonly current: boolean }
+  /** Unknown, already revoked and foreign sessions answer the same way. */
+  | { readonly outcome: 'not_found' }
+  | { readonly outcome: 'throttled'; readonly retryAfterSeconds: number };
+
+export type LogoutAllResult =
+  | { readonly outcome: 'ok' }
+  | { readonly outcome: 'throttled'; readonly retryAfterSeconds: number };
+
 @Injectable()
 export class AuthService {
   private readonly accessTokenSecret: string | undefined;
   private readonly accessTokenTtlSeconds: number;
   private readonly refreshTtlSeconds: number;
   private readonly sessionTtlSeconds: number;
+  private readonly maxSessionsPerUser: number;
 
   constructor(
     @Inject(ENV)
@@ -96,6 +132,7 @@ export class AuthService {
       | 'ACCESS_TOKEN_TTL_SECONDS'
       | 'REFRESH_TTL_DAYS'
       | 'SESSION_ABSOLUTE_DAYS'
+      | 'SESSIONS_MAX_PER_USER'
     >,
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
     private readonly proof: ProofTokenService,
@@ -107,6 +144,7 @@ export class AuthService {
     this.accessTokenTtlSeconds = env.ACCESS_TOKEN_TTL_SECONDS;
     this.refreshTtlSeconds = env.REFRESH_TTL_DAYS * SECONDS_PER_DAY;
     this.sessionTtlSeconds = env.SESSION_ABSOLUTE_DAYS * SECONDS_PER_DAY;
+    this.maxSessionsPerUser = env.SESSIONS_MAX_PER_USER;
   }
 
   /**
@@ -128,15 +166,17 @@ export class AuthService {
       throw new BadRequestException();
     }
 
+    // Checked before the proof is consumed: a taken username must not burn the
+    // caller's OTP code. The insert still re-checks under its unique index.
+    if (await this.sessions.isUsernameTaken(input.username)) {
+      throw new ConflictException();
+    }
+
     const phoneE164 = await this.consumeProof(input.proof);
 
     if (await this.sessions.findUserByPhone(phoneE164)) {
       // The caller already proved they own the number, so telling them that an
       // account exists reveals nothing they could not discover by logging in.
-      throw new ConflictException();
-    }
-
-    if (await this.sessions.isUsernameTaken(input.username)) {
       throw new ConflictException();
     }
 
@@ -151,6 +191,7 @@ export class AuthService {
       phone: phoneE164,
       username: input.username,
       deviceKeyHash: this.deviceBinding(userId, context),
+      deviceBound: context.deviceKey !== null,
       deviceLabel: input.deviceName ?? this.deviceLabel(context.userAgent),
       now,
       sessionExpiresAt,
@@ -231,11 +272,13 @@ export class AuthService {
     const session = await this.sessions.createSession({
       userId: account.id,
       deviceKeyHash: this.deviceBinding(account.id, context),
+      deviceBound: context.deviceKey !== null,
       deviceLabel: this.deviceLabel(context.userAgent),
       now,
       sessionExpiresAt,
       refreshTokenHash: hashRefreshToken(refreshToken),
       refreshExpiresAt,
+      maxActiveSessions: this.maxSessionsPerUser,
     });
 
     await this.writeAudit('auth.login', account.id, phoneE164, context, {});
@@ -296,7 +339,7 @@ export class AuthService {
       throw new UnauthorizedException();
     }
 
-    if (context.deviceKey !== null && !this.deviceMatches(result, context)) {
+    if (!this.deviceMatches(result, context)) {
       await this.sessions.revokeSession(result.sessionId, 'device_mismatch', now);
       await this.writeAudit('auth.refresh.device_mismatch', result.userId, null, context, {});
       this.logger.warn(
@@ -349,6 +392,118 @@ export class AuthService {
     return { outcome: 'ok' };
   }
 
+  /**
+   * The caller's own active sessions, most recently used first.
+   *
+   * No hashed key and no IP: the list exists so a user can recognise (and drop)
+   * their devices, not so a stolen token can map the account.
+   */
+  async listSessions(principal: SessionPrincipal): Promise<ListSessionsResult> {
+    const throttle = await this.enforceLimit(
+      SESSIONS_USER_SCOPE,
+      principal.userId,
+      SESSIONS_USER_LIMIT,
+    );
+
+    if (throttle !== null) {
+      return { outcome: 'throttled', retryAfterSeconds: throttle };
+    }
+
+    const records = await this.sessions.listActiveSessions(principal.userId, this.now());
+
+    return {
+      outcome: 'ok',
+      sessions: records.map((record) => ({
+        id: record.id,
+        deviceLabel: record.deviceLabel,
+        createdAt: record.createdAt.toISOString(),
+        lastUsedAt: record.lastUsedAt.toISOString(),
+        expiresAt: record.expiresAt.toISOString(),
+        current: record.id === principal.sessionId,
+      })),
+    };
+  }
+
+  /**
+   * Revokes one of the caller's own sessions.
+   *
+   * A session owned by somebody else answers exactly like one that never
+   * existed, so the id space cannot be enumerated and a caller cannot log a
+   * stranger out by guessing ids.
+   */
+  async revokeSession(
+    principal: SessionPrincipal,
+    sessionId: string,
+    context: AuthRequestContext,
+  ): Promise<RevokeSessionResult> {
+    const throttle = await this.enforceLimit(
+      SESSIONS_USER_SCOPE,
+      principal.userId,
+      SESSIONS_USER_LIMIT,
+    );
+
+    if (throttle !== null) {
+      return { outcome: 'throttled', retryAfterSeconds: throttle };
+    }
+
+    // A malformed id cannot own a row, and skipping the query keeps garbage free.
+    if (!isUuid(sessionId)) return { outcome: 'not_found' };
+
+    const revoked = await this.sessions.revokeUserSession(
+      sessionId,
+      principal.userId,
+      'user_revoked',
+      this.now(),
+    );
+
+    if (!revoked) return { outcome: 'not_found' };
+
+    const current = sessionId === principal.sessionId;
+
+    await this.writeAudit('auth.session.revoked', principal.userId, null, context, {
+      sessionId,
+      current,
+    });
+
+    this.logger.info(
+      { requestId: context.requestId, userId: principal.userId, sessionId, current },
+      'session revoked by user',
+    );
+
+    return { outcome: 'revoked', current };
+  }
+
+  /**
+   * Revokes every session of the caller, including the one that asked.
+   *
+   * The refresh cookie is cleared by the controller, so a client that lost its
+   * device re-authenticates with an OTP and nothing else keeps working.
+   */
+  async logoutAll(
+    principal: SessionPrincipal,
+    context: AuthRequestContext,
+  ): Promise<LogoutAllResult> {
+    const throttle = await this.enforceLimit(
+      SESSIONS_USER_SCOPE,
+      principal.userId,
+      SESSIONS_USER_LIMIT,
+    );
+
+    if (throttle !== null) {
+      return { outcome: 'throttled', retryAfterSeconds: throttle };
+    }
+
+    await this.sessions.revokeAllUserSessions(principal.userId, 'logout_all', this.now());
+    await this.writeAudit('auth.logout_all', principal.userId, null, context, {});
+
+    this.logger.info(
+      { requestId: context.requestId, userId: principal.userId },
+      'all sessions revoked',
+    );
+
+    return { outcome: 'ok' };
+  }
+
   /** Returns the retry hint when the budget is exhausted, or null when allowed. */
   private async enforceLimit(
     scope: string,
@@ -394,10 +549,20 @@ export class AuthService {
   }
 
   private deviceMatches(
-    session: { readonly userId: string; readonly deviceKeyHash: string },
+    session: {
+      readonly userId: string;
+      readonly deviceKeyHash: string;
+      readonly deviceBound: boolean;
+    },
     context: AuthRequestContext,
   ): boolean {
-    if (context.deviceKey === null) return true;
+    // A session created without a key has nothing to compare against; the
+    // cookie is its only credential, so any client holding it may rotate.
+    if (!session.deviceBound) return true;
+
+    // The reverse direction must be strict: a bound session refreshed without
+    // the header would turn the binding into an opt-in an attacker can skip.
+    if (context.deviceKey === null) return false;
 
     return (
       hashDeviceKey(this.secretOrFail(), session.userId, context.deviceKey) ===

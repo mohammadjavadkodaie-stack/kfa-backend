@@ -122,6 +122,7 @@ describe('loadEnv', () => {
       ACCESS_TOKEN_TTL_SECONDS: 600,
       REFRESH_TTL_DAYS: 14,
       SESSION_ABSOLUTE_DAYS: 30,
+      SESSIONS_MAX_PER_USER: 10,
     });
   });
 
@@ -242,6 +243,18 @@ describe('loadEnv', () => {
     expect(env.ACCESS_TOKEN_TTL_SECONDS).toBe(600);
     expect(env.REFRESH_TTL_DAYS).toBe(14);
     expect(env.SESSION_ABSOLUTE_DAYS).toBe(30);
+  });
+
+  it('caps active sessions per user between 1 and 50', () => {
+    expect(loadEnv({ ...BASE_ENV }).SESSIONS_MAX_PER_USER).toBe(10);
+    expect(loadEnv({ ...BASE_ENV, SESSIONS_MAX_PER_USER: '1' }).SESSIONS_MAX_PER_USER).toBe(1);
+    expect(loadEnv({ ...BASE_ENV, SESSIONS_MAX_PER_USER: '50' }).SESSIONS_MAX_PER_USER).toBe(50);
+    expect(() => loadEnv({ ...BASE_ENV, SESSIONS_MAX_PER_USER: '0' })).toThrow(
+      /SESSIONS_MAX_PER_USER/,
+    );
+    expect(() => loadEnv({ ...BASE_ENV, SESSIONS_MAX_PER_USER: '51' })).toThrow(
+      /SESSIONS_MAX_PER_USER/,
+    );
   });
 
   it('treats the access-token secret as optional outside production', () => {

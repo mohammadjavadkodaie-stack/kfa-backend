@@ -19,8 +19,19 @@ export interface IssuedSessionRecord {
   readonly userId: string;
   readonly sessionId: string;
   readonly deviceKeyHash: string;
+  /** False when the caller sent no `X-Device-Key`, so there is nothing to bind. */
+  readonly deviceBound: boolean;
   readonly sessionExpiresAt: Date;
   readonly refreshExpiresAt: Date;
+}
+
+/** One row of the caller's own device list. Never carries a hash or an IP. */
+export interface SessionSummaryRecord {
+  readonly id: string;
+  readonly deviceLabel: string | null;
+  readonly createdAt: Date;
+  readonly lastUsedAt: Date;
+  readonly expiresAt: Date;
 }
 
 export interface CreateAccountInput {
@@ -29,6 +40,7 @@ export interface CreateAccountInput {
   readonly phone: string;
   readonly username: string;
   readonly deviceKeyHash: string;
+  readonly deviceBound: boolean;
   readonly deviceLabel: string | null;
   readonly now: Date;
   readonly sessionExpiresAt: Date;
@@ -39,11 +51,14 @@ export interface CreateAccountInput {
 export interface CreateSessionInput {
   readonly userId: string;
   readonly deviceKeyHash: string;
+  readonly deviceBound: boolean;
   readonly deviceLabel: string | null;
   readonly now: Date;
   readonly sessionExpiresAt: Date;
   readonly refreshTokenHash: string;
   readonly refreshExpiresAt: Date;
+  /** Active sessions allowed per user; the oldest is revoked to make room. */
+  readonly maxActiveSessions: number;
 }
 
 export interface RotateRefreshTokenInput {
@@ -60,6 +75,8 @@ export type RotateRefreshTokenResult =
       readonly userId: string;
       readonly sessionId: string;
       readonly deviceKeyHash: string;
+      /** False when the session was created without a device key. */
+      readonly deviceBound: boolean;
       /** Checked after rotation: a blocked account must not keep refreshing. */
       readonly userStatus: 'ACTIVE' | 'BLOCKED';
       readonly sessionExpiresAt: Date;
@@ -80,7 +97,14 @@ export interface SessionRepository {
   /** Single-statement consume + issue; only one caller can win a race. */
   rotateRefreshToken(input: RotateRefreshTokenInput): Promise<RotateRefreshTokenResult>;
   revokeSession(sessionId: string, reason: string, now: Date): Promise<void>;
+  /**
+   * Revokes one session that belongs to `userId`. False covers unknown,
+   * already revoked and foreign sessions alike, so the caller stays generic.
+   */
+  revokeUserSession(sessionId: string, userId: string, reason: string, now: Date): Promise<boolean>;
   revokeAllUserSessions(userId: string, reason: string, now: Date): Promise<void>;
+  /** Active sessions of one user, most recently used first. */
+  listActiveSessions(userId: string, now: Date): Promise<SessionSummaryRecord[]>;
   /** Returns the owning user id, or null when the token is unknown. */
   revokeSessionByRefreshTokenHash(
     tokenHash: string,

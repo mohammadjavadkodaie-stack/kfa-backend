@@ -272,6 +272,9 @@ export const envSchema = z
 
     /** Absolute session cap: rotation can never extend a session past this. */
     SESSION_ABSOLUTE_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+
+    /** Active sessions kept per user; a login beyond it drops the oldest one. */
+    SESSIONS_MAX_PER_USER: z.coerce.number().int().min(1).max(50).default(10),
   })
   .superRefine((env, ctx) => {
     if (

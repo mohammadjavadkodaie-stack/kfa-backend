@@ -94,6 +94,8 @@ model Session {
   id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId        String         @map("user_id") @db.Uuid
   deviceId      String         @map("device_id") @db.Uuid
+  /// False when the session was created without an X-Device-Key header.
+  deviceBound   Boolean        @default(true) @map("device_bound")
   createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   expiresAt     DateTime       @map("expires_at") @db.Timestamptz(6)
   lastUsedAt    DateTime       @default(now()) @map("last_used_at") @db.Timestamptz(6)

@@ -8,6 +8,7 @@ import type {
   RotateRefreshTokenInput,
   RotateRefreshTokenResult,
   SessionRepository,
+  SessionSummaryRecord,
 } from './session.repository';
 
 /** A row returned by the atomic consume statement. */
@@ -16,6 +17,7 @@ interface ConsumedRow {
   readonly user_id: string;
   readonly user_status: string;
   readonly device_key_hash: string;
+  readonly device_bound: boolean;
   readonly session_expires_at: Date;
 }
 
@@ -71,6 +73,7 @@ export class PrismaSessionRepository implements SessionRepository {
           data: {
             userId: input.userId,
             deviceId: device.id,
+            deviceBound: input.deviceBound,
             expiresAt: input.sessionExpiresAt,
           },
         });
@@ -87,6 +90,7 @@ export class PrismaSessionRepository implements SessionRepository {
           userId: input.userId,
           sessionId: session.id,
           deviceKeyHash: input.deviceKeyHash,
+          deviceBound: input.deviceBound,
           sessionExpiresAt: input.sessionExpiresAt,
           refreshExpiresAt: input.refreshExpiresAt,
         };
@@ -99,6 +103,37 @@ export class PrismaSessionRepository implements SessionRepository {
 
   async createSession(input: CreateSessionInput): Promise<IssuedSessionRecord> {
     return this.prisma.$transaction(async (tx) => {
+      // Serialise concurrent logins of one user, so two cannot both see room.
+      // The cast is required: tagged-template parameters arrive as text, and
+      // PostgreSQL has no `uuid = text` operator.
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${input.userId}::uuid FOR UPDATE`;
+
+      const active = await tx.session.count({
+        where: { userId: input.userId, revokedAt: null, expiresAt: { gt: input.now } },
+      });
+      const excess = active + 1 - input.maxActiveSessions;
+
+      if (excess > 0) {
+        // Oldest first: the cap drops the sessions the user is least likely to use.
+        const oldest = await tx.session.findMany({
+          where: { userId: input.userId, revokedAt: null, expiresAt: { gt: input.now } },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          take: excess,
+          select: { id: true },
+        });
+        const ids = oldest.map((session) => session.id);
+
+        await tx.session.updateMany({
+          where: { id: { in: ids } },
+          data: { revokedAt: input.now, revokedReason: 'session_cap' },
+        });
+
+        await tx.refreshToken.updateMany({
+          where: { sessionId: { in: ids }, revokedAt: null },
+          data: { revokedAt: input.now },
+        });
+      }
+
       const device = await tx.device.upsert({
         where: { deviceKeyHash: input.deviceKeyHash },
         create: {
@@ -113,6 +148,7 @@ export class PrismaSessionRepository implements SessionRepository {
         data: {
           userId: input.userId,
           deviceId: device.id,
+          deviceBound: input.deviceBound,
           expiresAt: input.sessionExpiresAt,
         },
       });
@@ -129,6 +165,7 @@ export class PrismaSessionRepository implements SessionRepository {
         userId: input.userId,
         sessionId: session.id,
         deviceKeyHash: input.deviceKeyHash,
+        deviceBound: input.deviceBound,
         sessionExpiresAt: input.sessionExpiresAt,
         refreshExpiresAt: input.refreshExpiresAt,
       };
@@ -155,7 +192,7 @@ export class PrismaSessionRepository implements SessionRepository {
            AND s.revoked_at IS NULL
            AND s.expires_at > ${input.now}
         RETURNING rt.id, s.id AS session_id, s.user_id, u.status AS user_status,
-                  d.device_key_hash, s.expires_at AS session_expires_at
+                  d.device_key_hash, s.device_bound, s.expires_at AS session_expires_at
       `;
 
       const consumed = rows[0];
@@ -196,6 +233,7 @@ export class PrismaSessionRepository implements SessionRepository {
         userId: consumed.user_id,
         sessionId: consumed.session_id,
         deviceKeyHash: consumed.device_key_hash,
+        deviceBound: consumed.device_bound,
         userStatus: consumed.user_status === 'BLOCKED' ? 'BLOCKED' : 'ACTIVE',
         sessionExpiresAt,
         refreshExpiresAt,
@@ -208,6 +246,52 @@ export class PrismaSessionRepository implements SessionRepository {
       where: { id: sessionId, revokedAt: null },
       data: { revokedAt: now, revokedReason: reason },
     });
+  }
+
+  async revokeUserSession(
+    sessionId: string,
+    userId: string,
+    reason: string,
+    now: Date,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const revoked = await tx.session.updateMany({
+        where: { id: sessionId, userId, revokedAt: null },
+        data: { revokedAt: now, revokedReason: reason },
+      });
+
+      // Unknown, foreign and already revoked sessions all update zero rows.
+      if (revoked.count === 0) return false;
+
+      await tx.refreshToken.updateMany({
+        where: { sessionId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+
+      return true;
+    });
+  }
+
+  async listActiveSessions(userId: string, now: Date): Promise<SessionSummaryRecord[]> {
+    const rows = await this.prisma.session.findMany({
+      where: { userId, revokedAt: null, expiresAt: { gt: now } },
+      orderBy: [{ lastUsedAt: 'desc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        createdAt: true,
+        lastUsedAt: true,
+        expiresAt: true,
+        device: { select: { label: true } },
+      },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      deviceLabel: row.device.label,
+      createdAt: row.createdAt,
+      lastUsedAt: row.lastUsedAt,
+      expiresAt: row.expiresAt,
+    }));
   }
 
   async revokeAllUserSessions(userId: string, reason: string, now: Date): Promise<void> {

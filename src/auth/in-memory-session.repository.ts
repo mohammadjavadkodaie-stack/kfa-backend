@@ -7,6 +7,7 @@ import type {
   RotateRefreshTokenInput,
   RotateRefreshTokenResult,
   SessionRepository,
+  SessionSummaryRecord,
 } from './session.repository';
 
 /**
@@ -28,10 +29,13 @@ interface FakeSession {
   readonly id: string;
   readonly userId: string;
   readonly deviceKeyHash: string;
+  readonly deviceBound: boolean;
+  readonly deviceLabel: string | null;
+  readonly createdAt: Date;
   readonly expiresAt: Date;
   revokedAt: Date | null;
   revokedReason: string | null;
-  lastUsedAt: Date | null;
+  lastUsedAt: Date;
 }
 
 interface FakeRefreshToken {
@@ -79,7 +83,10 @@ export class InMemorySessionRepository implements SessionRepository {
     const session = this.insertSession({
       userId: input.userId,
       deviceKeyHash: input.deviceKeyHash,
+      deviceBound: input.deviceBound,
+      deviceLabel: input.deviceLabel,
       sessionExpiresAt: input.sessionExpiresAt,
+      now: input.now,
     });
 
     this.insertRefreshToken(input.refreshTokenHash, session.id, input.refreshExpiresAt);
@@ -88,6 +95,7 @@ export class InMemorySessionRepository implements SessionRepository {
       userId: input.userId,
       sessionId: session.id,
       deviceKeyHash: input.deviceKeyHash,
+      deviceBound: input.deviceBound,
       sessionExpiresAt: input.sessionExpiresAt,
       refreshExpiresAt: input.refreshExpiresAt,
     };
@@ -100,10 +108,16 @@ export class InMemorySessionRepository implements SessionRepository {
       throw error;
     }
 
+    // Same transaction as the insert, so the cap can never be overshot.
+    await this.enforceSessionCap(input.userId, input.maxActiveSessions, input.now);
+
     const session = this.insertSession({
       userId: input.userId,
       deviceKeyHash: input.deviceKeyHash,
+      deviceBound: input.deviceBound,
+      deviceLabel: input.deviceLabel,
       sessionExpiresAt: input.sessionExpiresAt,
+      now: input.now,
     });
 
     this.insertRefreshToken(input.refreshTokenHash, session.id, input.refreshExpiresAt);
@@ -112,6 +126,7 @@ export class InMemorySessionRepository implements SessionRepository {
       userId: input.userId,
       sessionId: session.id,
       deviceKeyHash: input.deviceKeyHash,
+      deviceBound: input.deviceBound,
       sessionExpiresAt: input.sessionExpiresAt,
       refreshExpiresAt: input.refreshExpiresAt,
     };
@@ -150,6 +165,7 @@ export class InMemorySessionRepository implements SessionRepository {
       userId: session.userId,
       sessionId: session.id,
       deviceKeyHash: session.deviceKeyHash,
+      deviceBound: session.deviceBound,
       userStatus: this.users.get(session.userId)?.status ?? 'BLOCKED',
       sessionExpiresAt: session.expiresAt,
       refreshExpiresAt,
@@ -167,6 +183,24 @@ export class InMemorySessionRepository implements SessionRepository {
     for (const token of this.refreshTokens.values()) {
       if (token.sessionId === sessionId) token.revokedAt = now;
     }
+  }
+
+  async revokeUserSession(
+    sessionId: string,
+    userId: string,
+    reason: string,
+    now: Date,
+  ): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+
+    // Unknown, already revoked and foreign sessions answer the same way.
+    if (session === undefined || session.userId !== userId || session.revokedAt !== null) {
+      return false;
+    }
+
+    await this.revokeSession(sessionId, reason, now);
+
+    return true;
   }
 
   async revokeAllUserSessions(userId: string, reason: string, now: Date): Promise<void> {
@@ -201,6 +235,24 @@ export class InMemorySessionRepository implements SessionRepository {
     );
   }
 
+  async listActiveSessions(userId: string, now: Date): Promise<SessionSummaryRecord[]> {
+    return [...this.sessions.values()]
+      .filter(
+        (session) =>
+          session.userId === userId &&
+          session.revokedAt === null &&
+          session.expiresAt.getTime() > now.getTime(),
+      )
+      .sort((a, b) => b.lastUsedAt.getTime() - a.lastUsedAt.getTime())
+      .map((session) => ({
+        id: session.id,
+        deviceLabel: session.deviceLabel,
+        createdAt: session.createdAt,
+        lastUsedAt: session.lastUsedAt,
+        expiresAt: session.expiresAt,
+      }));
+  }
+
   /** Test helper: seeds a user without creating a session. */
   seedUser(user: { id?: string; phone: string; username: string; status?: 'ACTIVE' | 'BLOCKED' }): {
     id: string;
@@ -220,21 +272,48 @@ export class InMemorySessionRepository implements SessionRepository {
   private insertSession(input: {
     userId: string;
     deviceKeyHash: string;
+    deviceBound: boolean;
+    deviceLabel: string | null;
     sessionExpiresAt: Date;
+    now: Date;
   }): FakeSession {
     const session: FakeSession = {
       id: randomUUID(),
       userId: input.userId,
       deviceKeyHash: input.deviceKeyHash,
+      deviceBound: input.deviceBound,
+      deviceLabel: input.deviceLabel,
+      createdAt: input.now,
       expiresAt: input.sessionExpiresAt,
       revokedAt: null,
       revokedReason: null,
-      lastUsedAt: null,
+      lastUsedAt: input.now,
     };
 
     this.sessions.set(session.id, session);
 
     return session;
+  }
+
+  /** Oldest first, so the cap drops the sessions the user is least likely to use. */
+  private async enforceSessionCap(
+    userId: string,
+    maxActiveSessions: number,
+    now: Date,
+  ): Promise<void> {
+    const active = [...this.sessions.values()]
+      .filter(
+        (session) =>
+          session.userId === userId &&
+          session.revokedAt === null &&
+          session.expiresAt.getTime() > now.getTime(),
+      )
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    const excess = active.length + 1 - maxActiveSessions;
+
+    for (const session of active.slice(0, Math.max(0, excess))) {
+      await this.revokeSession(session.id, 'session_cap', now);
+    }
   }
 
   private insertRefreshToken(tokenHash: string, sessionId: string, expiresAt: Date): void {

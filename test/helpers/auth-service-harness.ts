@@ -149,6 +149,7 @@ export interface HarnessEnv {
   readonly accessTokenTtlSeconds?: number;
   readonly refreshTtlDays?: number;
   readonly sessionAbsoluteDays?: number;
+  readonly sessionsMaxPerUser?: number;
 }
 
 export function createHarness(env: HarnessEnv = {}) {
@@ -164,6 +165,7 @@ export function createHarness(env: HarnessEnv = {}) {
       ACCESS_TOKEN_TTL_SECONDS: env.accessTokenTtlSeconds ?? 600,
       REFRESH_TTL_DAYS: env.refreshTtlDays ?? 14,
       SESSION_ABSOLUTE_DAYS: env.sessionAbsoluteDays ?? 30,
+      SESSIONS_MAX_PER_USER: env.sessionsMaxPerUser ?? 10,
     },
     sessions,
     proof as unknown as ProofTokenService,

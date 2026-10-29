@@ -111,14 +111,44 @@ describe('AuthService.refresh', () => {
     expect(auditedActions(harness.audit)).toContain('auth.refresh.device_mismatch');
   });
 
-  it('accepts a cookie without a device key', async () => {
-    const { harness, refreshToken } = await registered();
+  it('rejects a refresh without the device key the session was bound to', async () => {
+    const { harness, refreshToken, sessionId } = await registered();
 
+    await expect(
+      harness.service.refresh(cookieContext(refreshToken, { deviceKey: null })),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    // A dropped header must not turn the binding into something to opt out of,
+    // so the session is revoked exactly like a mismatched key.
+    expect(harness.sessions.revokedSessions).toEqual([{ sessionId, reason: 'device_mismatch' }]);
+    expect(auditedActions(harness.audit)).toContain('auth.refresh.device_mismatch');
+  });
+
+  it('accepts a cookie without a device key when the session was never bound', async () => {
+    const harness = createHarness();
     const credentials = issued(
-      await harness.service.refresh(cookieContext(refreshToken, { deviceKey: null })),
+      await harness.service.register(REGISTER_BODY, contextWith({ deviceKey: null })),
     );
 
-    expect(credentials.refreshToken).not.toBe(refreshToken);
+    const rotated = issued(await harness.service.refresh(cookieContext(credentials.refreshToken)));
+
+    expect(rotated.refreshToken).not.toBe(credentials.refreshToken);
+    expect(harness.sessions.revokedSessions).toHaveLength(0);
+  });
+
+  it('rotates an unbound session even when the client starts sending a key', async () => {
+    const harness = createHarness();
+    const credentials = issued(
+      await harness.service.register(REGISTER_BODY, contextWith({ deviceKey: null })),
+    );
+
+    const rotated = issued(
+      await harness.service.refresh(cookieContext(credentials.refreshToken, { deviceKey: 'x' })),
+    );
+
+    expect(rotated.sessionId).toBe(credentials.sessionId);
+    // Nothing to compare against, so the session stays bound to its cookie only.
+    expect(harness.sessions.sessions.get(credentials.sessionId)?.deviceBound).toBe(false);
   });
 
   it('refuses a blocked account and revokes the session', async () => {
