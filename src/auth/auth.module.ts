@@ -20,12 +20,14 @@ import {
   type ProofNonceStore,
   type ProofRedisClient,
 } from './otp/proof-token';
+import { PhoneChangeController } from './phone-change/phone-change.controller';
+import { PhoneChangeService } from './phone-change/phone-change.service';
 import { PrismaSessionRepository } from './prisma-session.repository';
 import { SESSION_REPOSITORY } from './session.repository';
 
 @Module({
   imports: [RateLimitModule, AuditModule, PrismaModule],
-  controllers: [OtpController, AuthController],
+  controllers: [OtpController, AuthController, PhoneChangeController],
   providers: [
     {
       provide: OTP_PROVIDER,
@@ -61,6 +63,7 @@ import { SESSION_REPOSITORY } from './session.repository';
     ProofTokenService,
     OtpService,
     AuthService,
+    PhoneChangeService,
     AuthGuard,
     OriginCheckGuard,
   ],

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type {
   AccountRecord,
+  ChangePhoneInput,
+  ChangePhoneResult,
   CreateAccountInput,
   CreateSessionInput,
   IssuedSessionRecord,
@@ -20,7 +22,7 @@ import type {
 
 interface FakeUser {
   readonly id: string;
-  readonly phone: string;
+  phone: string;
   readonly username: string;
   status: 'ACTIVE' | 'BLOCKED';
 }
@@ -65,6 +67,10 @@ export class InMemorySessionRepository implements SessionRepository {
     const user = [...this.users.values()].find((candidate) => candidate.phone === phoneE164);
 
     return user === undefined ? null : { id: user.id, status: user.status };
+  }
+
+  async findPhoneByUserId(userId: string): Promise<string | null> {
+    return this.users.get(userId)?.phone ?? null;
   }
 
   async createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null> {
@@ -207,6 +213,34 @@ export class InMemorySessionRepository implements SessionRepository {
     for (const session of [...this.sessions.values()]) {
       if (session.userId === userId) await this.revokeSession(session.id, reason, now);
     }
+  }
+
+  async changePhone(input: ChangePhoneInput): Promise<ChangePhoneResult> {
+    const user = this.users.get(input.userId);
+
+    if (user === undefined) return { outcome: 'not_found' };
+
+    // The same rule as the unique index, with no await between check and write.
+    const taken = [...this.users.values()].some(
+      (candidate) => candidate.id !== user.id && candidate.phone === input.phone,
+    );
+
+    if (taken) return { outcome: 'conflict' };
+
+    user.phone = input.phone;
+
+    const others = [...this.sessions.values()].filter(
+      (session) =>
+        session.userId === user.id &&
+        session.revokedAt === null &&
+        session.id !== input.keepSessionId,
+    );
+
+    for (const session of others) {
+      await this.revokeSession(session.id, 'phone_changed', input.now);
+    }
+
+    return { outcome: 'changed', revokedSessions: others.length };
   }
 
   async revokeSessionByRefreshTokenHash(

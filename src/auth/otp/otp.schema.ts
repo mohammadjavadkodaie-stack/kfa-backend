@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { PROOF_PURPOSES } from './proof-token';
 
 /**
  * Request bodies for the OTP endpoints.
@@ -13,8 +12,15 @@ export const OTP_CAPTCHA_TOKEN_MAX_LENGTH = 2048;
 
 const phoneSchema = z.string().max(OTP_PHONE_MAX_LENGTH);
 
+/**
+ * The anonymous endpoints may only start or finish a sign-up or sign-in. The
+ * phone-change purposes exist too, but only the authenticated flow mints them,
+ * so they are not part of this enum: a body asking for one is malformed.
+ */
+export const PUBLIC_OTP_PURPOSES = ['register', 'login'] as const;
+
 /** The action the proof will be spendable on; anything else is a malformed body. */
-const purposeSchema = z.enum(PROOF_PURPOSES);
+const purposeSchema = z.enum(PUBLIC_OTP_PURPOSES);
 
 export const otpStartSchema = z.strictObject({
   phone: phoneSchema,

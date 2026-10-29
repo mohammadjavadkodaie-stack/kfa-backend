@@ -87,6 +87,12 @@ export class FakeRateLimit {
     };
   }
 
+  /** Forgets every window, for specs that need a second budget from scratch. */
+  reset(): void {
+    this.counters.clear();
+    this.calls.length = 0;
+  }
+
   seed(scope: string, identifier: string, hits: number, windowSeconds: number): void {
     this.counters.set(`${scope}:${identifier}`, {
       hits,

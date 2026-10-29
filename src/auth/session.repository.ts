@@ -69,6 +69,22 @@ export interface RotateRefreshTokenInput {
   readonly refreshTtlMs: number;
 }
 
+export interface ChangePhoneInput {
+  readonly userId: string;
+  /** Already proved by a `phone_change_new` proof; never echoed from a body. */
+  readonly phone: string;
+  /** Session that asked for the change: the only one left active afterwards. */
+  readonly keepSessionId: string | null;
+  readonly now: Date;
+}
+
+export type ChangePhoneResult =
+  | { readonly outcome: 'changed'; readonly revokedSessions: number }
+  /** Somebody else owns the number; the unique index decides, not a racy read. */
+  | { readonly outcome: 'conflict' }
+  /** The account vanished between the proofs and the update. */
+  | { readonly outcome: 'not_found' };
+
 export type RotateRefreshTokenResult =
   | {
       readonly outcome: 'rotated';
@@ -91,6 +107,8 @@ export interface SessionRepository {
   /** Case-insensitive, so `Ivan` cannot shadow `ivan`. */
   isUsernameTaken(username: string): Promise<boolean>;
   findUserByPhone(phoneE164: string): Promise<AccountRecord | null>;
+  /** Current phone of one account, or null when the user is gone. */
+  findPhoneByUserId(userId: string): Promise<string | null>;
   /** User, device, session and first refresh token in one transaction. */
   createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null>;
   createSession(input: CreateSessionInput): Promise<IssuedSessionRecord>;
@@ -103,6 +121,12 @@ export interface SessionRepository {
    */
   revokeUserSession(sessionId: string, userId: string, reason: string, now: Date): Promise<boolean>;
   revokeAllUserSessions(userId: string, reason: string, now: Date): Promise<void>;
+  /**
+   * Moves the account to a new number and revokes every other session of that
+   * user in one transaction. `conflict` and `not_found` are both reported as the
+   * same generic rejection by the caller.
+   */
+  changePhone(input: ChangePhoneInput): Promise<ChangePhoneResult>;
   /** Active sessions of one user, most recently used first. */
   listActiveSessions(userId: string, now: Date): Promise<SessionSummaryRecord[]>;
   /** Returns the owning user id, or null when the token is unknown. */

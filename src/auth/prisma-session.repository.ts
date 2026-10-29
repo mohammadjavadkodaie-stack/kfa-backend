@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import type {
   AccountRecord,
+  ChangePhoneInput,
+  ChangePhoneResult,
   CreateAccountInput,
   CreateSessionInput,
   IssuedSessionRecord,
@@ -45,6 +47,15 @@ export class PrismaSessionRepository implements SessionRepository {
       where: { phone: phoneE164 },
       select: { id: true, status: true },
     });
+  }
+
+  async findPhoneByUserId(userId: string): Promise<string | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { phone: true },
+    });
+
+    return user === null ? null : user.phone;
   }
 
   /** Null means "phone or username already exists"; the caller stays generic. */
@@ -306,6 +317,44 @@ export class PrismaSessionRepository implements SessionRepository {
         data: { revokedAt: now },
       });
     });
+  }
+
+  /**
+   * Writes the new number first, so a taken number is refused by the unique
+   * index instead of a read that a concurrent registration would invalidate.
+   * The session revocations share the transaction: a failure anywhere leaves
+   * the account on its old number.
+   */
+  async changePhone(input: ChangePhoneInput): Promise<ChangePhoneResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.user.updateMany({
+          where: { id: input.userId },
+          data: { phone: input.phone, phoneVerifiedAt: input.now },
+        });
+
+        if (updated.count === 0) return { outcome: 'not_found' };
+
+        // Every session but the one that asked, plus their refresh tokens: a
+        // stolen session must not survive the change meant to lock it out.
+        const others = input.keepSessionId === null ? {} : { id: { not: input.keepSessionId } };
+
+        const sessions = await tx.session.updateMany({
+          where: { userId: input.userId, ...others, revokedAt: null },
+          data: { revokedAt: input.now, revokedReason: 'phone_changed' },
+        });
+
+        await tx.refreshToken.updateMany({
+          where: { revokedAt: null, session: { userId: input.userId, ...others } },
+          data: { revokedAt: input.now },
+        });
+
+        return { outcome: 'changed', revokedSessions: sessions.count };
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) return { outcome: 'conflict' };
+      throw error;
+    }
   }
 
   async revokeSessionByRefreshTokenHash(

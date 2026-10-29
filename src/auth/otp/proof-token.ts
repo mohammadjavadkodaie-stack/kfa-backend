@@ -39,7 +39,7 @@ export function isProofPurpose(value: unknown): value is ProofPurpose {
 }
 
 /** Defensive bound: a valid token is ~200 characters. */
-const MAX_TOKEN_LENGTH = 2048;
+export const PROOF_TOKEN_MAX_LENGTH = 2048;
 const SIGNATURE_LENGTH = 32;
 const PHONE_HASH_PATTERN = /^[0-9a-f]{64}$/;
 const JTI_PATTERN = /^[0-9a-f-]{36}$/;
@@ -196,7 +196,7 @@ export class ProofTokenService {
       throw unavailable();
     }
 
-    if (typeof token !== 'string' || token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
+    if (typeof token !== 'string' || token.length === 0 || token.length > PROOF_TOKEN_MAX_LENGTH) {
       return null;
     }
 

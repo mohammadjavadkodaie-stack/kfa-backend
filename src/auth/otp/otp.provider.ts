@@ -5,10 +5,22 @@ export interface OtpContext {
   readonly purpose: ProofPurpose;
 }
 
+/**
+ * A plain message without a code. The only one so far warns the previous phone
+ * that the account moved, and it carries the new number already masked so no
+ * adapter can leak it into a log or a message by accident.
+ */
+export interface OtpNotice {
+  readonly kind: 'phone_changed';
+  readonly maskedPhone: string;
+}
+
 /** A provider may verify remotely, or return a reference to a locally stored hash challenge. */
 export interface OtpProvider {
   start(phoneE164: string, context: OtpContext): Promise<{ challengeRef: string | null }>;
   check(phoneE164: string, code: string, challengeRef: string | null): Promise<boolean>;
+  /** Best effort by contract: the caller decides what a failure means. */
+  notify(phoneE164: string, notice: OtpNotice): Promise<void>;
 }
 
 export const OTP_PROVIDER = Symbol('OTP_PROVIDER');
@@ -21,6 +33,9 @@ export class FakeOtpProvider implements OtpProvider {
   async check(_phoneE164: string, code: string, _challengeRef: string | null): Promise<boolean> {
     return code === '123456';
   }
+
+  /** There is no transport in development, so the notice stops here. */
+  async notify(_phoneE164: string, _notice: OtpNotice): Promise<void> {}
 }
 
 /**

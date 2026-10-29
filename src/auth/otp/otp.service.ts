@@ -13,7 +13,7 @@ import { RateLimitService } from '../../rate-limit/rate-limit.service';
 import { CAPTCHA_PROVIDER, type CaptchaProvider } from '../captcha';
 import { maskPhone, normalizePhone } from '../phone';
 import { parseBody, otpStartSchema, otpVerifySchema } from './otp.schema';
-import { ProofTokenService } from './proof-token';
+import { ProofTokenService, type ProofPurpose } from './proof-token';
 import { OTP_PROVIDER, type OtpProvider } from './otp.provider';
 
 /**
@@ -185,6 +185,69 @@ export class OtpService {
     this.logger.info({ requestId: context.requestId, phone: maskPhone(phoneE164) }, 'otp verified');
 
     return { outcome: 'verified', proof };
+  }
+
+  /**
+   * Sends a code for a purpose the server chose itself.
+   *
+   * Only the authenticated phone-change flow calls this. The public endpoints
+   * take their purpose from a request body and narrow it to `PUBLIC_OTP_PURPOSES`,
+   * so no caller can mint a phone-change proof from outside. The deployment-wide
+   * send cap applies here too; the caller owns its own per-user budgets.
+   */
+  async sendPurposeCode(
+    phoneE164: string,
+    purpose: ProofPurpose,
+    context: OtpRequestContext,
+  ): Promise<OtpStartResult> {
+    const globalDecision = await this.rateLimit.consume({
+      scope: 'otp-start-global',
+      identifier: GLOBAL_SEND_TRACKER,
+      limit: this.globalSendsPerHour,
+      windowSeconds: 3600,
+    });
+
+    if (!globalDecision.allowed) {
+      return { outcome: 'throttled', retryAfterSeconds: globalDecision.retryAfterSeconds };
+    }
+
+    try {
+      await this.otpProvider.start(phoneE164, { purpose });
+    } catch {
+      this.logger.warn(
+        { requestId: context.requestId, phone: maskPhone(phoneE164) },
+        'otp send failed',
+      );
+      throw new ServiceUnavailableException();
+    }
+
+    this.logger.info({ requestId: context.requestId, phone: maskPhone(phoneE164) }, 'otp sent');
+
+    return { outcome: 'accepted' };
+  }
+
+  /**
+   * Checks a code against a purpose the server chose and mints the proof for
+   * it. Null means "wrong code": the attempt budgets belong to the caller, so
+   * a mismatch here carries no lockout of its own.
+   */
+  async verifyPurposeCode(
+    phoneE164: string,
+    code: string,
+    purpose: ProofPurpose,
+    context: OtpRequestContext,
+  ): Promise<string | null> {
+    if (!(await this.checkCode(phoneE164, code))) {
+      return null;
+    }
+
+    const proof = await this.proof.issue(phoneE164, purpose);
+
+    await this.recordVerified(phoneE164, context);
+
+    this.logger.info({ requestId: context.requestId, phone: maskPhone(phoneE164) }, 'otp verified');
+
+    return proof;
   }
 
   /** Phone caps, device cap and the resend cooldown: a hit means "pretend we sent it". */
