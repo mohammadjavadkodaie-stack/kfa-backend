@@ -241,4 +241,33 @@ describe('Access policy and authz.denied (e2e)', () => {
     // A refused USER actor is not audited: the roles guard owns that case.
     expect(denials()).toHaveLength(2);
   });
+
+  it('refuses an ADMIN deleting a regular account, and records only the attempt', async () => {
+    const actor = await signUp(Role.ADMIN);
+    const victim = await signUp(Role.USER);
+
+    const response = await authorize(actor.token, {
+      targetId: victim.userId,
+      action: AccessAction.USER_DELETE,
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ ...FORBIDDEN, requestId: expect.any(String) });
+    expect(JSON.stringify(response.body)).not.toContain('admin_delete_forbidden');
+
+    const recorded = denials();
+
+    expect(recorded).toHaveLength(3);
+    expect(recorded[2]?.metadata).toEqual({
+      actorRole: 'ADMIN',
+      action: 'user.delete',
+      targetId: victim.userId,
+      targetRole: 'USER',
+    });
+
+    // The refused action erased nothing: the account is still in the store.
+    const survivor = [...sessions.users.values()].find((user) => user.id === victim.userId);
+
+    expect(survivor?.username).toBeDefined();
+  });
 });

@@ -135,7 +135,8 @@ export interface SessionRepository {
   revokeSession(sessionId: string, reason: string, now: Date): Promise<void>;
   /**
    * Revokes one session that belongs to `userId`. False covers unknown,
-   * already revoked and foreign sessions alike, so the caller stays generic.
+   * already revoked and foreign sessions alike, so the caller stays generic:
+   * a foreign or unknown id must answer exactly like not found.
    */
   revokeUserSession(sessionId: string, userId: string, reason: string, now: Date): Promise<boolean>;
   revokeAllUserSessions(userId: string, reason: string, now: Date): Promise<void>;

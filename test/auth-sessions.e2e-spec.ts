@@ -231,6 +231,22 @@ describe('Session management over HTTP (e2e)', () => {
       // The list is a device manager, not a credential dump.
       expect(response.text).not.toContain(refreshTokenOf(second));
     });
+
+    it('lists nothing that belongs to another account', async () => {
+      const mine = await registerOk();
+      const other = await registerOk('other_user', OTHER_PHONE);
+
+      await loginOk(OTHER_PHONE);
+
+      const mineIds = (await listOk(accessTokenOf(mine))).map((entry) => entry.id);
+      const otherIds = (await listOk(accessTokenOf(other))).map((entry) => entry.id);
+
+      // One device for the caller, two for the stranger, and both accounts are
+      // in the store at the same time, so a leaked row would show up here.
+      expect(mineIds).toHaveLength(1);
+      expect(otherIds).toHaveLength(2);
+      expect(mineIds.filter((id) => otherIds.includes(id))).toEqual([]);
+    });
   });
 
   describe('DELETE /auth/sessions/:sessionId', () => {
@@ -267,6 +283,9 @@ describe('Session management over HTTP (e2e)', () => {
 
       expect(response.status).toBe(204);
       expect(clearedCookie(response)).toContain(`${REFRESH_COOKIE_NAME}=;`);
+      // The control case for every refused id: the route revokes a real,
+      // owned session.
+      expect(sessions.revokedSessions).toEqual([{ sessionId: own?.id, reason: 'user_revoked' }]);
 
       // The access token dies with the session it was issued for.
       await server().get('/auth/sessions').set(bearer(token)).expect(401);
@@ -282,13 +301,32 @@ describe('Session management over HTTP (e2e)', () => {
       const malformed = await server().delete('/auth/sessions/not-a-uuid').set(bearer(token));
       const foreign = await server().delete(`/auth/sessions/${foreignId}`).set(bearer(token));
 
-      for (const response of [unknown, malformed, foreign]) {
+      const attempts = [unknown, malformed, foreign];
+
+      for (const response of attempts) {
         expect(response.status).toBe(404);
         expect(response.body).toEqual(GENERIC_NOT_FOUND);
       }
 
-      // The stranger's session survived every attempt.
-      expect(await listOk(accessTokenOf(other))).toHaveLength(1);
+      // Ignoring the per-request id, a foreign id is indistinguishable from a
+      // random one and from a value that is not an id at all.
+      const bodies = attempts.map((response) => {
+        const body: Record<string, unknown> = { ...(response.body as Record<string, unknown>) };
+
+        delete body.requestId;
+
+        return body;
+      });
+
+      expect(bodies).toHaveLength(3);
+      expect(bodies[1]).toEqual(bodies[0]);
+      expect(bodies[2]).toEqual(bodies[0]);
+
+      // The stranger's session survived every attempt: the owner still
+      // authenticates with its token and the id is still active.
+      const strangerSessions = await listOk(accessTokenOf(other));
+
+      expect(strangerSessions.map((entry) => entry.id)).toEqual([foreignId]);
       expect(sessions.revokedSessions).toHaveLength(0);
     });
   });

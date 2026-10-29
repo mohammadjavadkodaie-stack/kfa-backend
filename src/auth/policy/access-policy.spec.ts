@@ -119,6 +119,58 @@ describe('decide: the full role/action matrix', () => {
   }
 });
 
+/**
+ * `user.delete` in full, with the expected decision written out per pair.
+ * Deleting an account is owner work only: an admin blocks and unblocks, so it
+ * never erases anything. The owner deletes admins as well as regular accounts,
+ * but never the owner account and never itself.
+ */
+const DELETE_RULES: readonly (readonly [Role, Role, string])[] = [
+  // An admin is refused for every target, including a peer admin.
+  [Role.ADMIN, Role.USER, 'admin_delete_forbidden'],
+  [Role.ADMIN, Role.ATHLETE, 'admin_delete_forbidden'],
+  [Role.ADMIN, Role.ADMIN, 'admin_delete_forbidden'],
+  // The owner account is outside every action, so it is refused earlier.
+  [Role.ADMIN, Role.OWNER, 'target_is_owner'],
+  // The owner deletes regular accounts, athletes and admins.
+  [Role.OWNER, Role.USER, 'allowed'],
+  [Role.OWNER, Role.ATHLETE, 'allowed'],
+  [Role.OWNER, Role.ADMIN, 'allowed'],
+  [Role.OWNER, Role.OWNER, 'target_is_owner'],
+  // A USER and an ATHLETE are refused before the action is looked at.
+  [Role.USER, Role.USER, 'actor_not_permitted'],
+  [Role.ATHLETE, Role.USER, 'actor_not_permitted'],
+];
+
+describe('decide: user.delete is owner-only', () => {
+  for (const [actorRole, targetRole, expected] of DELETE_RULES) {
+    const label = expected === 'allowed' ? 'allows' : 'refuses';
+
+    it(`${label} ${actorRole} deleting ${targetRole}`, () => {
+      const decision = decide(
+        actorOf(actorRole),
+        request(AccessAction.USER_DELETE),
+        targetOf(targetRole),
+      );
+
+      if (expected === 'allowed') {
+        expect(decision).toEqual({ allowed: true });
+      } else {
+        expect(decision).toEqual({ allowed: false, reason: expected });
+      }
+    });
+  }
+
+  it('refuses the owner deleting its own account, as it does for every action', () => {
+    const self: PolicySubject = { id: ACTOR_ID, role: Role.OWNER };
+
+    expect(decide(self, request(AccessAction.USER_DELETE), self)).toEqual({
+      allowed: false,
+      reason: 'self_action',
+    });
+  });
+});
+
 /** [actor role, target role, requested role, allowed] - written out by hand. */
 const ROLE_CHANGES: readonly (readonly [Role, Role, Role, boolean])[] = [
   // A USER actor never renames a role.

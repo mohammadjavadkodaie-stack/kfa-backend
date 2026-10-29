@@ -119,8 +119,9 @@ export function decide(
       return deny('owner_grant_forbidden');
     case AccessAction.USER_BLOCK:
     case AccessAction.USER_UNBLOCK:
+      return decideModeration(actorRole, targetRole);
     case AccessAction.USER_DELETE:
-      return decideAccountAction(actorRole, action, targetRole);
+      return decideDelete(actorRole);
     case AccessAction.USER_CHANGE_ROLE:
       return decideRoleChange(actorRole, request.role, targetRole);
     case AccessAction.ADMIN_GRANT:
@@ -131,23 +132,27 @@ export function decide(
 }
 
 /**
- * Block, unblock and delete. The owner target is already refused above, so the
- * target here is a regular account, an athlete or an admin.
+ * Block and unblock. The owner target is already refused above, so the target
+ * here is a regular account, an athlete or an admin.
  */
-function decideAccountAction(
-  actorRole: Role,
-  action: AccessAction,
-  targetRole: Role,
-): PolicyDecision {
+function decideModeration(actorRole: Role, targetRole: Role): PolicyDecision {
   if (actorRole === Role.OWNER) return allow();
 
   // An admin moderates ordinary accounts only. Refusing a peer admin is a
   // conservative choice: staff disputes are the owner's business.
-  if (action === AccessAction.USER_DELETE) return deny('admin_delete_forbidden');
-
   return targetRole === Role.USER || targetRole === Role.ATHLETE
     ? allow()
     : deny('admin_target_not_permitted');
+}
+
+/**
+ * Deleting an account is owner-only, whatever the target holds: the roadmap
+ * gives an admin block and unblock and nothing else, so an admin never erases an
+ * account. The owner account and the actor themselves were refused above, so the
+ * target here is a regular account, an athlete or an admin.
+ */
+function decideDelete(actorRole: Role): PolicyDecision {
+  return actorRole === Role.OWNER ? allow() : deny('admin_delete_forbidden');
 }
 
 function decideRoleChange(
