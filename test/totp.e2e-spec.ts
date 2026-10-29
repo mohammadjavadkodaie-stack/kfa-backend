@@ -5,6 +5,7 @@ import { InMemorySessionRepository } from '../src/auth/in-memory-session.reposit
 import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { Role } from '../src/auth/roles';
 import { InMemoryTotpRepository } from '../src/auth/totp/in-memory-totp.repository';
+import { STEPUP_WINDOW_MS } from '../src/auth/totp/step-up.guard';
 import { base32Decode, totpAt } from '../src/auth/totp/totp';
 import type {
   ConsumeRateLimitInput,
@@ -181,6 +182,20 @@ describe('TOTP endpoints (e2e)', () => {
    * service refuses any code that is not newer than the last accepted one.
    */
   const freshCode = (secret: Buffer): string => totpAt(secret, Date.now() + 30_000);
+
+  /**
+   * Enrolment itself stamps the session, so this pulls that stamp past the
+   * five-minute window: the state a sensitive action is refused in.
+   */
+  function expireStepUp(account: Account): Date {
+    const session = sessions.sessions.get(account.sessionId);
+
+    if (session === undefined) throw new Error('missing session');
+
+    session.stepupAt = new Date(Date.now() - STEPUP_WINDOW_MS);
+
+    return session.stepupAt;
+  }
 
   beforeAll(async () => {
     sessions = new InMemorySessionRepository();
@@ -359,6 +374,9 @@ describe('TOTP endpoints (e2e)', () => {
 
     await enrollAndConfirm(account);
 
+    // Enrolment stamped this session; a failed step-up must not move it.
+    const stamped = await sessions.getStepUpAt(account.sessionId, account.userId);
+
     // A caller cannot name another account: the user always comes from the token,
     // and an unexpected field makes the whole body unusable, not a new target.
     for (const body of [
@@ -380,7 +398,7 @@ describe('TOTP endpoints (e2e)', () => {
       expectNoStore(response);
     }
 
-    expect(await sessions.getStepUpAt(account.sessionId, account.userId)).toBeNull();
+    expect(await sessions.getStepUpAt(account.sessionId, account.userId)).toEqual(stamped);
 
     // The enrolment takes no input at all, and an unexpected field is malformed.
     const other = await staff();
@@ -392,6 +410,7 @@ describe('TOTP endpoints (e2e)', () => {
     const account = await staff();
     const enrolled = await enrollAndConfirm(account);
     const code = freshCode(enrolled.secret);
+    const expired = expireStepUp(account);
 
     // Before the step-up the sensitive route is closed, with a code the app can act on.
     const closed = await get('/test/sensitive', account.token);
@@ -403,7 +422,7 @@ describe('TOTP endpoints (e2e)', () => {
       requestId: expect.any(String),
       code: 'step_up_required',
     });
-    expect(await sessions.getStepUpAt(account.sessionId, account.userId)).toBeNull();
+    expect(await sessions.getStepUpAt(account.sessionId, account.userId)).toEqual(expired);
 
     const stepup = await post('/auth/totp/stepup', account.token, { code });
 
@@ -450,6 +469,7 @@ describe('TOTP endpoints (e2e)', () => {
   it('locks a user out after five wrong codes, without saying so', async () => {
     const account = await staff();
     const enrolled = await enrollAndConfirm(account);
+    const stamped = await sessions.getStepUpAt(account.sessionId, account.userId);
     const wrong = await post('/auth/totp/stepup', account.token, { code: '000000' });
 
     expect(wrong.status).toBe(401);
@@ -465,7 +485,7 @@ describe('TOTP endpoints (e2e)', () => {
 
     expect(locked.status).toBe(401);
     expect(locked.body).toEqual({ ...wrong.body, requestId: expect.any(String) });
-    expect(await sessions.getStepUpAt(account.sessionId, account.userId)).toBeNull();
+    expect(await sessions.getStepUpAt(account.sessionId, account.userId)).toEqual(stamped);
 
     // Lockout spends attempt budget, not recovery codes or the credential.
     expect((await get('/auth/totp/status', account.token)).body).toEqual({

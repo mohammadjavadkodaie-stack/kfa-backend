@@ -35,6 +35,7 @@ import {
   REFRESH_COOKIE_NAME,
   refreshCookieOptions,
 } from './token/refresh-token';
+import { AllowWithoutSecondFactor } from './totp/staff-gate.guard';
 
 /** What a client sees after register/login/refresh. The cookie is not echoed. */
 export interface SessionResponseBody {
@@ -194,6 +195,7 @@ export class AuthController {
 
   /** 204 even when there was nothing to revoke: the intent is fulfilled. */
   @Public()
+  @AllowWithoutSecondFactor()
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(
@@ -266,6 +268,7 @@ export class AuthController {
   }
 
   /** Revokes every session of the caller, including the one that asked. */
+  @AllowWithoutSecondFactor()
   @Post('logout-all')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logoutAll(

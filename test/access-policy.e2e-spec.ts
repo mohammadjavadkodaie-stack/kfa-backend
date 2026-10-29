@@ -120,6 +120,15 @@ describe('Access policy and authz.denied (e2e)', () => {
 
     sessions.setUserRole(stored.id, { role });
 
+    const session = [...sessions.sessions.values()].find((row) => row.userId === stored.id);
+
+    if (session === undefined) throw new Error(`session of ${username} was not stored`);
+
+    // Staff sessions sit behind the second-factor gate; these fixtures start past it.
+    if (role === Role.ADMIN || role === Role.OWNER) {
+      await sessions.markStepUp(session.id, stored.id);
+    }
+
     return { token: (response.body as { accessToken: string }).accessToken, userId: stored.id };
   }
 

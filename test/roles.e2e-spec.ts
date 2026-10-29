@@ -79,6 +79,8 @@ describe('Role-based route protection (e2e)', () => {
   const get = (path: string, token: string) =>
     server().get(path).set('Authorization', `Bearer ${token}`);
 
+  const isStaff = (role: Role | undefined): boolean => role === Role.ADMIN || role === Role.OWNER;
+
   /**
    * Registers a fresh account through the real endpoint and returns its token
    * plus the id of the stored user, so a test can change the stored access
@@ -86,7 +88,7 @@ describe('Role-based route protection (e2e)', () => {
    */
   async function signUp(
     access: { role?: Role; identityVerifier?: boolean } = {},
-  ): Promise<{ token: string; userId: string }> {
+  ): Promise<{ token: string; userId: string; sessionId: string }> {
     sequence += 1;
     const username = `role_user_${sequence}`;
     const phone = `+1415555${String(2_000 + sequence).padStart(4, '0')}`;
@@ -103,7 +105,18 @@ describe('Role-based route protection (e2e)', () => {
 
     sessions.setUserRole(stored.id, access);
 
-    return { token: (response.body as { accessToken: string }).accessToken, userId: stored.id };
+    const session = [...sessions.sessions.values()].find((row) => row.userId === stored.id);
+
+    if (session === undefined) throw new Error(`session of ${username} was not stored`);
+
+    // A staff session has to sit past the second-factor gate to be tested here.
+    if (isStaff(access.role)) await sessions.markStepUp(session.id, stored.id);
+
+    return {
+      token: (response.body as { accessToken: string }).accessToken,
+      userId: stored.id,
+      sessionId: session.id,
+    };
   }
 
   beforeAll(async () => {
@@ -176,11 +189,13 @@ describe('Role-based route protection (e2e)', () => {
   });
 
   it('applies a promotion and a demotion on the next request with the old token', async () => {
-    const { token, userId } = await signUp({ role: Role.USER });
+    const { token, userId, sessionId } = await signUp({ role: Role.USER });
 
     await get('/test/admin', token).expect(403);
 
     sessions.setUserRole(userId, { role: Role.ADMIN });
+    // A promoted session still needs its second factor before anything is open.
+    await sessions.markStepUp(sessionId, userId);
     await get('/test/admin', token).expect(200);
     await get('/test/owner', token).expect(403);
 
@@ -209,8 +224,9 @@ describe('Role-based route protection (e2e)', () => {
   });
 
   it('never lets a forged claim hide a real role either', async () => {
-    const { token, userId } = await signUp({ role: Role.USER });
+    const { token, userId, sessionId } = await signUp({ role: Role.USER });
     sessions.setUserRole(userId, { role: Role.OWNER });
+    await sessions.markStepUp(sessionId, userId);
 
     const forged = withRoleClaim(token, Role.USER);
 

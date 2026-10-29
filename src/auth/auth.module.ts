@@ -27,6 +27,7 @@ import { PhoneChangeService } from './phone-change/phone-change.service';
 import { AccessPolicyService } from './policy/access-policy.service';
 import { PrismaSessionRepository } from './prisma-session.repository';
 import { SESSION_REPOSITORY } from './session.repository';
+import { StaffGateGuard } from './totp/staff-gate.guard';
 import { StepUpGuard } from './totp/step-up.guard';
 import { TotpController } from './totp/totp.controller';
 import { TotpModule } from './totp/totp.module';
@@ -73,6 +74,7 @@ import { TotpModule } from './totp/totp.module';
     AuthGuard,
     RolesGuard,
     StepUpGuard,
+    StaffGateGuard,
     OriginCheckGuard,
     AccessPolicyService,
   ],
@@ -85,6 +87,7 @@ import { TotpModule } from './totp/totp.module';
     AuthGuard,
     RolesGuard,
     StepUpGuard,
+    StaffGateGuard,
     AuthService,
     // The administrative modules must inject this rather than re-implement a
     // rule; it is the only place that decides and audits a staff action.

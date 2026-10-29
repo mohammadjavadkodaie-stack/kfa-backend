@@ -27,16 +27,23 @@ export interface ErrorResponseBody {
   readonly message: string;
   readonly requestId: string;
   /**
-   * Present only when the client has to act, today just `step_up_required`.
-   * Everything else stays generic, so failures remain indistinguishable.
+   * Present only when the client has to act, today `second_factor_required` and
+   * `step_up_required`. Everything else stays generic, so failures remain
+   * indistinguishable.
    */
   readonly code?: string;
 }
 
-/** The only code the envelope may carry; anything else is dropped. */
+/** The only codes the envelope may carry; anything else is dropped. */
 export const STEP_UP_REQUIRED_CODE = 'step_up_required';
 
-const PUBLIC_CODES: ReadonlySet<string> = new Set([STEP_UP_REQUIRED_CODE]);
+/** The staff session has never proved a second factor. */
+export const SECOND_FACTOR_REQUIRED_CODE = 'second_factor_required';
+
+const PUBLIC_CODES: ReadonlySet<string> = new Set([
+  STEP_UP_REQUIRED_CODE,
+  SECOND_FACTOR_REQUIRED_CODE,
+]);
 
 export function genericMessageFor(statusCode: number): string {
   return GENERIC_MESSAGES[statusCode] ?? 'Request failed';

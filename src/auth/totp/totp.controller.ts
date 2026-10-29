@@ -17,6 +17,7 @@ import type { AuthenticatedRequest, RequestPrincipal } from '../guards/auth.guar
 import { parseBody } from '../otp/otp.schema';
 import { Role } from '../roles';
 import { SESSION_REPOSITORY, type SessionRepository } from '../session.repository';
+import { AllowWithoutSecondFactor } from './staff-gate.guard';
 import { STEPUP_WINDOW_MS } from './step-up.guard';
 import { totpCodeSchema, totpEnrollSchema } from './totp.schema';
 import { TotpService, type TotpStatus } from './totp.service';
@@ -55,6 +56,7 @@ function requirePrincipal(request: AuthenticatedRequest): RequestPrincipal {
  */
 @Controller('auth/totp')
 @Roles(Role.ADMIN, Role.OWNER)
+@AllowWithoutSecondFactor()
 export class TotpController {
   constructor(
     private readonly totp: TotpService,
@@ -100,14 +102,18 @@ export class TotpController {
     @Body() body: unknown,
     @Req() request: AuthenticatedRequest,
   ): Promise<TotpConfirmResponse> {
-    const { userId } = requirePrincipal(request);
+    const principal = requirePrincipal(request);
     const input = parseBody(totpCodeSchema, body);
 
     if (input === null) throw new UnauthorizedException();
 
-    const result = await this.totp.confirmEnrollment(userId, input.code, Date.now());
+    const result = await this.totp.confirmEnrollment(principal.userId, input.code, Date.now());
 
     if (result.outcome !== 'confirmed') throw new UnauthorizedException();
+
+    // This session just proved possession, so enrolling must not lock it out.
+    // The credential is stored either way: a failed stamp still releases the codes.
+    await this.sessions.markStepUp(principal.sessionId, principal.userId);
 
     return { recoveryCodes: result.recoveryCodes };
   }
