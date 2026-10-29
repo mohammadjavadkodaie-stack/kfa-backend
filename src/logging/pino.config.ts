@@ -53,6 +53,7 @@ const SENSITIVE_CONFIG_PATHS = [
   'RATE_LIMIT_HMAC_KEY',
   'OTP_PROOF_SECRET',
   'ACCESS_TOKEN_SECRET',
+  'TOTP_ENC_KEY',
 ] as const;
 
 export function buildRedactPaths(): string[] {

@@ -20,6 +20,11 @@ export const TEST_ENV = {
   OTP_PROOF_SECRET: 'test-only-otp-proof-secret-0123456789abcdef',
   /** Fake access-token secret; production-only validation is covered by env.spec. */
   ACCESS_TOKEN_SECRET: 'test-only-access-token-secret-0123456789abcdef',
+  /**
+   * Fixed, fake AES-256-GCM key: base64url of exactly 32 bytes. Production would
+   * require it, but outside production it only has to be valid when present.
+   */
+  TOTP_ENC_KEY: 'a2ZhLXRlc3Qtb25seS10b3RwLWtleS0wMTIzNDU2Nzg',
   ACCESS_TOKEN_TTL_SECONDS: '600',
   REFRESH_TTL_DAYS: '14',
   SESSION_ABSOLUTE_DAYS: '30',

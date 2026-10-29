@@ -24,6 +24,9 @@ const VALID_ENV: NodeJS.ProcessEnv = {
 
 const PROD_REDIS_URL = 'rediss://:prod-only-redis-password@redis.internal:6380/0';
 
+/** Fixed, fake AES key: base64url of exactly 32 bytes (decodes to "kfa-unit-test-..."). */
+const PROD_TOTP_ENC_KEY = 'a2ZhLXVuaXQtdGVzdC10b3RwLWVuYy1rZXktMTIzNDU';
+
 /** A production environment that satisfies every production-only rule. */
 const PROD_ENV: NodeJS.ProcessEnv = {
   ...BASE_ENV,
@@ -31,6 +34,7 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   APP_ORIGINS: 'https://app.example',
   DATABASE_URL: 'postgresql://kfa_app:app-secret@db.internal:5432/kfa?sslmode=require',
   REDIS_URL: PROD_REDIS_URL,
+  TOTP_ENC_KEY: PROD_TOTP_ENC_KEY,
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
 };
@@ -79,6 +83,15 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
     { ...BASE_ENV, OTP_PROOF_SECRET: 'unit-test-rate-limit-hmac-key-0123456789' },
   ],
   ['a missing OTP_PROOF_SECRET in production', { ...PROD_ENV, OTP_PROOF_SECRET: undefined }],
+  [
+    'a TOTP_ENC_KEY that is not base64url',
+    { ...BASE_ENV, TOTP_ENC_KEY: 'not+a+valid+base64url+value+here' },
+  ],
+  [
+    'a TOTP_ENC_KEY of the wrong decoded length',
+    { ...BASE_ENV, TOTP_ENC_KEY: Buffer.alloc(31, 7).toString('base64url') },
+  ],
+  ['a missing TOTP_ENC_KEY in production', { ...PROD_ENV, TOTP_ENC_KEY: undefined }],
   ['an OTP send cap of zero', { ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: '0' }],
   ['a non numeric OTP send cap', { ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: 'many' }],
   ['a short ACCESS_TOKEN_SECRET', { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'too-short' }],
@@ -228,6 +241,45 @@ describe('loadEnv', () => {
       loadEnv({ ...PROD_ENV, OTP_PROOF_SECRET: PROD_ENV.RATE_LIMIT_HMAC_KEY as string }),
     ).toThrow(/OTP_PROOF_SECRET.*must differ/);
     expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
+  });
+
+  it('keeps the TOTP encryption key optional outside production', () => {
+    expect(loadEnv({ ...BASE_ENV }).TOTP_ENC_KEY).toBeUndefined();
+    expect(loadEnv({ ...BASE_ENV, TOTP_ENC_KEY: PROD_TOTP_ENC_KEY }).TOTP_ENC_KEY).toBe(
+      PROD_TOTP_ENC_KEY,
+    );
+  });
+
+  it('requires a 32-byte TOTP encryption key in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, TOTP_ENC_KEY: undefined })).toThrow(
+      /TOTP_ENC_KEY.*required in production/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV, TOTP_ENC_KEY: 'too-short' })).toThrow(/TOTP_ENC_KEY/);
+    expect(() =>
+      loadEnv({ ...PROD_ENV, TOTP_ENC_KEY: Buffer.alloc(32, 1).toString('base64') }),
+    ).toThrow(/TOTP_ENC_KEY/);
+    expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
+  });
+
+  it('never allows the TOTP key to double as another secret', () => {
+    expect(() => loadEnv({ ...PROD_ENV, AUDIT_HMAC_KEY: PROD_TOTP_ENC_KEY })).toThrow(
+      /TOTP_ENC_KEY.*must differ/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV, OTP_PROOF_SECRET: PROD_TOTP_ENC_KEY })).toThrow(
+      /TOTP_ENC_KEY.*must differ/,
+    );
+  });
+
+  it('never echoes the TOTP encryption key', () => {
+    const value = 'do-not-log-this-totp-key-0123456789';
+
+    try {
+      loadEnv({ ...PROD_ENV, TOTP_ENC_KEY: value });
+      throw new Error('expected loadEnv to reject a malformed TOTP key');
+    } catch (error) {
+      expect((error as Error).message).toContain('TOTP_ENC_KEY');
+      expect((error as Error).message).not.toContain(value);
+    }
   });
 
   it('caps OTP sends per hour with a conservative default', () => {

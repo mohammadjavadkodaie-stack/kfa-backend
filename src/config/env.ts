@@ -26,6 +26,9 @@ export const OTP_PROOF_SECRET_MIN_LENGTH = 32;
 /** Minimum accepted length of the access-token signing secret. */
 export const ACCESS_TOKEN_SECRET_MIN_LENGTH = 32;
 
+/** Exact decoded length of the TOTP secret encryption key (AES-256). */
+export const TOTP_ENC_KEY_BYTES = 32;
+
 /** Maximum accepted length of a database connection URL. */
 const DATABASE_URL_MAX_LENGTH = 2048;
 
@@ -128,6 +131,15 @@ function redisUrlHasPassword(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * True when `value` is base64url that decodes to exactly `bytes` bytes. The
+ * alphabet is checked first because Buffer's decoder silently skips invalid
+ * characters, which would otherwise let a typo through as a shorter key.
+ */
+function isBase64UrlOfLength(value: string, bytes: number): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(value) && Buffer.from(value, 'base64url').length === bytes;
 }
 
 const httpOriginSchema = z.string().transform((value, ctx) => {
@@ -248,6 +260,24 @@ export const envSchema = z
       .max(1024, 'must be at most 1024 characters')
       .optional(),
 
+    /**
+     * AES-256-GCM key that encrypts TOTP secrets at rest (Stage 3.2a).
+     * Optional outside production: without it TOTP is simply unconfigured and
+     * its endpoints fail closed. Required in production.
+     */
+    TOTP_ENC_KEY: z
+      .string()
+      .max(1024, 'must be at most 1024 characters')
+      .superRefine((value, ctx) => {
+        if (!isBase64UrlOfLength(value, TOTP_ENC_KEY_BYTES)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `must be base64url that decodes to exactly ${TOTP_ENC_KEY_BYTES} bytes`,
+          });
+        }
+      })
+      .optional(),
+
     /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
     OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
 
@@ -299,6 +329,17 @@ export const envSchema = z
         code: 'custom',
         path: ['OTP_PROOF_SECRET'],
         message: 'must differ from the audit and rate-limit HMAC keys',
+      });
+    }
+
+    if (
+      env.TOTP_ENC_KEY !== undefined &&
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.OTP_PROOF_SECRET].includes(env.TOTP_ENC_KEY)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TOTP_ENC_KEY'],
+        message: 'must differ from the audit, rate-limit and proof secrets',
       });
     }
 
@@ -360,6 +401,14 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['OTP_PROOF_SECRET'],
+        message: 'is required in production',
+      });
+    }
+
+    if (env.TOTP_ENC_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TOTP_ENC_KEY'],
         message: 'is required in production',
       });
     }

@@ -19,6 +19,8 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789',
   // Required from stage 2.3a on; without it production refuses to boot.
   ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
+  // Fake base64url of 32 bytes; also required from stage 3.2a on.
+  TOTP_ENC_KEY: 'a2ZhLXVuaXQtdGVzdC10b3RwLWVuYy1rZXktMTIzNDU',
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
 };
