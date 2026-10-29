@@ -26,6 +26,29 @@ export function createTestPrisma(): PrismaClient {
   });
 }
 
+/**
+ * The owner row may only be written by a role other than `kfa_app`, so a suite
+ * that has to seed or repair one needs a second, privileged connection: point
+ * `DATABASE_URL_TEST_BREAK_GLASS` at `kfa_migrator` (or the local superuser)
+ * and keep `DATABASE_URL_TEST` on `kfa_app` for the assertions.
+ */
+export const TEST_BREAK_GLASS_URL = process.env.DATABASE_URL_TEST_BREAK_GLASS;
+
+export const describeWithBreakGlass =
+  TEST_DATABASE_URL && TEST_BREAK_GLASS_URL ? describe : describe.skip;
+
+export function createBreakGlassPrisma(): PrismaClient {
+  if (!TEST_BREAK_GLASS_URL) {
+    throw new Error('DATABASE_URL_TEST_BREAK_GLASS is required for break-glass writes');
+  }
+
+  return new PrismaClient({
+    datasourceUrl: TEST_BREAK_GLASS_URL,
+    log: [],
+    errorFormat: 'minimal',
+  });
+}
+
 export function createTestAuditService(prisma: PrismaClient): AuditService {
   return new AuditService(
     prisma as unknown as PrismaService,

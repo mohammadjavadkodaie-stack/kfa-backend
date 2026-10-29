@@ -137,14 +137,15 @@ describeWithDatabase('role model (PostgreSQL)', () => {
     await expect(sessions.findActiveSession(session.id, randomUUID(), now)).resolves.toBeNull();
 
     // A change made by an admin is visible on the very next lookup: neither
-    // value ever comes from the token.
+    // value ever comes from the token. OWNER is provisioned outside the
+    // runtime role (the owner trigger refuses it), so this is a demotion.
     await prisma.user.update({
       where: { id: user.id },
-      data: { role: Role.OWNER, identityVerifier: false },
+      data: { role: Role.ATHLETE, identityVerifier: false },
     });
 
     await expect(sessions.findActiveSession(session.id, user.id, now)).resolves.toMatchObject({
-      role: Role.OWNER,
+      role: Role.ATHLETE,
       identityVerifier: false,
     });
   });
