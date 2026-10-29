@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { Role } from './roles';
 import type {
   AccountRecord,
+  ActiveSessionRecord,
   ChangePhoneInput,
   ChangePhoneResult,
   CreateAccountInput,
@@ -24,6 +26,8 @@ interface FakeUser {
   readonly id: string;
   phone: string;
   readonly username: string;
+  role: Role;
+  identityVerifier: boolean;
   status: 'ACTIVE' | 'BLOCKED';
 }
 
@@ -83,6 +87,8 @@ export class InMemorySessionRepository implements SessionRepository {
       id: input.userId,
       phone: input.phone,
       username: input.username,
+      role: Role.USER,
+      identityVerifier: false,
       status: 'ACTIVE',
     });
 
@@ -258,15 +264,33 @@ export class InMemorySessionRepository implements SessionRepository {
     return session.userId;
   }
 
-  async isSessionActive(sessionId: string, userId: string, now: Date): Promise<boolean> {
+  async findActiveSession(
+    sessionId: string,
+    userId: string,
+    now: Date,
+  ): Promise<ActiveSessionRecord | null> {
     const session = this.sessions.get(sessionId);
 
-    return (
-      session !== undefined &&
-      session.userId === userId &&
-      session.revokedAt === null &&
-      session.expiresAt.getTime() > now.getTime()
-    );
+    if (
+      session === undefined ||
+      session.userId !== userId ||
+      session.revokedAt !== null ||
+      session.expiresAt.getTime() <= now.getTime()
+    ) {
+      return null;
+    }
+
+    const user = this.users.get(userId);
+
+    if (user === undefined) return null;
+
+    return {
+      sessionId: session.id,
+      userId: user.id,
+      role: user.role,
+      identityVerifier: user.identityVerifier,
+      status: user.status,
+    };
   }
 
   async listActiveSessions(userId: string, now: Date): Promise<SessionSummaryRecord[]> {
@@ -288,7 +312,14 @@ export class InMemorySessionRepository implements SessionRepository {
   }
 
   /** Test helper: seeds a user without creating a session. */
-  seedUser(user: { id?: string; phone: string; username: string; status?: 'ACTIVE' | 'BLOCKED' }): {
+  seedUser(user: {
+    id?: string;
+    phone: string;
+    username: string;
+    role?: Role;
+    identityVerifier?: boolean;
+    status?: 'ACTIVE' | 'BLOCKED';
+  }): {
     id: string;
   } {
     const id = user.id ?? randomUUID();
@@ -297,10 +328,28 @@ export class InMemorySessionRepository implements SessionRepository {
       id,
       phone: user.phone,
       username: user.username,
+      role: user.role ?? Role.USER,
+      identityVerifier: user.identityVerifier ?? false,
       status: user.status ?? 'ACTIVE',
     });
 
     return { id };
+  }
+
+  /**
+   * Test helper: changes the stored access level the way an admin would, so a
+   * spec can prove the next request already sees the new role.
+   */
+  setUserRole(
+    userId: string,
+    access: { readonly role?: Role; readonly identityVerifier?: boolean },
+  ): void {
+    const user = this.users.get(userId);
+
+    if (user === undefined) throw new Error(`unknown user ${userId}`);
+
+    if (access.role !== undefined) user.role = access.role;
+    if (access.identityVerifier !== undefined) user.identityVerifier = access.identityVerifier;
   }
 
   private insertSession(input: {

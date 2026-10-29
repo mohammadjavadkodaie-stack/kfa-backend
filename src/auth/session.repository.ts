@@ -6,11 +6,29 @@
  * Prisma one used by the API and an in-memory fake used by the unit tests.
  */
 
+import type { Role } from './roles';
+
 /** DI token so the Prisma implementation can be swapped for the fake. */
 export const SESSION_REPOSITORY = Symbol('SESSION_REPOSITORY');
 
 export interface AccountRecord {
   readonly id: string;
+  readonly status: 'ACTIVE' | 'BLOCKED';
+}
+
+/**
+ * What the guard needs from one live session.
+ *
+ * The role and the verifier flag are read together with the session so a change
+ * made in the database applies on the very next request without a second query.
+ */
+export interface ActiveSessionRecord {
+  readonly sessionId: string;
+  readonly userId: string;
+  /** Current role from the database; never taken from the access token. */
+  readonly role: Role;
+  /** Separate permission, independent of `role`. */
+  readonly identityVerifier: boolean;
   readonly status: 'ACTIVE' | 'BLOCKED';
 }
 
@@ -135,5 +153,14 @@ export interface SessionRepository {
     reason: string,
     now: Date,
   ): Promise<string | null>;
-  isSessionActive(sessionId: string, userId: string, now: Date): Promise<boolean>;
+  /**
+   * Single query for the guard: the session must still be live and belong to
+   * `userId`, and the owning account is returned with its current role, its
+   * identity-verifier flag and its status.
+   */
+  findActiveSession(
+    sessionId: string,
+    userId: string,
+    now: Date,
+  ): Promise<ActiveSessionRecord | null>;
 }

@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
+import { parseRole } from './roles';
 import type {
   AccountRecord,
+  ActiveSessionRecord,
   ChangePhoneInput,
   ChangePhoneResult,
   CreateAccountInput,
@@ -374,12 +376,39 @@ export class PrismaSessionRepository implements SessionRepository {
     return token.session.userId;
   }
 
-  async isSessionActive(sessionId: string, userId: string, now: Date): Promise<boolean> {
+  /**
+   * One query, not two: the session row is joined with its owner so the guard
+   * sees the current role and verifier flag at the same cost as the old
+   * liveness check.
+   */
+  async findActiveSession(
+    sessionId: string,
+    userId: string,
+    now: Date,
+  ): Promise<ActiveSessionRecord | null> {
     const session = await this.prisma.session.findFirst({
       where: { id: sessionId, userId, revokedAt: null, expiresAt: { gt: now } },
-      select: { id: true },
+      select: {
+        id: true,
+        userId: true,
+        user: { select: { role: true, identityVerifier: true, status: true } },
+      },
     });
 
-    return session !== null;
+    if (session === null) return null;
+
+    // A value outside the enum cannot happen through Prisma; fail closed if it
+    // ever does instead of handing an unknown role to the policy layer.
+    const role = parseRole(session.user.role);
+
+    if (role === null) return null;
+
+    return {
+      sessionId: session.id,
+      userId: session.userId,
+      role,
+      identityVerifier: session.user.identityVerifier,
+      status: session.user.status,
+    };
   }
 }

@@ -145,7 +145,7 @@ describeWithDatabase('auth session rotation (PostgreSQL)', () => {
     await expect(
       sessions.revokeSessionByRefreshTokenHash(token.tokenHash, 'logout', now),
     ).resolves.toBe(userId);
-    await expect(sessions.isSessionActive(created.sessionId, userId, now)).resolves.toBe(false);
+    await expect(sessions.findActiveSession(created.sessionId, userId, now)).resolves.toBeNull();
     await expect(
       prisma.session.findUniqueOrThrow({ where: { id: created.sessionId } }),
     ).resolves.toMatchObject({ revokedReason: 'logout' });
@@ -174,8 +174,8 @@ describeWithDatabase('auth session rotation (PostgreSQL)', () => {
 
     await sessions.revokeAllUserSessions(userId, 'refresh_reuse', now);
 
-    await expect(sessions.isSessionActive(first.sessionId, userId, now)).resolves.toBe(false);
-    await expect(sessions.isSessionActive(second.sessionId, userId, now)).resolves.toBe(false);
+    await expect(sessions.findActiveSession(first.sessionId, userId, now)).resolves.toBeNull();
+    await expect(sessions.findActiveSession(second.sessionId, userId, now)).resolves.toBeNull();
     await expect(
       prisma.refreshToken.count({
         where: { sessionId: { in: [first.sessionId, second.sessionId] }, revokedAt: null },
@@ -355,15 +355,15 @@ describeWithDatabase('auth session cap and per-user revocation (PostgreSQL)', ()
       sessions.revokeUserSession(stranger.sessionId, intruder.userId, 'user_revoked', new Date()),
     ).resolves.toBe(false);
     await expect(
-      sessions.isSessionActive(stranger.sessionId, stranger.userId, new Date()),
-    ).resolves.toBe(true);
+      sessions.findActiveSession(stranger.sessionId, stranger.userId, new Date()),
+    ).resolves.not.toBeNull();
 
     await expect(
       sessions.revokeUserSession(stranger.sessionId, stranger.userId, 'user_revoked', new Date()),
     ).resolves.toBe(true);
     await expect(
-      sessions.isSessionActive(stranger.sessionId, stranger.userId, new Date()),
-    ).resolves.toBe(false);
+      sessions.findActiveSession(stranger.sessionId, stranger.userId, new Date()),
+    ).resolves.toBeNull();
     // Revoking twice is not an error, it is simply a no-op.
     await expect(
       sessions.revokeUserSession(stranger.sessionId, stranger.userId, 'user_revoked', new Date()),

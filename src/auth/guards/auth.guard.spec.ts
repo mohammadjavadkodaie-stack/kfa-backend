@@ -1,7 +1,8 @@
 import { UnauthorizedException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
-import type { SessionRepository } from '../session.repository';
+import type { ActiveSessionRecord, SessionRepository } from '../session.repository';
+import { Role } from '../roles';
 import { signAccessToken } from '../token/access-token';
 import { AuthGuard, readBearerToken, type AuthenticatedRequest } from './auth.guard';
 
@@ -28,15 +29,28 @@ interface Harness {
   readonly guard: AuthGuard;
   readonly context: ExecutionContext;
   readonly request: AuthenticatedRequest;
-  readonly isSessionActive: jest.Mock;
+  readonly findActiveSession: jest.Mock;
   readonly getAllAndOverride: jest.Mock;
+}
+
+/** What the repository returns for a live session. */
+function activeSession(overrides: Partial<ActiveSessionRecord> = {}): ActiveSessionRecord {
+  return {
+    sessionId: SESSION_ID,
+    userId: USER_ID,
+    role: Role.USER,
+    identityVerifier: false,
+    status: 'ACTIVE',
+    ...overrides,
+  };
 }
 
 function createHarness(options: {
   isPublic?: boolean;
   authorization?: string;
   secret?: string;
-  sessionActive?: boolean;
+  /** Defaults to a live session; pass `null` for a revoked or unknown one. */
+  session?: ActiveSessionRecord | null;
 }): Harness {
   const request = { headers: {} } as unknown as AuthenticatedRequest;
 
@@ -51,8 +65,10 @@ function createHarness(options: {
   } as unknown as ExecutionContext;
 
   const getAllAndOverride = jest.fn().mockReturnValue(options.isPublic);
-  const isSessionActive = jest.fn().mockResolvedValue(options.sessionActive ?? true);
-  const sessions = { isSessionActive } as unknown as SessionRepository;
+  const findActiveSession = jest
+    .fn()
+    .mockResolvedValue(options.session === undefined ? activeSession() : options.session);
+  const sessions = { findActiveSession } as unknown as SessionRepository;
 
   const guard = new AuthGuard(
     { getAllAndOverride } as unknown as Reflector,
@@ -60,7 +76,7 @@ function createHarness(options: {
     sessions,
   );
 
-  return { guard, context, request, isSessionActive, getAllAndOverride };
+  return { guard, context, request, findActiveSession, getAllAndOverride };
 }
 
 describe('readBearerToken', () => {
@@ -93,7 +109,7 @@ describe('AuthGuard', () => {
     const harness = createHarness({ isPublic: true });
 
     await expect(harness.guard.canActivate(harness.context)).resolves.toBe(true);
-    expect(harness.isSessionActive).not.toHaveBeenCalled();
+    expect(harness.findActiveSession).not.toHaveBeenCalled();
   });
 
   it('denies a protected route without an Authorization header', async () => {
@@ -102,7 +118,7 @@ describe('AuthGuard', () => {
     await expect(harness.guard.canActivate(harness.context)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(harness.isSessionActive).not.toHaveBeenCalled();
+    expect(harness.findActiveSession).not.toHaveBeenCalled();
   });
 
   it('reads the metadata from both the handler and the controller', async () => {
@@ -121,7 +137,7 @@ describe('AuthGuard', () => {
     await expect(harness.guard.canActivate(harness.context)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(harness.isSessionActive).not.toHaveBeenCalled();
+    expect(harness.findActiveSession).not.toHaveBeenCalled();
   });
 
   it('denies a token signed with another secret', async () => {
@@ -133,7 +149,7 @@ describe('AuthGuard', () => {
     await expect(harness.guard.canActivate(harness.context)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(harness.isSessionActive).not.toHaveBeenCalled();
+    expect(harness.findActiveSession).not.toHaveBeenCalled();
   });
 
   it('denies an expired token', async () => {
@@ -145,22 +161,52 @@ describe('AuthGuard', () => {
     await expect(harness.guard.canActivate(harness.context)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(harness.isSessionActive).not.toHaveBeenCalled();
+    expect(harness.findActiveSession).not.toHaveBeenCalled();
   });
 
   it('accepts a valid token for a live session and exposes the principal', async () => {
     const harness = createHarness({ secret: SECRET, authorization: `Bearer ${accessToken()}` });
 
     await expect(harness.guard.canActivate(harness.context)).resolves.toBe(true);
-    expect(harness.isSessionActive).toHaveBeenCalledWith(SESSION_ID, USER_ID, expect.any(Date));
-    expect(harness.request.auth).toMatchObject({ userId: USER_ID, sessionId: SESSION_ID });
+    expect(harness.findActiveSession).toHaveBeenCalledWith(SESSION_ID, USER_ID, expect.any(Date));
+    expect(harness.request.auth).toEqual({
+      userId: USER_ID,
+      sessionId: SESSION_ID,
+      role: Role.USER,
+      identityVerifier: false,
+      expiresAtSeconds: expect.any(Number),
+    });
+  });
+
+  it('takes the role and the verifier flag from the lookup, never from the token', async () => {
+    const harness = createHarness({
+      secret: SECRET,
+      authorization: `Bearer ${accessToken()}`,
+      session: activeSession({ role: Role.OWNER, identityVerifier: true }),
+    });
+
+    await expect(harness.guard.canActivate(harness.context)).resolves.toBe(true);
+    expect(harness.request.auth).toMatchObject({ role: Role.OWNER, identityVerifier: true });
   });
 
   it('denies a valid token whose session was revoked or expired', async () => {
     const harness = createHarness({
       secret: SECRET,
       authorization: `Bearer ${accessToken()}`,
-      sessionActive: false,
+      session: null,
+    });
+
+    await expect(harness.guard.canActivate(harness.context)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(harness.request.auth).toBeUndefined();
+  });
+
+  it('denies a valid token when the account behind the session is blocked', async () => {
+    const harness = createHarness({
+      secret: SECRET,
+      authorization: `Bearer ${accessToken()}`,
+      session: activeSession({ status: 'BLOCKED' }),
     });
 
     await expect(harness.guard.canActivate(harness.context)).rejects.toBeInstanceOf(

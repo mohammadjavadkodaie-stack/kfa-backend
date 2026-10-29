@@ -356,11 +356,11 @@ describe('PhoneChangeService.confirm', () => {
 
     await expect(phoneOf(harness, principal)).resolves.toBe(NEW_PHONE);
     await expect(
-      harness.sessions.isSessionActive(credentials.sessionId, credentials.userId, new Date()),
-    ).resolves.toBe(true);
+      harness.sessions.findActiveSession(credentials.sessionId, credentials.userId, new Date()),
+    ).resolves.not.toBeNull();
     await expect(
-      harness.sessions.isSessionActive(other.sessionId, other.userId, new Date()),
-    ).resolves.toBe(false);
+      harness.sessions.findActiveSession(other.sessionId, other.userId, new Date()),
+    ).resolves.toBeNull();
 
     // Exactly one message, to the number that lost the account, already masked.
     expect(harness.provider.notices).toEqual([

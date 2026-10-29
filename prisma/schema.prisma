@@ -58,20 +58,21 @@ enum Role {
   ATHLETE
   ADMIN
   OWNER
-  IDENTITY_VERIFIER
 }
 
 model User {
-  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  phone           String       @unique
-  username        String       @unique
-  role            Role         @default(USER)
-  status          UserStatus   @default(ACTIVE)
-  phoneVerifiedAt DateTime?    @map("phone_verified_at") @db.Timestamptz(6)
-  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
-  devices         Device[]
-  sessions        Session[]
+  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone            String       @unique
+  username         String       @unique
+  role             Role         @default(USER)
+  /// Permission to verify identities, granted independently of `role`.
+  identityVerifier Boolean      @default(false) @map("identity_verifier")
+  status           UserStatus   @default(ACTIVE)
+  phoneVerifiedAt  DateTime?    @map("phone_verified_at") @db.Timestamptz(6)
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  devices          Device[]
+  sessions         Session[]
   @@map("users")
 }
 

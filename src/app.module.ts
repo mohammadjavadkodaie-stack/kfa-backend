@@ -6,6 +6,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { AuthGuard } from './auth/guards/auth.guard';
+import { RolesGuard } from './auth/guards/roles.guard';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppConfigModule, ENV } from './config/config.module';
 import type { Env } from './config/env';
@@ -29,9 +30,11 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
   ],
   providers: [
     // Order matters: throttle before authenticating so unauthenticated floods
-    // are still rate limited.
+    // are still rate limited; RolesGuard must run after AuthGuard so it can
+    // read the principal from the database lookup AuthGuard already made.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })

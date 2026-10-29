@@ -76,7 +76,13 @@ async function otherAccount(harness: Harness): Promise<IssuedCredentials> {
 }
 
 async function isActive(harness: Harness, credentials: IssuedCredentials): Promise<boolean> {
-  return harness.sessions.isSessionActive(credentials.sessionId, credentials.userId, new Date());
+  const active = await harness.sessions.findActiveSession(
+    credentials.sessionId,
+    credentials.userId,
+    new Date(),
+  );
+
+  return active !== null;
 }
 
 function exhaustSessionBudget(harness: Harness, credentials: IssuedCredentials): void {

@@ -10,6 +10,7 @@ import { AuthService } from './auth.service';
 import { CaptchaProvider, CAPTCHA_PROVIDER, FakeCaptchaProvider } from './captcha/captcha.provider';
 import { AuthGuard } from './guards/auth.guard';
 import { OriginCheckGuard } from './guards/origin.guard';
+import { RolesGuard } from './guards/roles.guard';
 import { OtpController } from './otp/otp.controller';
 import { createOtpProvider, OTP_PROVIDER, OtpProvider } from './otp/otp.provider';
 import { OtpService } from './otp/otp.service';
@@ -65,6 +66,7 @@ import { SESSION_REPOSITORY } from './session.repository';
     AuthService,
     PhoneChangeService,
     AuthGuard,
+    RolesGuard,
     OriginCheckGuard,
   ],
   exports: [
@@ -72,8 +74,9 @@ import { SESSION_REPOSITORY } from './session.repository';
     CAPTCHA_PROVIDER,
     ProofTokenService,
     SESSION_REPOSITORY,
-    // Exported so the global guard and later modules share one definition.
+    // Exported so the global guards and later modules share one definition.
     AuthGuard,
+    RolesGuard,
     AuthService,
   ],
 })

@@ -48,7 +48,7 @@ class LimitedController {
   controllers: [LimitedController],
   providers: [
     { provide: ENV, useFactory: () => loadEnv(process.env) },
-    { provide: SESSION_REPOSITORY, useValue: { isSessionActive: () => Promise.resolve(false) } },
+    { provide: SESSION_REPOSITORY, useValue: { findActiveSession: () => Promise.resolve(null) } },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

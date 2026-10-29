@@ -10,6 +10,7 @@ import type { Request } from 'express';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
 import { ENV } from '../../config/config.module';
 import type { Env } from '../../config/env';
+import type { Role } from '../roles';
 import { SESSION_REPOSITORY, type SessionRepository } from '../session.repository';
 import { verifyAccessToken } from '../token/access-token';
 
@@ -17,16 +18,21 @@ import { verifyAccessToken } from '../token/access-token';
  * Default-deny guard: every route requires authentication unless it is
  * explicitly marked with `@Public()`.
  *
- * A request is authenticated only when all three hold, in this order:
+ * A request is authenticated only when all four hold, in this order:
  *
  * 1. the `Authorization` header carries a `Bearer` token,
  * 2. the token verifies (HS256, issuer, audience, not expired),
  * 3. the session named by `sid` still exists, belongs to `sub` and is neither
- *    revoked nor past its absolute expiry.
+ *    revoked nor past its absolute expiry,
+ * 4. the account behind that session is still active.
  *
- * Step 3 costs one indexed lookup per request, which is what makes logout,
- * rotation and reuse detection take effect immediately instead of after the
- * access token expires.
+ * Step 3 also returns the caller's role and identity-verifier flag, in the same
+ * query, so authorisation decisions never depend on the access token: demoting,
+ * promoting or blocking an account applies on the very next request.
+ *
+ * The lookup costs one indexed query per request, which is what makes logout,
+ * rotation, reuse detection and role changes take effect immediately instead of
+ * after the access token expires.
  */
 
 /** Parsed `Authorization: Bearer <token>` value. */
@@ -44,6 +50,10 @@ export function readBearerToken(header: string | string[] | undefined): string |
 export interface RequestPrincipal {
   readonly userId: string;
   readonly sessionId: string;
+  /** Loaded from the database for this request, never from the token. */
+  readonly role: Role;
+  /** Separate permission, independent of `role`. */
+  readonly identityVerifier: boolean;
   /** Access-token expiry, seconds since the epoch. */
   readonly expiresAtSeconds: number;
 }
@@ -94,15 +104,19 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException();
     }
 
-    const active = await this.sessions.isSessionActive(claims.sid, claims.sub, new Date());
+    const active = await this.sessions.findActiveSession(claims.sid, claims.sub, new Date());
 
-    if (!active) {
+    // A revoked session and a blocked account look the same from outside: the
+    // request is simply not authenticated.
+    if (active === null || active.status !== 'ACTIVE') {
       throw new UnauthorizedException();
     }
 
     request.auth = {
-      userId: claims.sub,
-      sessionId: claims.sid,
+      userId: active.userId,
+      sessionId: active.sessionId,
+      role: active.role,
+      identityVerifier: active.identityVerifier,
       expiresAtSeconds: claims.exp,
     };
 
