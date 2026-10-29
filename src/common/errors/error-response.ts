@@ -26,18 +26,58 @@ export interface ErrorResponseBody {
   readonly statusCode: number;
   readonly message: string;
   readonly requestId: string;
+  /**
+   * Present only when the client has to act, today just `step_up_required`.
+   * Everything else stays generic, so failures remain indistinguishable.
+   */
+  readonly code?: string;
 }
+
+/** The only code the envelope may carry; anything else is dropped. */
+export const STEP_UP_REQUIRED_CODE = 'step_up_required';
+
+const PUBLIC_CODES: ReadonlySet<string> = new Set([STEP_UP_REQUIRED_CODE]);
 
 export function genericMessageFor(statusCode: number): string {
   return GENERIC_MESSAGES[statusCode] ?? 'Request failed';
 }
 
-export function toErrorResponseBody(statusCode: number, requestId: string): ErrorResponseBody {
-  return {
-    statusCode,
-    message: genericMessageFor(statusCode),
-    requestId,
-  };
+export function toErrorResponseBody(
+  statusCode: number,
+  requestId: string,
+  code?: string,
+): ErrorResponseBody {
+  const body = { statusCode, message: genericMessageFor(statusCode), requestId };
+
+  return code !== undefined && PUBLIC_CODES.has(code) ? { ...body, code } : body;
+}
+
+/** Minimal exception surface, so this helper stays framework-agnostic. */
+interface ExceptionLike {
+  getResponse?(): unknown;
+}
+
+/** Reads an allow-listed code out of an exception payload; never any message. */
+export function readPublicErrorCode(exception: unknown): string | undefined {
+  if (typeof exception !== 'object' || exception === null) return undefined;
+
+  const getResponse = (exception as ExceptionLike).getResponse;
+
+  if (typeof getResponse !== 'function') return undefined;
+
+  let payload: unknown;
+
+  try {
+    payload = getResponse.call(exception);
+  } catch {
+    return undefined;
+  }
+
+  if (typeof payload !== 'object' || payload === null || !('code' in payload)) return undefined;
+
+  const code = (payload as { code?: unknown }).code;
+
+  return typeof code === 'string' && PUBLIC_CODES.has(code) ? code : undefined;
 }
 
 /** Minimal response/request surface, so this helper stays framework-agnostic. */

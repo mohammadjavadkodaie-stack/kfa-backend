@@ -60,6 +60,15 @@ export class PrismaSessionRepository implements SessionRepository {
     return user === null ? null : user.phone;
   }
 
+  async findUsernameByUserId(userId: string): Promise<string | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { username: true },
+    });
+
+    return user === null ? null : user.username;
+  }
+
   /** Null means "phone or username already exists"; the caller stays generic. */
   async createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null> {
     try {
@@ -410,5 +419,32 @@ export class PrismaSessionRepository implements SessionRepository {
       identityVerifier: session.user.identityVerifier,
       status: session.user.status,
     };
+  }
+
+  /** Same liveness condition as findActiveSession, one column wide. */
+  async getStepUpAt(sessionId: string, userId: string): Promise<Date | null> {
+    const session = await this.prisma.session.findFirst({
+      where: { id: sessionId, userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { stepupAt: true },
+    });
+
+    return session === null ? null : session.stepupAt;
+  }
+
+  /**
+   * One statement, so the row the guard will read next is the row this wrote.
+   * The database clock keeps the stamp valid even if an app host drifts.
+   */
+  async markStepUp(sessionId: string, userId: string): Promise<boolean> {
+    const updated = await this.prisma.$executeRaw`
+      UPDATE "sessions"
+         SET "stepup_at" = now()
+       WHERE "id" = ${sessionId}::uuid
+         AND "user_id" = ${userId}::uuid
+         AND "revoked_at" IS NULL
+         AND "expires_at" > now()
+    `;
+
+    return updated === 1;
   }
 }

@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
+import { noStoreMiddleware } from '../common/middleware/no-store.middleware';
 import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 import { PrismaModule } from '../database/prisma.module';
@@ -26,11 +27,13 @@ import { PhoneChangeService } from './phone-change/phone-change.service';
 import { AccessPolicyService } from './policy/access-policy.service';
 import { PrismaSessionRepository } from './prisma-session.repository';
 import { SESSION_REPOSITORY } from './session.repository';
+import { StepUpGuard } from './totp/step-up.guard';
+import { TotpController } from './totp/totp.controller';
 import { TotpModule } from './totp/totp.module';
 
 @Module({
   imports: [RateLimitModule, AuditModule, PrismaModule, TotpModule],
-  controllers: [OtpController, AuthController, PhoneChangeController],
+  controllers: [OtpController, AuthController, PhoneChangeController, TotpController],
   providers: [
     {
       provide: OTP_PROVIDER,
@@ -69,6 +72,7 @@ import { TotpModule } from './totp/totp.module';
     PhoneChangeService,
     AuthGuard,
     RolesGuard,
+    StepUpGuard,
     OriginCheckGuard,
     AccessPolicyService,
   ],
@@ -80,10 +84,16 @@ import { TotpModule } from './totp/totp.module';
     // Exported so the global guards and later modules share one definition.
     AuthGuard,
     RolesGuard,
+    StepUpGuard,
     AuthService,
     // The administrative modules must inject this rather than re-implement a
     // rule; it is the only place that decides and audits a staff action.
     AccessPolicyService,
   ],
 })
-export class AuthModule {}
+export class AuthModule implements NestModule {
+  /** Second-factor bodies must never be cached, guard refusals included. */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(noStoreMiddleware).forRoutes(TotpController);
+  }
+}

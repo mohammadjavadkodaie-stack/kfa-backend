@@ -1,4 +1,9 @@
-import { HttpException, NotFoundException, type ArgumentsHost } from '@nestjs/common';
+import {
+  ForbiddenException,
+  HttpException,
+  NotFoundException,
+  type ArgumentsHost,
+} from '@nestjs/common';
 import type { PinoLogger } from 'nestjs-pino';
 import { AllExceptionsFilter, resolveStatusCode } from './all-exceptions.filter';
 
@@ -93,6 +98,38 @@ describe('AllExceptionsFilter', () => {
     new AllExceptionsFilter(logger).catch(new Error('boom'), host);
 
     expect(bodies[0]).toMatchObject({ requestId: 'unknown' });
+  });
+
+  it('passes the step-up code through, which is the one actionable refusal', () => {
+    const { host, response, bodies } = createHost();
+    const { logger } = createLogger();
+
+    new AllExceptionsFilter(logger).catch(
+      new ForbiddenException({ code: 'step_up_required' }),
+      host,
+    );
+
+    expect(response.status).toHaveBeenCalledWith(403);
+    expect(bodies[0]).toEqual({
+      statusCode: 403,
+      message: 'Forbidden',
+      requestId: REQUEST_ID,
+      code: 'step_up_required',
+    });
+  });
+
+  it('drops any other code and any message an exception carries', () => {
+    const { host, bodies } = createHost();
+    const { logger } = createLogger();
+
+    new AllExceptionsFilter(logger).catch(
+      new ForbiddenException({ code: 'account_suspended', hint: 'ask an admin' }),
+      host,
+    );
+
+    expect(bodies[0]).toEqual({ statusCode: 403, message: 'Forbidden', requestId: REQUEST_ID });
+    expect(JSON.stringify(bodies[0])).not.toContain('account_suspended');
+    expect(JSON.stringify(bodies[0])).not.toContain('ask an admin');
   });
 
   it('does not write a second response when headers were already sent', () => {

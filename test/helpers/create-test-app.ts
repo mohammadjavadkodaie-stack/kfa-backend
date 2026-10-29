@@ -6,6 +6,7 @@ import { configureApp } from '../../src/app.setup';
 import { AuthModule } from '../../src/auth/auth.module';
 import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/otp/proof-token';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
+import { TOTP_REPOSITORY, type TotpRepository } from '../../src/auth/totp/totp.repository';
 import { ENV } from '../../src/config/config.module';
 import type { Env } from '../../src/config/env';
 import { PrismaService } from '../../src/database/prisma.service';
@@ -31,6 +32,8 @@ export interface CreateTestAppOptions {
   readonly prisma?: object;
   /** In-memory session store, so auth flows run without PostgreSQL. */
   readonly sessionRepository?: SessionRepository;
+  /** In-memory second-factor store, so the TOTP endpoints run without PostgreSQL. */
+  readonly totpRepository?: TotpRepository;
   /** Lets `ProofTokenService` keep nonces without Redis. */
   readonly proofNonceStore?: ProofNonceStore;
   /** Allows the explicit auth limits without a Redis store. */
@@ -64,6 +67,10 @@ export async function createTestApp(
 
   if (options.sessionRepository !== undefined) {
     builder = builder.overrideProvider(SESSION_REPOSITORY).useValue(options.sessionRepository);
+  }
+
+  if (options.totpRepository !== undefined) {
+    builder = builder.overrideProvider(TOTP_REPOSITORY).useValue(options.totpRepository);
   }
 
   if (options.proofNonceStore !== undefined) {

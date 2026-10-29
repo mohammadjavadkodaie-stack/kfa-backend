@@ -38,6 +38,12 @@ export type EnrollmentConfirmation =
 export type TotpVerification =
   { readonly ok: true; readonly method: 'totp' | 'recovery' } | { readonly ok: false };
 
+/** What the client may know about its own factor. No secret, no hash. */
+export interface TotpStatus {
+  readonly confirmed: boolean;
+  readonly recoveryCodesLeft: number;
+}
+
 /** Absent or malformed key material means TOTP is off, not "allow everything". */
 function decodeKey(value: string | undefined): Buffer | null {
   if (value === undefined) return null;
@@ -64,6 +70,20 @@ export class TotpService {
     private readonly logger: PinoLogger,
   ) {
     this.encKey = decodeKey(env.TOTP_ENC_KEY);
+  }
+
+  /**
+   * Read-only view of the caller's own factor. Needs no key: nothing here is
+   * decrypted, and an unconfirmed enrollment simply has no recovery codes.
+   */
+  async getStatus(userId: string): Promise<TotpStatus> {
+    const credential = await this.repository.getCredential(userId);
+    const confirmed = credential !== null && credential.confirmedAt !== null;
+
+    return {
+      confirmed,
+      recoveryCodesLeft: confirmed ? await this.repository.countUnusedRecoveryCodes(userId) : 0,
+    };
   }
 
   /**

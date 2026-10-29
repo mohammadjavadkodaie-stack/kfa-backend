@@ -91,3 +91,47 @@ describe('auth foundation migration CHECK regexes', () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Stage 3.2c: the step-up stamp the re-authentication guard reads.
+// ---------------------------------------------------------------------------
+
+const STEPUP_MIGRATION_PATH = join(
+  __dirname,
+  '..',
+  '..',
+  'prisma',
+  'migrations',
+  '20261105120000_session_stepup',
+  'migration.sql',
+);
+
+const stepupSql = readFileSync(STEPUP_MIGRATION_PATH, 'utf8');
+
+describe('session step-up migration', () => {
+  it('adds exactly one nullable timestamp column', () => {
+    const statements = stepupSql
+      // Comment lines describe the change; they are not executed.
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join('\n')
+      .split(';')
+      .map((statement) => statement.trim())
+      .filter((statement) => statement.length > 0);
+
+    expect(statements).toEqual(['ALTER TABLE "sessions" ADD COLUMN "stepup_at" TIMESTAMPTZ(6)']);
+
+    // Nullable on purpose: a session that never stepped up must stay valid for
+    // every other route.
+    expect(statements[0]).not.toContain('NOT NULL');
+    expect(statements[0]).not.toContain('DEFAULT');
+  });
+
+  it('needs no grant change: a new column inherits the table privileges', () => {
+    expect(stepupSql).not.toMatch(/\bGRANT\b|\bREVOKE\b/i);
+  });
+
+  it('uses no escaped backslash', () => {
+    expect(stepupSql).not.toContain('\\\\');
+  });
+});

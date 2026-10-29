@@ -42,6 +42,7 @@ interface FakeSession {
   revokedAt: Date | null;
   revokedReason: string | null;
   lastUsedAt: Date;
+  stepupAt: Date | null;
 }
 
 interface FakeRefreshToken {
@@ -75,6 +76,10 @@ export class InMemorySessionRepository implements SessionRepository {
 
   async findPhoneByUserId(userId: string): Promise<string | null> {
     return this.users.get(userId)?.phone ?? null;
+  }
+
+  async findUsernameByUserId(userId: string): Promise<string | null> {
+    return this.users.get(userId)?.username ?? null;
   }
 
   async createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null> {
@@ -293,6 +298,40 @@ export class InMemorySessionRepository implements SessionRepository {
     };
   }
 
+  async getStepUpAt(sessionId: string, userId: string): Promise<Date | null> {
+    const session = this.sessions.get(sessionId);
+
+    if (
+      session === undefined ||
+      session.userId !== userId ||
+      session.revokedAt !== null ||
+      session.expiresAt.getTime() <= Date.now()
+    ) {
+      return null;
+    }
+
+    return session.stepupAt;
+  }
+
+  async markStepUp(sessionId: string, userId: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    const now = new Date();
+
+    // Same "active session" rule as findActiveSession, with no await in between.
+    if (
+      session === undefined ||
+      session.userId !== userId ||
+      session.revokedAt !== null ||
+      session.expiresAt.getTime() <= now.getTime()
+    ) {
+      return false;
+    }
+
+    session.stepupAt = now;
+
+    return true;
+  }
+
   async listActiveSessions(userId: string, now: Date): Promise<SessionSummaryRecord[]> {
     return [...this.sessions.values()]
       .filter(
@@ -371,6 +410,7 @@ export class InMemorySessionRepository implements SessionRepository {
       revokedAt: null,
       revokedReason: null,
       lastUsedAt: input.now,
+      stepupAt: null,
     };
 
     this.sessions.set(session.id, session);

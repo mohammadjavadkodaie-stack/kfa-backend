@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { PinoLogger } from 'nestjs-pino';
-import { toErrorResponseBody } from '../errors/error-response';
+import { toErrorResponseBody, readPublicErrorCode } from '../errors/error-response';
 import { getRequestId } from '../middleware/request-id.middleware';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,6 +79,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return;
     }
 
-    response.status(statusCode).json(toErrorResponseBody(statusCode, requestId));
+    response
+      .status(statusCode)
+      .json(toErrorResponseBody(statusCode, requestId, readPublicErrorCode(exception)));
   }
 }

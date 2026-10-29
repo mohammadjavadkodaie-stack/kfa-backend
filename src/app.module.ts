@@ -7,6 +7,7 @@ import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { AuthGuard } from './auth/guards/auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
+import { StepUpGuard } from './auth/totp/step-up.guard';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppConfigModule, ENV } from './config/config.module';
 import type { Env } from './config/env';
@@ -31,10 +32,12 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
   providers: [
     // Order matters: throttle before authenticating so unauthenticated floods
     // are still rate limited; RolesGuard must run after AuthGuard so it can
-    // read the principal from the database lookup AuthGuard already made.
+    // read the principal from the database lookup AuthGuard already made, and
+    // StepUpGuard after RolesGuard so it only ever sees a staff principal.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: StepUpGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })

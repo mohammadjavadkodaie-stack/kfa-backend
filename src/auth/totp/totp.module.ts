@@ -7,8 +7,8 @@ import { TOTP_REPOSITORY } from './totp.repository';
 import { TotpService } from './totp.service';
 
 /**
- * Second-factor state and policy. No controller here: the endpoints arrive in
- * stage 3.2c and are the only layer that checks roles.
+ * Second-factor state and policy. The endpoints live in `AuthModule`, which is
+ * where the session repository a step-up has to stamp belongs.
  */
 @Module({
   imports: [RateLimitModule, AuditModule, PrismaModule],

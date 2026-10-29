@@ -127,6 +127,8 @@ export interface SessionRepository {
   findUserByPhone(phoneE164: string): Promise<AccountRecord | null>;
   /** Current phone of one account, or null when the user is gone. */
   findPhoneByUserId(userId: string): Promise<string | null>;
+  /** Username of one account. Used as the TOTP label, never the phone. */
+  findUsernameByUserId(userId: string): Promise<string | null>;
   /** User, device, session and first refresh token in one transaction. */
   createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null>;
   createSession(input: CreateSessionInput): Promise<IssuedSessionRecord>;
@@ -164,4 +166,14 @@ export interface SessionRepository {
     userId: string,
     now: Date,
   ): Promise<ActiveSessionRecord | null>;
+  /**
+   * Latest step-up of one live session of `userId`, or null. A foreign,
+   * revoked or expired session answers like a session that never stepped up.
+   */
+  getStepUpAt(sessionId: string, userId: string): Promise<Date | null>;
+  /**
+   * Single atomic update of one live session of `userId`. True only when that
+   * one row changed; unknown, foreign, revoked and expired sessions answer false.
+   */
+  markStepUp(sessionId: string, userId: string): Promise<boolean>;
 }

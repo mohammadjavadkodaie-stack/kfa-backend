@@ -16,6 +16,7 @@ import { InMemorySessionRepository } from '../../src/auth/in-memory-session.repo
 import { AccessPolicyService } from '../../src/auth/policy/access-policy.service';
 import { Role } from '../../src/auth/roles';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
+import { RequireStepUp } from '../../src/auth/totp/step-up.guard';
 import { Public } from '../../src/common/decorators/public.decorator';
 import { getRequestId } from '../../src/common/middleware/request-id.middleware';
 
@@ -85,6 +86,18 @@ export class TestController {
   @RequireVerifier()
   @Get('verifier')
   verifierOnly(): { ok: true } {
+    return { ok: true };
+  }
+
+  /**
+   * Stands in for a sensitive staff action. The real admin routes that will
+   * carry `@RequireStepUp()` arrive in the later stages; this one exists so the
+   * guard can be exercised over HTTP without shipping an endpoint for it.
+   */
+  @RequireStepUp()
+  @Roles(Role.ADMIN, Role.OWNER)
+  @Get('sensitive')
+  sensitive(): { ok: true } {
     return { ok: true };
   }
 
