@@ -73,6 +73,8 @@ model User {
   updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
   devices          Device[]
   sessions         Session[]
+  totpCredential   TotpCredential?
+  recoveryCodes    RecoveryCode[]
   @@map("users")
 }
 
@@ -125,4 +127,37 @@ model RefreshToken {
   @@index([sessionId])
   @@index([expiresAt])
   @@map("refresh_tokens")
+}
+
+/// TOTP second factor. At most one credential per user.
+/// `secretEnc` only ever holds the versioned ciphertext envelope (`v1...`),
+/// enforced by a CHECK constraint in the migration.
+model TotpCredential {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId       String    @unique @map("user_id") @db.Uuid
+  secretEnc    String    @map("secret_enc")
+  /// NULL until the user proves possession of the secret with a valid code.
+  confirmedAt  DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  /// Highest accepted time step, so a code cannot be replayed inside its window.
+  lastUsedStep BigInt    @default(0) @map("last_used_step")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("totp_credentials")
+}
+
+/// Single-use recovery codes, stored as sha256 hex only (the plaintext code
+/// lives only in the response that generated it).
+model RecoveryCode {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, codeHash])
+  @@index([userId])
+  @@map("recovery_codes")
 }
