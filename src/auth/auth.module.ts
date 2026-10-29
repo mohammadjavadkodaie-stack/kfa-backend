@@ -26,9 +26,10 @@ import { PhoneChangeService } from './phone-change/phone-change.service';
 import { AccessPolicyService } from './policy/access-policy.service';
 import { PrismaSessionRepository } from './prisma-session.repository';
 import { SESSION_REPOSITORY } from './session.repository';
+import { TotpModule } from './totp/totp.module';
 
 @Module({
-  imports: [RateLimitModule, AuditModule, PrismaModule],
+  imports: [RateLimitModule, AuditModule, PrismaModule, TotpModule],
   controllers: [OtpController, AuthController, PhoneChangeController],
   providers: [
     {
