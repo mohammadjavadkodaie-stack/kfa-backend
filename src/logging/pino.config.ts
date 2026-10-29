@@ -11,6 +11,7 @@ const SENSITIVE_HEADER_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
   'req.headers["x-api-key"]',
+  'req.headers["set-cookie"]',
   'res.headers["set-cookie"]',
 ] as const;
 
@@ -20,6 +21,8 @@ const SENSITIVE_FIELDS = [
   'code',
   'otp',
   'token',
+  'cookie',
+  'accessToken',
   'refreshToken',
   'idNumber',
   'cardNumber',
@@ -49,6 +52,7 @@ const SENSITIVE_CONFIG_PATHS = [
   'AUDIT_HMAC_KEY',
   'RATE_LIMIT_HMAC_KEY',
   'OTP_PROOF_SECRET',
+  'ACCESS_TOKEN_SECRET',
 ] as const;
 
 export function buildRedactPaths(): string[] {

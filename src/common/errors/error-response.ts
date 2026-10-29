@@ -39,3 +39,29 @@ export function toErrorResponseBody(statusCode: number, requestId: string): Erro
     requestId,
   };
 }
+
+/** Minimal response/request surface, so this helper stays framework-agnostic. */
+interface ResponseLike {
+  setHeader(name: string, value: string): unknown;
+  status(code: number): unknown;
+}
+
+interface RequestLike {
+  id?: unknown;
+}
+
+/**
+ * Writes the generic 429 envelope plus the retry hint. Shared by every
+ * controller that has to answer a rate-limit decision, so the shape and the
+ * `Retry-After` rounding cannot drift apart.
+ */
+export function writeTooManyRequests(
+  response: ResponseLike,
+  request: RequestLike,
+  retryAfterSeconds: number,
+): ErrorResponseBody {
+  response.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterSeconds))));
+  response.status(429);
+
+  return toErrorResponseBody(429, typeof request.id === 'string' ? request.id : 'unknown');
+}

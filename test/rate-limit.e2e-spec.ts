@@ -7,8 +7,10 @@ import { Logger, LoggerModule } from 'nestjs-pino';
 import request from 'supertest';
 import { configureApp } from '../src/app.setup';
 import { AuthGuard } from '../src/auth/guards/auth.guard';
+import { SESSION_REPOSITORY } from '../src/auth/session.repository';
 import { Public } from '../src/common/decorators/public.decorator';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
+import { ENV } from '../src/config/config.module';
 import { loadEnv } from '../src/config/env';
 import { createTestApp } from './helpers/create-test-app';
 import { applyTestEnv } from './helpers/test-env';
@@ -31,6 +33,13 @@ class LimitedController {
   }
 }
 
+/**
+ * The guard is registered globally in production, so it is registered globally
+ * here too. Only the throttler behaviour is under test, so the guard gets the
+ * two collaborators it reads at construction time instead of the whole auth
+ * module: the validated env, and a session store that reports every session as
+ * revoked (every route in this suite is `@Public()`).
+ */
 @Module({
   imports: [
     LoggerModule.forRoot({ pinoHttp: { level: 'silent' } }),
@@ -38,6 +47,8 @@ class LimitedController {
   ],
   controllers: [LimitedController],
   providers: [
+    { provide: ENV, useFactory: () => loadEnv(process.env) },
+    { provide: SESSION_REPOSITORY, useValue: { isSessionActive: () => Promise.resolve(false) } },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

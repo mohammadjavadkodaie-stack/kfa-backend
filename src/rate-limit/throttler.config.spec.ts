@@ -17,6 +17,8 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgresql://kfa_app:unit-test@db.internal:5432/kfa?sslmode=require',
   REDIS_URL: 'rediss://:unit-test-redis-password@redis.internal:6380/0',
   OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789',
+  // Required from stage 2.3a on; without it production refuses to boot.
+  ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
 };

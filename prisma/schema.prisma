@@ -116,6 +116,8 @@ model RefreshToken {
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
   usedAt     DateTime? @map("used_at") @db.Timestamptz(6)
+  /// Set when the whole chain is revoked (logout, reuse detection, device mismatch).
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
   session    Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   @@index([sessionId])
   @@index([expiresAt])

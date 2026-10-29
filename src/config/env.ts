@@ -23,6 +23,9 @@ export const RATE_LIMIT_HMAC_KEY_MIN_LENGTH = 32;
 /** Minimum accepted length of the OTP proof-token HMAC secret. */
 export const OTP_PROOF_SECRET_MIN_LENGTH = 32;
 
+/** Minimum accepted length of the access-token signing secret. */
+export const ACCESS_TOKEN_SECRET_MIN_LENGTH = 32;
+
 /** Maximum accepted length of a database connection URL. */
 const DATABASE_URL_MAX_LENGTH = 2048;
 
@@ -247,8 +250,43 @@ export const envSchema = z
 
     /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
     OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
+
+    /**
+     * HS256 secret for access tokens (Stage 2.3a). Required in production and
+     * independent from every other secret, so one leak cannot mint another token.
+     */
+    ACCESS_TOKEN_SECRET: z
+      .string()
+      .min(
+        ACCESS_TOKEN_SECRET_MIN_LENGTH,
+        `must be at least ${ACCESS_TOKEN_SECRET_MIN_LENGTH} characters`,
+      )
+      .max(1024, 'must be at most 1024 characters')
+      .optional(),
+
+    /** Access-token lifetime. Short by design: refresh is what keeps sessions alive. */
+    ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(900).default(600),
+
+    /** Lifetime of one refresh token; every rotation restarts it. */
+    REFRESH_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(14),
+
+    /** Absolute session cap: rotation can never extend a session past this. */
+    SESSION_ABSOLUTE_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   })
   .superRefine((env, ctx) => {
+    if (
+      env.ACCESS_TOKEN_SECRET !== undefined &&
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.OTP_PROOF_SECRET].includes(
+        env.ACCESS_TOKEN_SECRET,
+      )
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ACCESS_TOKEN_SECRET'],
+        message: 'must differ from the audit, rate-limit and proof secrets',
+      });
+    }
+
     if (
       env.OTP_PROOF_SECRET !== undefined &&
       (env.OTP_PROOF_SECRET === env.AUDIT_HMAC_KEY ||
@@ -319,6 +357,14 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['OTP_PROOF_SECRET'],
+        message: 'is required in production',
+      });
+    }
+
+    if (env.ACCESS_TOKEN_SECRET === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ACCESS_TOKEN_SECRET'],
         message: 'is required in production',
       });
     }

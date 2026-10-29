@@ -6,6 +6,7 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
   RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
   OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
+  ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
   OTP_PROVIDER: 'fake',
   CAPTCHA_PROVIDER: 'fake',
 };
@@ -80,6 +81,24 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   ['a missing OTP_PROOF_SECRET in production', { ...PROD_ENV, OTP_PROOF_SECRET: undefined }],
   ['an OTP send cap of zero', { ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: '0' }],
   ['a non numeric OTP send cap', { ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: 'many' }],
+  ['a short ACCESS_TOKEN_SECRET', { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'too-short' }],
+  [
+    'an ACCESS_TOKEN_SECRET equal to the audit key',
+    { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'unit-test-audit-hmac-key-0123456789' },
+  ],
+  [
+    'an ACCESS_TOKEN_SECRET equal to the rate-limit key',
+    { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'unit-test-rate-limit-hmac-key-0123456789' },
+  ],
+  [
+    'an ACCESS_TOKEN_SECRET equal to the proof secret',
+    { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef' },
+  ],
+  ['a missing ACCESS_TOKEN_SECRET in production', { ...PROD_ENV, ACCESS_TOKEN_SECRET: undefined }],
+  ['an access-token TTL below one minute', { ...BASE_ENV, ACCESS_TOKEN_TTL_SECONDS: '59' }],
+  ['an access-token TTL above fifteen minutes', { ...BASE_ENV, ACCESS_TOKEN_TTL_SECONDS: '901' }],
+  ['a refresh TTL of zero days', { ...BASE_ENV, REFRESH_TTL_DAYS: '0' }],
+  ['an absolute session cap of zero days', { ...BASE_ENV, SESSION_ABSOLUTE_DAYS: '0' }],
 ];
 
 describe('loadEnv', () => {
@@ -99,6 +118,10 @@ describe('loadEnv', () => {
       RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
       OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
       OTP_GLOBAL_SENDS_PER_HOUR: 500,
+      ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
+      ACCESS_TOKEN_TTL_SECONDS: 600,
+      REFRESH_TTL_DAYS: 14,
+      SESSION_ABSOLUTE_DAYS: 30,
     });
   });
 
@@ -211,6 +234,30 @@ describe('loadEnv', () => {
     expect(
       loadEnv({ ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: '25' }).OTP_GLOBAL_SENDS_PER_HOUR,
     ).toBe(25);
+  });
+
+  it('defaults session lifetimes to short access tokens and bounded sessions', () => {
+    const env = loadEnv({ ...BASE_ENV });
+
+    expect(env.ACCESS_TOKEN_TTL_SECONDS).toBe(600);
+    expect(env.REFRESH_TTL_DAYS).toBe(14);
+    expect(env.SESSION_ABSOLUTE_DAYS).toBe(30);
+  });
+
+  it('treats the access-token secret as optional outside production', () => {
+    const env = loadEnv({ ...BASE_ENV, ACCESS_TOKEN_SECRET: undefined });
+
+    expect(env.ACCESS_TOKEN_SECRET).toBeUndefined();
+  });
+
+  it('requires an independent access-token secret in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, ACCESS_TOKEN_SECRET: undefined })).toThrow(
+      /ACCESS_TOKEN_SECRET.*required in production/,
+    );
+    expect(() =>
+      loadEnv({ ...PROD_ENV, ACCESS_TOKEN_SECRET: PROD_ENV.AUDIT_HMAC_KEY as string }),
+    ).toThrow(/ACCESS_TOKEN_SECRET.*must differ/);
+    expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
   });
 
   it('returns a frozen object', () => {

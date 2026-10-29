@@ -18,6 +18,11 @@ export const TEST_ENV = {
   RATE_LIMIT_HMAC_KEY: 'test-only-rate-limit-hmac-key-0123456789',
   /** Fixed, fake key for OTP proof tokens; tests must never depend on a real secret. */
   OTP_PROOF_SECRET: 'test-only-otp-proof-secret-0123456789abcdef',
+  /** Fake access-token secret; production-only validation is covered by env.spec. */
+  ACCESS_TOKEN_SECRET: 'test-only-access-token-secret-0123456789abcdef',
+  ACCESS_TOKEN_TTL_SECONDS: '600',
+  REFRESH_TTL_DAYS: '14',
+  SESSION_ABSOLUTE_DAYS: '30',
   /** Small enough to hit the deployment cap in a test, large enough to be realistic. */
   OTP_GLOBAL_SENDS_PER_HOUR: '500',
   /**

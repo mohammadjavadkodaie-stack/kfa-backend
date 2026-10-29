@@ -112,8 +112,16 @@ describeWithRedis('OTP flow (e2e)', () => {
       return;
     }
 
-    await app.close();
-    await admin.quit();
+    // A failed `beforeAll` (Redis unreachable or rejecting the password) leaves
+    // one or both of these unset; closing them must not mask the real error.
+    if (app !== undefined) {
+      await app.close();
+    }
+
+    if (admin !== undefined) {
+      await admin.quit();
+    }
+
     // Do not leak the Redis override into the next suite in the same process.
     applyTestEnv();
   });

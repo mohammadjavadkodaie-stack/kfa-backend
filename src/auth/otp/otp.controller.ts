@@ -1,7 +1,7 @@
 import { Body, Controller, HttpCode, HttpStatus, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
-import { toErrorResponseBody, type ErrorResponseBody } from '../../common/errors/error-response';
+import { writeTooManyRequests, type ErrorResponseBody } from '../../common/errors/error-response';
 import { getRequestId } from '../../common/middleware/request-id.middleware';
 import { OtpService, type OtpRequestContext } from './otp.service';
 
@@ -58,7 +58,7 @@ export class OtpController {
     const result = await this.otp.start(body, toContext(request));
 
     if (result.outcome === 'throttled') {
-      return tooManyRequests(response, request, result.retryAfterSeconds);
+      return writeTooManyRequests(response, request, result.retryAfterSeconds);
     }
 
     return { ok: true };
@@ -75,7 +75,7 @@ export class OtpController {
     const result = await this.otp.verify(body, toContext(request));
 
     if (result.outcome === 'throttled') {
-      return tooManyRequests(response, request, result.retryAfterSeconds);
+      return writeTooManyRequests(response, request, result.retryAfterSeconds);
     }
 
     if (result.outcome === 'rejected') {
@@ -85,16 +85,4 @@ export class OtpController {
 
     return { proof: result.proof };
   }
-}
-
-/** Same generic envelope as the global filter, plus the retry hint. */
-function tooManyRequests(
-  response: Response,
-  request: Request,
-  retryAfterSeconds: number,
-): ErrorResponseBody {
-  response.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterSeconds))));
-  response.status(HttpStatus.TOO_MANY_REQUESTS);
-
-  return toErrorResponseBody(HttpStatus.TOO_MANY_REQUESTS, getRequestId(request));
 }
