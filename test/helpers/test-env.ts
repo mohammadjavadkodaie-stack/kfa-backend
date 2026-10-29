@@ -16,6 +16,10 @@ export const TEST_ENV = {
   DATABASE_URL: 'postgresql://kfa_app:test-only-password@127.0.0.1:5432/kfa_test?schema=public',
   AUDIT_HMAC_KEY: 'test-only-audit-hmac-key-0123456789',
   RATE_LIMIT_HMAC_KEY: 'test-only-rate-limit-hmac-key-0123456789',
+  /** Fixed, fake key for OTP proof tokens; tests must never depend on a real secret. */
+  OTP_PROOF_SECRET: 'test-only-otp-proof-secret-0123456789abcdef',
+  /** Small enough to hit the deployment cap in a test, large enough to be realistic. */
+  OTP_GLOBAL_SENDS_PER_HOUR: '500',
   /**
    * The fake providers are the only ones wired up so far, and production
    * additionally requires non-fake values. Keeping both keys here means

@@ -32,6 +32,12 @@ export interface RateLimitDecision {
   readonly retryAfterSeconds: number;
 }
 
+/** Minimal input for clearing a counter (e.g. after a successful login). */
+export interface ResetRateLimitInput {
+  readonly scope: string;
+  readonly identifier: string;
+}
+
 const MAX_SCOPE_LENGTH = 64;
 const MAX_IDENTIFIER_LENGTH = 256;
 
@@ -107,6 +113,46 @@ export class RateLimitService {
       };
     } catch {
       // Fail closed: an unreachable store must deny, never allow.
+      throw rateLimitUnavailable();
+    }
+  }
+
+  /**
+   * Clears a counter, so a successful attempt is not billed against the budget
+   * of a failed one (e.g. OTP mismatches before the right code).
+   *
+   * Fails closed like `consume`: a Redis outage must not silently keep a lock
+   * the caller believes is gone.
+   */
+  async reset(input: ResetRateLimitInput): Promise<void> {
+    const { scope, identifier } = input;
+
+    if (
+      typeof scope !== 'string' ||
+      scope.length === 0 ||
+      scope.length > MAX_SCOPE_LENGTH ||
+      typeof identifier !== 'string' ||
+      identifier.length === 0 ||
+      identifier.length > MAX_IDENTIFIER_LENGTH
+    ) {
+      throw new BadRequestException();
+    }
+
+    const client = this.client;
+    const hmacKey = this.hmacKey;
+
+    if (client === null || hmacKey === undefined) {
+      throw rateLimitUnavailable();
+    }
+
+    const key = buildRateLimitKey(
+      'consume',
+      `${scope}:${this.hashIdentifier(identifier, hmacKey)}`,
+    );
+
+    try {
+      await client.del(key);
+    } catch {
       throw rateLimitUnavailable();
     }
   }

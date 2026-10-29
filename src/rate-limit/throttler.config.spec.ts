@@ -16,6 +16,7 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   NODE_ENV: 'production',
   DATABASE_URL: 'postgresql://kfa_app:unit-test@db.internal:5432/kfa?sslmode=require',
   REDIS_URL: 'rediss://:unit-test-redis-password@redis.internal:6380/0',
+  OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789',
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
 };

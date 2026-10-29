@@ -52,6 +52,9 @@ class RateLimitStoreModule {}
     }),
   ],
   providers: [RateLimitService],
-  exports: [RateLimitService],
+  // The store module is re-exported (not its tokens): Nest only allows a module
+  // to export providers it declares itself, so `REDIS_CLIENT` stays reachable
+  // for consumers such as `AuthModule`.
+  exports: [RateLimitService, RateLimitStoreModule],
 })
 export class RateLimitModule {}

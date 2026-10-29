@@ -19,13 +19,23 @@ const PRISMA_TEST_STUB = {
   $disconnect: (): Promise<void> => Promise.resolve(),
 };
 
+/** Optional replacements for the default no-connection Prisma stub. */
+export interface CreateTestAppOptions {
+  readonly prisma?: object;
+}
+
 /**
  * Builds the real application (same module, same hardening as `main.ts`) and
  * adds test-only routes. `bodyParser: false` mirrors production, where the body
  * limit is registered by `configureApp`.
+ *
+ * `options.prisma` replaces the no-connection stub, e.g. with an in-memory
+ * client, for suites that need a service (such as the audit chain) to actually
+ * write rows.
  */
 export async function createTestApp(
   overrides: TestEnvOverrides = {},
+  options: CreateTestAppOptions = {},
 ): Promise<NestExpressApplication> {
   applyTestEnv(overrides);
 
@@ -34,7 +44,7 @@ export async function createTestApp(
     controllers: [TestController],
   })
     .overrideProvider(PrismaService)
-    .useValue(PRISMA_TEST_STUB)
+    .useValue(options.prisma ?? PRISMA_TEST_STUB)
     .compile();
 
   const app = moduleRef.createNestApplication<NestExpressApplication>({

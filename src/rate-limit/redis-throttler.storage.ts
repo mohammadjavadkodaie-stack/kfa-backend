@@ -111,6 +111,8 @@ export interface RateLimitRedisClient {
   ): Promise<unknown>;
   quit(): Promise<unknown>;
   disconnect(): void;
+  /** Removes a counter key; used to clear a budget after a successful attempt. */
+  del(key: string): Promise<unknown>;
 }
 
 /** Bounded connection: no lazy hangs, no unbounded per-command retries. */

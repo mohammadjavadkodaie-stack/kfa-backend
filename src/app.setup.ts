@@ -8,7 +8,14 @@ import { createBodyParserErrorHandler } from './common/middleware/body-parser-er
 
 /** Explicit CORS allowlists - no wildcards, no reflection of arbitrary origins. */
 export const CORS_ALLOWED_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const;
-export const CORS_ALLOWED_HEADERS = ['Content-Type', 'Authorization', 'X-Request-Id'] as const;
+export const CORS_ALLOWED_HEADERS = [
+  'Content-Type',
+  'Authorization',
+  'X-Request-Id',
+  // Device fingerprint used by the OTP endpoints; without it browsers fail
+  // preflight and the device-scoped throttles never engage.
+  'X-Device-Key',
+] as const;
 export const CORS_MAX_AGE_SECONDS = 600;
 
 /**

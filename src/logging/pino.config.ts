@@ -23,7 +23,17 @@ const SENSITIVE_FIELDS = [
   'refreshToken',
   'idNumber',
   'cardNumber',
+  'captchaToken',
+  'proof',
+  'otpProof',
 ] as const;
+
+/**
+ * Client IPs in explicit log calls. The HTTP access line keeps its
+ * `remoteAddress` on purpose (that is the request log), but an IP must never be
+ * copied into an ad-hoc context object: use a hash or omit it.
+ */
+const SENSITIVE_IP_PATHS = ['ip', '*.ip', '*.*.ip'] as const;
 
 const WILDCARD_PREFIXES = ['', '*.', '*.*.', '*.*.*.'] as const;
 
@@ -38,6 +48,7 @@ const SENSITIVE_CONFIG_PATHS = [
   'REDIS_URL',
   'AUDIT_HMAC_KEY',
   'RATE_LIMIT_HMAC_KEY',
+  'OTP_PROOF_SECRET',
 ] as const;
 
 export function buildRedactPaths(): string[] {
@@ -54,6 +65,10 @@ export function buildRedactPaths(): string[] {
     for (const prefix of WILDCARD_PREFIXES) {
       paths.add(`${prefix}${field}`);
     }
+  }
+
+  for (const ipPath of SENSITIVE_IP_PATHS) {
+    paths.add(ipPath);
   }
 
   for (const configPath of SENSITIVE_CONFIG_PATHS) {

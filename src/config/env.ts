@@ -20,6 +20,9 @@ export const AUDIT_HMAC_KEY_MIN_LENGTH = 32;
 /** Minimum accepted length of the rate-limit identifier HMAC key. */
 export const RATE_LIMIT_HMAC_KEY_MIN_LENGTH = 32;
 
+/** Minimum accepted length of the OTP proof-token HMAC secret. */
+export const OTP_PROOF_SECRET_MIN_LENGTH = 32;
+
 /** Maximum accepted length of a database connection URL. */
 const DATABASE_URL_MAX_LENGTH = 2048;
 
@@ -227,8 +230,37 @@ export const envSchema = z
       )
       .max(1024, 'must be at most 1024 characters')
       .optional(),
+
+    /**
+     * HMAC secret for the short-lived OTP proof token (Stage 2.3 consumes it).
+     * Must be independent from the other HMAC keys so a leak of one does not
+     * forge the other.
+     */
+    OTP_PROOF_SECRET: z
+      .string()
+      .min(
+        OTP_PROOF_SECRET_MIN_LENGTH,
+        `must be at least ${OTP_PROOF_SECRET_MIN_LENGTH} characters`,
+      )
+      .max(1024, 'must be at most 1024 characters')
+      .optional(),
+
+    /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
+    OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
   })
   .superRefine((env, ctx) => {
+    if (
+      env.OTP_PROOF_SECRET !== undefined &&
+      (env.OTP_PROOF_SECRET === env.AUDIT_HMAC_KEY ||
+        env.OTP_PROOF_SECRET === env.RATE_LIMIT_HMAC_KEY)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['OTP_PROOF_SECRET'],
+        message: 'must differ from the audit and rate-limit HMAC keys',
+      });
+    }
+
     if (env.NODE_ENV !== 'production') {
       return;
     }
@@ -279,6 +311,14 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['RATE_LIMIT_HMAC_KEY'],
+        message: 'is required in production',
+      });
+    }
+
+    if (env.OTP_PROOF_SECRET === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['OTP_PROOF_SECRET'],
         message: 'is required in production',
       });
     }

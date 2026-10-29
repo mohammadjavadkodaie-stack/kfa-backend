@@ -4,6 +4,7 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { LoggerModule } from 'nestjs-pino';
 import { AuditModule } from './audit/audit.module';
+import { AuthModule } from './auth/auth.module';
 import { AuthGuard } from './auth/guards/auth.guard';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppConfigModule, ENV } from './config/config.module';
@@ -23,6 +24,7 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
     RateLimitModule,
     PrismaModule,
     AuditModule,
+    AuthModule,
     HealthModule,
   ],
   providers: [
