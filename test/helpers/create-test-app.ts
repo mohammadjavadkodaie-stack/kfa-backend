@@ -3,6 +3,7 @@ import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/app.setup';
+import { AuthModule } from '../../src/auth/auth.module';
 import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/otp/proof-token';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
 import { ENV } from '../../src/config/config.module';
@@ -52,7 +53,10 @@ export async function createTestApp(
   applyTestEnv(overrides);
 
   let builder: TestingModuleBuilder = Test.createTestingModule({
-    imports: [AppModule],
+    // `AuthModule` is imported as well so the test controller can inject the
+    // auth providers (`AccessPolicyService`, the session repository) that the
+    // application module keeps to itself. Nest shares one instance per module.
+    imports: [AppModule, AuthModule],
     controllers: [TestController],
   })
     .overrideProvider(PrismaService)

@@ -23,6 +23,7 @@ import {
 } from './otp/proof-token';
 import { PhoneChangeController } from './phone-change/phone-change.controller';
 import { PhoneChangeService } from './phone-change/phone-change.service';
+import { AccessPolicyService } from './policy/access-policy.service';
 import { PrismaSessionRepository } from './prisma-session.repository';
 import { SESSION_REPOSITORY } from './session.repository';
 
@@ -68,6 +69,7 @@ import { SESSION_REPOSITORY } from './session.repository';
     AuthGuard,
     RolesGuard,
     OriginCheckGuard,
+    AccessPolicyService,
   ],
   exports: [
     OTP_PROVIDER,
@@ -78,6 +80,9 @@ import { SESSION_REPOSITORY } from './session.repository';
     AuthGuard,
     RolesGuard,
     AuthService,
+    // The administrative modules must inject this rather than re-implement a
+    // rule; it is the only place that decides and audits a staff action.
+    AccessPolicyService,
   ],
 })
 export class AuthModule {}
