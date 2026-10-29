@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { ENV } from '../config/config.module';
+import type { Env } from '../config/env';
 import { PrismaModule } from '../database/prisma.module';
 import { RateLimitModule } from '../rate-limit/rate-limit.module';
 import { REDIS_CLIENT } from '../rate-limit/redis-throttler.storage';
@@ -10,7 +11,7 @@ import { CaptchaProvider, CAPTCHA_PROVIDER, FakeCaptchaProvider } from './captch
 import { AuthGuard } from './guards/auth.guard';
 import { OriginCheckGuard } from './guards/origin.guard';
 import { OtpController } from './otp/otp.controller';
-import { FakeOtpProvider, OTP_PROVIDER, OtpProvider } from './otp/otp.provider';
+import { createOtpProvider, OTP_PROVIDER, OtpProvider } from './otp/otp.provider';
 import { OtpService } from './otp/otp.service';
 import {
   PROOF_NONCE_STORE,
@@ -29,10 +30,9 @@ import { SESSION_REPOSITORY } from './session.repository';
     {
       provide: OTP_PROVIDER,
       inject: [ENV],
-      useFactory: (env: { OTP_PROVIDER: string }): OtpProvider => {
-        if (env.OTP_PROVIDER !== 'fake') throw new Error('Unsupported OTP_PROVIDER');
-        return new FakeOtpProvider();
-      },
+      // A fake provider in production is a boot error, not a warning.
+      useFactory: (env: Pick<Env, 'NODE_ENV' | 'OTP_PROVIDER'>): OtpProvider =>
+        createOtpProvider(env),
     },
     {
       provide: CAPTCHA_PROVIDER,

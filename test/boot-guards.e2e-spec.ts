@@ -68,6 +68,23 @@ describe('Boot guards (e2e)', () => {
     expect((error as Error).message).not.toContain('CAPTCHA_PROVIDER');
   });
 
+  it('refuses to boot in production with the fake OTP provider', async () => {
+    applyTestEnv({
+      ...PROD_PROVIDER_ENV,
+      OTP_PROVIDER: 'fake',
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://kfa_app:test-only@db.internal:5432/kfa?sslmode=require',
+      REDIS_URL: 'rediss://:test-only@redis.internal:6380/0',
+    });
+
+    const error = await compileApp();
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('Invalid environment configuration');
+    expect((error as Error).message).toContain('OTP_PROVIDER');
+    expect((error as Error).message).not.toContain('CAPTCHA_PROVIDER');
+  });
+
   it('refuses a plaintext Redis URL in production without echoing its password', async () => {
     const password = 'sentinel-redis-password-must-not-leak';
 

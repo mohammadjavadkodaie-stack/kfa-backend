@@ -1,15 +1,20 @@
 import { ServiceUnavailableException } from '@nestjs/common';
+import { createHmac, randomUUID } from 'node:crypto';
 import {
   PROOF_NONCE_KEY_PREFIX,
+  PROOF_PURPOSES,
   PROOF_TTL_SECONDS,
   ProofTokenService,
   RedisProofNonceStore,
+  isProofPurpose,
   type ProofNonceStore,
+  type ProofPurpose,
 } from './proof-token';
 
 const SECRET = 'unit-test-otp-proof-secret-0123456789abcdef';
 const PHONE = '+14155552671';
 const NOW = 1_700_000_000_000;
+const PURPOSE: ProofPurpose = 'login';
 
 /** Minimal in-memory stand-in for the Redis nonce store. */
 class MemoryNonceStore implements ProofNonceStore {
@@ -64,35 +69,106 @@ function tamperPayload(token: string, mutate: (payload: Record<string, unknown>)
   return `${Buffer.from(JSON.stringify(payload)).toString('base64url')}.${signatureSegment}`;
 }
 
+/** Builds a correctly signed version 1 token, i.e. one without a purpose claim. */
+function mintLegacyProof(jti: string): string {
+  const phoneHash = createHmac('sha256', SECRET).update(`phone:${PHONE}`, 'utf8').digest('hex');
+  const payloadSegment = Buffer.from(
+    JSON.stringify({
+      v: 1,
+      phoneHash,
+      jti,
+      exp: Math.floor(NOW / 1_000) + PROOF_TTL_SECONDS,
+    }),
+  ).toString('base64url');
+  const signature = createHmac('sha256', SECRET).update(payloadSegment, 'utf8').digest('base64url');
+
+  return `${payloadSegment}.${signature}`;
+}
+
+/** Every ordered pair of distinct purposes: the 12 cross-purpose replays. */
+const CROSS_PURPOSE_PAIRS = PROOF_PURPOSES.flatMap((issuedFor) =>
+  PROOF_PURPOSES.filter((presentedAs) => presentedAs !== issuedFor).map(
+    (presentedAs) => [issuedFor, presentedAs] as const,
+  ),
+);
+
 describe('ProofTokenService', () => {
   it('issues a proof that resolves to the normalized phone exactly once', async () => {
     const { service, store } = createService();
 
-    const proof = await service.issue(PHONE, NOW);
+    const proof = await service.issue(PHONE, PURPOSE, NOW);
 
     expect(typeof proof).toBe('string');
     expect(store.remaining()).toBe(1);
 
-    await expect(service.verifyAndConsumeProof(proof, NOW + 1_000)).resolves.toBe(PHONE);
+    await expect(service.verifyAndConsumeProof(proof, PURPOSE, NOW + 1_000)).resolves.toBe(PHONE);
     // The nonce is gone, so the same token can never be accepted twice.
-    await expect(service.verifyAndConsumeProof(proof, NOW + 1_000)).resolves.toBeNull();
+    await expect(service.verifyAndConsumeProof(proof, PURPOSE, NOW + 1_000)).resolves.toBeNull();
     expect(store.remaining()).toBe(0);
   });
 
   it('never embeds the raw phone in the token', async () => {
     const { service } = createService();
 
-    const proof = await service.issue(PHONE, NOW);
+    const proof = await service.issue(PHONE, PURPOSE, NOW);
     const decoded = Buffer.from(proof.split('.')[0] as string, 'base64url').toString('utf8');
 
     expect(proof).not.toContain(PHONE);
     expect(proof).not.toContain('4155552671');
     expect(decoded).not.toContain(PHONE);
     expect(JSON.parse(decoded)).toMatchObject({
-      v: 1,
+      v: 2,
+      purpose: PURPOSE,
       phoneHash: expect.stringMatching(/^[0-9a-f]{64}$/) as string,
       exp: Math.floor(NOW / 1_000) + PROOF_TTL_SECONDS,
     });
+  });
+
+  it.each(CROSS_PURPOSE_PAIRS)(
+    'rejects a %s proof presented as %s',
+    async (issuedFor, presentedAs) => {
+      const { service, store } = createService();
+
+      const proof = await service.issue(PHONE, issuedFor, NOW);
+
+      await expect(
+        service.verifyAndConsumeProof(proof, presentedAs, NOW + 1_000),
+      ).resolves.toBeNull();
+
+      // Refused before the nonce is touched, so the genuine action still works.
+      expect(store.remaining()).toBe(1);
+      await expect(service.verifyAndConsumeProof(proof, issuedFor, NOW + 1_000)).resolves.toBe(
+        PHONE,
+      );
+    },
+  );
+
+  it('rejects a correctly signed token that still uses the version 1 payload', async () => {
+    const { service, store } = createService();
+    const jti = randomUUID();
+
+    await store.put(jti, PHONE, PROOF_TTL_SECONDS);
+
+    // Same secret, same phone, same nonce: only the payload version differs.
+    const legacy = mintLegacyProof(jti);
+
+    await expect(service.verifyAndConsumeProof(legacy, PURPOSE, NOW + 1_000)).resolves.toBeNull();
+    expect(store.has(jti)).toBe(true);
+  });
+
+  it('rejects a version 2 token whose purpose was swapped after signing', async () => {
+    const { service } = createService();
+
+    const proof = await service.issue(PHONE, 'register', NOW);
+    const swapped = tamperPayload(proof, (payload) => {
+      payload.purpose = 'login';
+    });
+
+    await expect(service.verifyAndConsumeProof(swapped, 'login', NOW + 1_000)).resolves.toBeNull();
+    // A refused token never burns the nonce the genuine action still needs.
+    await expect(service.verifyAndConsumeProof(proof, 'register', NOW + 1_000)).resolves.toBe(
+      PHONE,
+    );
   });
 
   it('rejects a token signed with a different secret', async () => {
@@ -102,28 +178,28 @@ describe('ProofTokenService', () => {
       issuer.store,
     );
 
-    const proof = await issuer.service.issue(PHONE, NOW);
+    const proof = await issuer.service.issue(PHONE, PURPOSE, NOW);
 
-    await expect(verifier.verifyAndConsumeProof(proof, NOW + 1_000)).resolves.toBeNull();
+    await expect(verifier.verifyAndConsumeProof(proof, PURPOSE, NOW + 1_000)).resolves.toBeNull();
   });
 
   it('rejects a payload modified after signing', async () => {
     const { service } = createService();
 
-    const proof = await service.issue(PHONE, NOW);
+    const proof = await service.issue(PHONE, PURPOSE, NOW);
     const extended = tamperPayload(proof, (payload) => {
       payload.exp = Number(payload.exp) + 3_600;
     });
 
-    await expect(service.verifyAndConsumeProof(extended, NOW + 1_000)).resolves.toBeNull();
+    await expect(service.verifyAndConsumeProof(extended, PURPOSE, NOW + 1_000)).resolves.toBeNull();
     // A refused token must not burn the nonce of the genuine one.
-    await expect(service.verifyAndConsumeProof(proof, NOW + 1_000)).resolves.toBe(PHONE);
+    await expect(service.verifyAndConsumeProof(proof, PURPOSE, NOW + 1_000)).resolves.toBe(PHONE);
   });
 
   it('rejects an expired token without consuming the nonce', async () => {
     const { service, store } = createService();
 
-    const proof = await service.issue(PHONE, NOW);
+    const proof = await service.issue(PHONE, PURPOSE, NOW);
     const [payloadSegment] = proof.split('.') as [string];
     const { jti } = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString('utf8')) as {
       jti: string;
@@ -131,26 +207,26 @@ describe('ProofTokenService', () => {
 
     expect(store.has(jti)).toBe(true);
     await expect(
-      service.verifyAndConsumeProof(proof, NOW + PROOF_TTL_SECONDS * 1_000),
+      service.verifyAndConsumeProof(proof, PURPOSE, NOW + PROOF_TTL_SECONDS * 1_000),
     ).resolves.toBeNull();
     expect(store.has(jti)).toBe(true);
     // Still accepted one millisecond before the boundary.
     await expect(
-      service.verifyAndConsumeProof(proof, NOW + PROOF_TTL_SECONDS * 1_000 - 1),
+      service.verifyAndConsumeProof(proof, PURPOSE, NOW + PROOF_TTL_SECONDS * 1_000 - 1),
     ).resolves.toBe(PHONE);
   });
 
   it('rejects a nonce bound to a different phone (hash mismatch)', async () => {
     const { service, store } = createService();
 
-    const proof = await service.issue(PHONE, NOW);
+    const proof = await service.issue(PHONE, PURPOSE, NOW);
 
     // Simulate a corrupted store: the nonce now points at another number.
     for (const jti of store.entries.keys()) {
       store.entries.set(jti, '+14155550000');
     }
 
-    await expect(service.verifyAndConsumeProof(proof, NOW + 1_000)).resolves.toBeNull();
+    await expect(service.verifyAndConsumeProof(proof, PURPOSE, NOW + 1_000)).resolves.toBeNull();
   });
 
   it.each([
@@ -165,26 +241,28 @@ describe('ProofTokenService', () => {
   ])('returns null for %s', async (_label, token) => {
     const { service } = createService();
 
-    await expect(service.verifyAndConsumeProof(token, NOW)).resolves.toBeNull();
+    await expect(service.verifyAndConsumeProof(token, PURPOSE, NOW)).resolves.toBeNull();
   });
 
   it('rejects a signature that is not 32 bytes', async () => {
     const { service } = createService();
 
-    const proof = await service.issue(PHONE, NOW);
+    const proof = await service.issue(PHONE, PURPOSE, NOW);
     const [payloadSegment] = proof.split('.') as [string];
     const short = Buffer.from('short').toString('base64url');
 
     await expect(
-      service.verifyAndConsumeProof(`${payloadSegment}.${short}`, NOW),
+      service.verifyAndConsumeProof(`${payloadSegment}.${short}`, PURPOSE, NOW),
     ).resolves.toBeNull();
   });
 
   it('fails closed without a secret', async () => {
     const service = new ProofTokenService({ OTP_PROOF_SECRET: undefined }, new MemoryNonceStore());
 
-    await expect(service.issue(PHONE, NOW)).rejects.toBeInstanceOf(ServiceUnavailableException);
-    await expect(service.verifyAndConsumeProof('a.b', NOW)).rejects.toBeInstanceOf(
+    await expect(service.issue(PHONE, PURPOSE, NOW)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    await expect(service.verifyAndConsumeProof('a.b', PURPOSE, NOW)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
   });
@@ -192,8 +270,10 @@ describe('ProofTokenService', () => {
   it('fails closed without a nonce store', async () => {
     const service = new ProofTokenService({ OTP_PROOF_SECRET: SECRET }, null);
 
-    await expect(service.issue(PHONE, NOW)).rejects.toBeInstanceOf(ServiceUnavailableException);
-    await expect(service.verifyAndConsumeProof('a.b', NOW)).rejects.toBeInstanceOf(
+    await expect(service.issue(PHONE, PURPOSE, NOW)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    await expect(service.verifyAndConsumeProof('a.b', PURPOSE, NOW)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
   });
@@ -202,16 +282,16 @@ describe('ProofTokenService', () => {
     const { service, store } = createService();
 
     store.putFailure = true;
-    const issueError = await service.issue(PHONE, NOW).catch((error: unknown) => error);
+    const issueError = await service.issue(PHONE, PURPOSE, NOW).catch((error: unknown) => error);
 
     expect(issueError).toBeInstanceOf(ServiceUnavailableException);
     expect((issueError as Error).message).toBe('Service Unavailable');
 
     store.putFailure = false;
-    const proof = await service.issue(PHONE, NOW);
+    const proof = await service.issue(PHONE, PURPOSE, NOW);
     store.takeFailure = true;
 
-    await expect(service.verifyAndConsumeProof(proof, NOW)).rejects.toBeInstanceOf(
+    await expect(service.verifyAndConsumeProof(proof, PURPOSE, NOW)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
   });
@@ -226,8 +306,23 @@ describe('ProofTokenService', () => {
       },
     );
 
-    await expect(service.issue(PHONE, NOW)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(service.issue(PHONE, PURPOSE, NOW)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
   });
+});
+
+describe('isProofPurpose', () => {
+  it.each(PROOF_PURPOSES)('accepts the %s purpose', (purpose) => {
+    expect(isProofPurpose(purpose)).toBe(true);
+  });
+
+  it.each(['', 'admin', 'phone_change', 'LOGIN', 42, null, undefined, {}, ['login']])(
+    'refuses %p',
+    (value) => {
+      expect(isProofPurpose(value)).toBe(false);
+    },
+  );
 });
 
 describe('RedisProofNonceStore', () => {

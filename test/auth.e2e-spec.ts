@@ -1,7 +1,11 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
+import {
+  ProofTokenService,
+  type ProofNonceStore,
+  type ProofPurpose,
+} from '../src/auth/otp/proof-token';
 import { REFRESH_COOKIE_NAME, hashRefreshToken } from '../src/auth/token/refresh-token';
 import type { RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
@@ -93,12 +97,13 @@ describe('Auth HTTP contract (e2e)', () => {
 
   const server = () => request(app.getHttpServer());
 
-  const mintProof = (phone: string = PHONE) => proofs.issue(phone);
+  const mintProof = (phone: string = PHONE, purpose: ProofPurpose = 'register') =>
+    proofs.issue(phone, purpose);
 
   const register = async (username: string = USERNAME, phone: string = PHONE) => {
     const response = await server()
       .post('/auth/register')
-      .send({ proof: await mintProof(phone), username });
+      .send({ proof: await mintProof(phone, 'register'), username });
 
     return response;
   };
@@ -115,7 +120,7 @@ describe('Auth HTTP contract (e2e)', () => {
   const login = async (phone: string = PHONE) => {
     const response = await server()
       .post('/auth/login')
-      .send({ proof: await mintProof(phone) });
+      .send({ proof: await mintProof(phone, 'login') });
 
     return response;
   };
@@ -233,6 +238,28 @@ describe('Auth HTTP contract (e2e)', () => {
       expect(staleProof.status).toBe(401);
       expect(unknownNumber.body).toEqual(GENERIC_UNAUTHORIZED);
       expect(staleProof.body).toEqual(unknownNumber.body);
+    });
+
+    it('refuses a proof minted for another action', async () => {
+      await registerOk();
+
+      // A register proof cannot be replayed as a login, and vice versa.
+      const registerAsLogin = await server()
+        .post('/auth/login')
+        .send({ proof: await mintProof(PHONE, 'register') });
+      const loginAsRegister = await server()
+        .post('/auth/register')
+        .send({ proof: await mintProof(UNKNOWN_PHONE, 'login'), username: 'other_name' });
+
+      expect(registerAsLogin.status).toBe(401);
+      expect(registerAsLogin.body).toEqual(GENERIC_UNAUTHORIZED);
+      expect(refreshCookie(registerAsLogin)).toBeNull();
+      expect(loginAsRegister.status).toBe(401);
+      expect(loginAsRegister.body).toEqual(GENERIC_UNAUTHORIZED);
+      expect(refreshCookie(loginAsRegister)).toBeNull();
+      // Neither attempt created a session or an account.
+      expect(sessions.sessions.size).toBe(1);
+      expect(sessions.users.size).toBe(1);
     });
 
     it('answers 401 - not 403 - for a blocked account', async () => {

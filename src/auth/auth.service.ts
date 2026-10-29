@@ -17,7 +17,7 @@ import { RateLimitService } from '../rate-limit/rate-limit.service';
 import { loginSchema, parseAuthBody, registerSchema } from './auth.schema';
 import { ephemeralDeviceKey, hashDeviceKey } from './device-key';
 import { maskPhone } from './phone';
-import { ProofTokenService } from './otp/proof-token';
+import { ProofTokenService, type ProofPurpose } from './otp/proof-token';
 import {
   generateRefreshToken,
   hashRefreshToken,
@@ -172,7 +172,7 @@ export class AuthService {
       throw new ConflictException();
     }
 
-    const phoneE164 = await this.consumeProof(input.proof);
+    const phoneE164 = await this.consumeProof(input.proof, 'register');
 
     if (await this.sessions.findUserByPhone(phoneE164)) {
       // The caller already proved they own the number, so telling them that an
@@ -251,7 +251,7 @@ export class AuthService {
       throw new BadRequestException();
     }
 
-    const phoneE164 = await this.consumeProof(input.proof);
+    const phoneE164 = await this.consumeProof(input.proof, 'login');
     const account = await this.sessions.findUserByPhone(phoneE164);
 
     if (account === null) {
@@ -515,9 +515,12 @@ export class AuthService {
     return decision.allowed ? null : decision.retryAfterSeconds;
   }
 
-  /** The proof is consumed even when the caller is then rejected. */
-  private async consumeProof(proof: unknown): Promise<string> {
-    const phoneE164 = await this.proof.verifyAndConsumeProof(proof);
+  /**
+   * The proof is consumed even when the caller is then rejected, but only for
+   * the purpose this endpoint exists for: a proof minted elsewhere is refused.
+   */
+  private async consumeProof(proof: unknown, purpose: ProofPurpose): Promise<string> {
+    const phoneE164 = await this.proof.verifyAndConsumeProof(proof, purpose);
 
     if (phoneE164 === null) {
       throw new UnauthorizedException();

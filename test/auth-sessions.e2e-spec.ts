@@ -136,7 +136,7 @@ describe('Session management over HTTP (e2e)', () => {
   const register = async (username: string = USERNAME, phone: string = PHONE) =>
     server()
       .post('/auth/register')
-      .send({ proof: await proofs.issue(phone), username });
+      .send({ proof: await proofs.issue(phone, 'register'), username });
 
   const registerOk = async (username: string = USERNAME, phone: string = PHONE) => {
     const response = await register(username, phone);
@@ -149,7 +149,7 @@ describe('Session management over HTTP (e2e)', () => {
   const loginOk = async (phone: string = PHONE) => {
     const response = await server()
       .post('/auth/login')
-      .send({ proof: await proofs.issue(phone) });
+      .send({ proof: await proofs.issue(phone, 'login') });
 
     expect(response.status).toBe(200);
 
@@ -362,7 +362,7 @@ describe('Session route rate limiting (e2e)', () => {
   it('answers 429 with Retry-After once the per-user budget is gone', async () => {
     const registered = await server()
       .post('/auth/register')
-      .send({ proof: await proofs.issue(PHONE), username: USERNAME });
+      .send({ proof: await proofs.issue(PHONE, 'register'), username: USERNAME });
     const token = (registered.body as { accessToken: string }).accessToken;
     const sessionId =
       entriesOf(await server().get('/auth/sessions').set(bearer(token)))[0]?.id ?? '';

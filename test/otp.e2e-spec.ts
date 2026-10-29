@@ -11,8 +11,8 @@ import { createTestApp } from './helpers/create-test-app';
  * are rejected before the limiter (malformed bodies) can be answered without it.
  */
 const PHONE = '+14155552671';
-const START_BODY = { phone: PHONE, captchaToken: 'fake-captcha-pass' };
-const VERIFY_BODY = { phone: PHONE, code: '123456' };
+const START_BODY = { phone: PHONE, purpose: 'login', captchaToken: 'fake-captcha-pass' };
+const VERIFY_BODY = { phone: PHONE, purpose: 'login', code: '123456' };
 
 describe('OTP endpoints without Redis (e2e)', () => {
   let app: NestExpressApplication;
@@ -42,10 +42,15 @@ describe('OTP endpoints without Redis (e2e)', () => {
 
     it.each([
       ['a non-object body', [{ phone: PHONE }]],
-      ['a missing captcha token', [{ phone: PHONE }]],
+      ['a missing captcha token', [{ phone: PHONE, purpose: 'login' }]],
+      ['a missing purpose', [{ phone: PHONE, captchaToken: 'fake-captcha-pass' }]],
+      ['an unknown purpose', [{ ...START_BODY, purpose: 'admin' }]],
       ['an extra field', [{ ...START_BODY, isAdmin: true }]],
-      ['an oversized phone', [{ phone: `+${'9'.repeat(21)}`, captchaToken: 'x' }]],
-      ['a non-string captcha token', [{ phone: PHONE, captchaToken: 42 }]],
+      [
+        'an oversized phone',
+        [{ phone: `+${'9'.repeat(21)}`, purpose: 'login', captchaToken: 'x' }],
+      ],
+      ['a non-string captcha token', [{ phone: PHONE, purpose: 'login', captchaToken: 42 }]],
     ])('rejects %s with a generic envelope', async (_label, [body]) => {
       const response = await request(app.getHttpServer()).post('/auth/otp/start').send(body);
 
@@ -63,16 +68,28 @@ describe('OTP endpoints without Redis (e2e)', () => {
     it('rejects a malformed body as an invalid code before touching Redis', async () => {
       const response = await request(app.getHttpServer())
         .post('/auth/otp/verify')
-        .send({ phone: PHONE, code: '12345' });
+        .send({ phone: PHONE, purpose: 'login', code: '12345' });
 
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: 'invalid_code' });
     });
 
+    it.each(['', 'admin', 'phone_change'])(
+      'rejects the %p purpose as an invalid code before touching Redis',
+      async (purpose) => {
+        const response = await request(app.getHttpServer())
+          .post('/auth/otp/verify')
+          .send({ phone: PHONE, purpose, code: '123456' });
+
+        expect(response.status).toBe(400);
+        expect(response.body).toEqual({ error: 'invalid_code' });
+      },
+    );
+
     it('rejects an unparseable phone before touching Redis when the schema fails', async () => {
       const response = await request(app.getHttpServer())
         .post('/auth/otp/verify')
-        .send({ phone: 'not-a-phone', code: '1234567' });
+        .send({ phone: 'not-a-phone', purpose: 'login', code: '1234567' });
 
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: 'invalid_code' });

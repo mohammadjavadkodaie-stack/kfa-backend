@@ -102,11 +102,13 @@ export class FakeRateLimit {
 /** Proof store stand-in: every token resolves to the configured phone. */
 export class FakeProof {
   readonly consumed: unknown[] = [];
+  readonly purposes: string[] = [];
 
   constructor(public phone: string | null = TEST_PHONE) {}
 
-  async verifyAndConsumeProof(token: unknown): Promise<string | null> {
+  async verifyAndConsumeProof(token: unknown, purpose: string): Promise<string | null> {
     this.consumed.push(token);
+    this.purposes.push(purpose);
 
     return this.phone;
   }

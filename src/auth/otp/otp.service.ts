@@ -118,7 +118,9 @@ export class OtpService {
     }
 
     try {
-      await this.otpProvider.start(phoneE164, {});
+      // The purpose travels with the challenge so a later verify can bind the
+      // proof to the action the code was requested for.
+      await this.otpProvider.start(phoneE164, { purpose: input.purpose });
     } catch {
       this.logger.warn(
         { requestId: context.requestId, phone: maskPhone(phoneE164) },
@@ -176,7 +178,7 @@ export class OtpService {
     // A successful check clears the wrong-try budget for this phone.
     await this.rateLimit.reset({ scope: 'otp-verify-phone', identifier: phoneE164 });
 
-    const proof = await this.proof.issue(phoneE164);
+    const proof = await this.proof.issue(phoneE164, input.purpose);
 
     await this.recordVerified(phoneE164, context);
 

@@ -24,7 +24,7 @@ const PHONE = '+14155552671';
 const FORMATTED_PHONE = '+1 (415) 555-2671';
 const WRONG_CODE = '000000';
 const RIGHT_CODE = '123456';
-const START_BODY = { phone: FORMATTED_PHONE, captchaToken: 'fake-captcha-pass' };
+const START_BODY = { phone: FORMATTED_PHONE, purpose: 'login', captchaToken: 'fake-captcha-pass' };
 
 interface AuditRow {
   action: string;
@@ -128,7 +128,9 @@ describeWithRedis('OTP flow (e2e)', () => {
 
   const start = () => request(app.getHttpServer()).post('/auth/otp/start').send(START_BODY);
   const verify = (code: string) =>
-    request(app.getHttpServer()).post('/auth/otp/verify').send({ phone: FORMATTED_PHONE, code });
+    request(app.getHttpServer())
+      .post('/auth/otp/verify')
+      .send({ phone: FORMATTED_PHONE, purpose: 'login', code });
 
   it('accepts a start request without revealing whether anything was sent', async () => {
     const response = await start();
@@ -164,8 +166,11 @@ describeWithRedis('OTP flow (e2e)', () => {
 
     const proofTokens = app.get(ProofTokenService);
 
-    await expect(proofTokens.verifyAndConsumeProof(proof)).resolves.toBe(PHONE);
-    await expect(proofTokens.verifyAndConsumeProof(proof)).resolves.toBeNull();
+    // The proof is bound to the purpose the code was requested for, and the
+    // refusal happens before the nonce is spent.
+    await expect(proofTokens.verifyAndConsumeProof(proof, 'register')).resolves.toBeNull();
+    await expect(proofTokens.verifyAndConsumeProof(proof, 'login')).resolves.toBe(PHONE);
+    await expect(proofTokens.verifyAndConsumeProof(proof, 'login')).resolves.toBeNull();
   });
 
   it('keeps the nonce out of the raw phone space', async () => {
@@ -222,7 +227,7 @@ describeWithRedis('OTP flow (e2e)', () => {
   it('rejects a failed captcha with the same generic envelope', async () => {
     const response = await request(app.getHttpServer())
       .post('/auth/otp/start')
-      .send({ phone: PHONE, captchaToken: 'wrong-captcha' });
+      .send({ phone: PHONE, purpose: 'login', captchaToken: 'wrong-captcha' });
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
@@ -266,7 +271,7 @@ describeWithRedis('OTP flow (e2e)', () => {
   it('keeps both endpoints public and terse on malformed input', async () => {
     const response = await request(app.getHttpServer())
       .post('/auth/otp/verify')
-      .send({ phone: PHONE, code: '12345' });
+      .send({ phone: PHONE, purpose: 'login', code: '12345' });
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({ error: 'invalid_code' });

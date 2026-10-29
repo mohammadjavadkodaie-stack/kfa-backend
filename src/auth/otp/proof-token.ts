@@ -7,13 +7,36 @@ import type { Env } from '../../config/env';
  * Short-lived proof that a phone number passed the OTP check.
  *
  * The token never carries the raw phone: the payload holds an HMAC of the
- * phone, a nonce (`jti`) and an expiry. The phone itself is stored in Redis
- * next to the nonce, so consuming the token is the only way to read it back -
- * exactly once, atomically.
+ * phone, a nonce (`jti`), the action it was issued for (`purpose`) and an
+ * expiry. The phone itself is stored in Redis next to the nonce, so consuming
+ * the token is the only way to read it back - exactly once, atomically.
+ *
+ * The purpose is a signed claim, so a proof minted for one action cannot be
+ * replayed against another one (a login proof at the register endpoint).
  */
 
 export const PROOF_TTL_SECONDS = 600;
 export const PROOF_NONCE_KEY_PREFIX = 'kfa:otp:proof:';
+
+/**
+ * The only actions a proof may authorize. Closed set: the value always comes
+ * from this list, never from caller input that has not been narrowed to it.
+ */
+export const PROOF_PURPOSES = [
+  'register',
+  'login',
+  'phone_change_new',
+  'phone_change_old',
+] as const;
+
+export type ProofPurpose = (typeof PROOF_PURPOSES)[number];
+
+const PROOF_PURPOSE_SET: ReadonlySet<string> = new Set(PROOF_PURPOSES);
+
+/** Narrows an untrusted value to the closed set of proof purposes. */
+export function isProofPurpose(value: unknown): value is ProofPurpose {
+  return typeof value === 'string' && PROOF_PURPOSE_SET.has(value);
+}
 
 /** Defensive bound: a valid token is ~200 characters. */
 const MAX_TOKEN_LENGTH = 2048;
@@ -59,9 +82,10 @@ export class RedisProofNonceStore implements ProofNonceStore {
 }
 
 interface ProofPayload {
-  readonly v: 1;
+  readonly v: 2;
   readonly phoneHash: string;
   readonly jti: string;
+  readonly purpose: ProofPurpose;
   readonly exp: number;
 }
 
@@ -83,7 +107,9 @@ function isProofPayload(value: unknown): value is ProofPayload {
   const payload = value as Record<string, unknown>;
 
   return (
-    payload.v === 1 &&
+    // Version 1 tokens carry no purpose and are refused from here on.
+    payload.v === 2 &&
+    isProofPurpose(payload.purpose) &&
     typeof payload.phoneHash === 'string' &&
     PHONE_HASH_PATTERN.test(payload.phoneHash) &&
     typeof payload.jti === 'string' &&
@@ -93,7 +119,8 @@ function isProofPayload(value: unknown): value is ProofPayload {
   );
 }
 
-function sameDigest(left: string, right: string): boolean {
+/** Length-checked, constant-time comparison of two UTF-8 strings. */
+function equalInConstantTime(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left, 'utf8');
   const rightBuffer = Buffer.from(right, 'utf8');
 
@@ -116,8 +143,12 @@ export class ProofTokenService {
     this.secret = env.OTP_PROOF_SECRET;
   }
 
-  /** Issues a proof for a normalized phone and remembers it until it expires. */
-  async issue(phoneE164: string, nowMs: number = Date.now()): Promise<string> {
+  /** Issues a proof for a normalized phone and purpose, remembering it until it expires. */
+  async issue(
+    phoneE164: string,
+    purpose: ProofPurpose,
+    nowMs: number = Date.now(),
+  ): Promise<string> {
     const secret = this.secret;
     const store = this.store;
 
@@ -127,9 +158,10 @@ export class ProofTokenService {
 
     const jti = randomUUID();
     const payload: ProofPayload = {
-      v: 1,
+      v: 2,
       phoneHash: phoneDigest(secret, phoneE164),
       jti,
+      purpose,
       exp: Math.floor(nowMs / 1_000) + PROOF_TTL_SECONDS,
     };
 
@@ -148,10 +180,15 @@ export class ProofTokenService {
   }
 
   /**
-   * Returns the normalized phone behind a valid proof, or null. The nonce is
-   * consumed, so the same token can never succeed twice.
+   * Returns the normalized phone behind a valid proof issued for
+   * `expectedPurpose`, or null. The nonce is consumed, so the same token can
+   * never succeed twice.
    */
-  async verifyAndConsumeProof(token: unknown, nowMs: number = Date.now()): Promise<string | null> {
+  async verifyAndConsumeProof(
+    token: unknown,
+    expectedPurpose: ProofPurpose,
+    nowMs: number = Date.now(),
+  ): Promise<string | null> {
     const secret = this.secret;
     const store = this.store;
 
@@ -187,6 +224,10 @@ export class ProofTokenService {
     // A stale token is refused without touching the store; its nonce simply expires.
     if (decoded.exp <= Math.floor(nowMs / 1_000)) return null;
 
+    // Also stateless: a wrong-purpose attempt must not burn the nonce the
+    // legitimate flow still needs, so the purpose is checked before GETDEL.
+    if (!equalInConstantTime(decoded.purpose, expectedPurpose)) return null;
+
     let phoneE164: string | null;
 
     try {
@@ -195,7 +236,10 @@ export class ProofTokenService {
       throw unavailable();
     }
 
-    if (phoneE164 === null || !sameDigest(phoneDigest(secret, phoneE164), decoded.phoneHash)) {
+    if (
+      phoneE164 === null ||
+      !equalInConstantTime(phoneDigest(secret, phoneE164), decoded.phoneHash)
+    ) {
       return null;
     }
 

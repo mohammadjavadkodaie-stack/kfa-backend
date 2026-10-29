@@ -14,15 +14,15 @@ import {
   OtpService,
   type OtpRequestContext,
 } from './otp.service';
-import type { OtpProvider } from './otp.provider';
+import type { OtpContext, OtpProvider } from './otp.provider';
 import type { CaptchaProvider } from '../captcha/captcha.provider';
-import type { ProofTokenService } from './proof-token';
+import type { ProofPurpose, ProofTokenService } from './proof-token';
 
 const PHONE = '+14155552671';
 const FORMATTED_PHONE = '+1 (415) 555-2671';
 const CONTEXT: OtpRequestContext = { ip: '203.0.113.7', deviceKey: 'device-1', requestId: 'req-1' };
-const START_BODY = { phone: FORMATTED_PHONE, captchaToken: 'captcha-ok' };
-const VERIFY_BODY = { phone: FORMATTED_PHONE, code: '123456' };
+const START_BODY = { phone: FORMATTED_PHONE, purpose: 'login', captchaToken: 'captcha-ok' };
+const VERIFY_BODY = { phone: FORMATTED_PHONE, purpose: 'login', code: '123456' };
 
 interface ConsumeInput {
   readonly scope: string;
@@ -102,15 +102,17 @@ class FakeRateLimit {
 
 class FakeOtpProvider {
   readonly starts: string[] = [];
+  readonly purposes: string[] = [];
   readonly checks: { phoneE164: string; code: string }[] = [];
   correctCode = VERIFY_BODY.code;
   failStart = false;
   failCheck = false;
 
-  async start(phoneE164: string): Promise<{ challengeRef: string | null }> {
+  async start(phoneE164: string, context: OtpContext): Promise<{ challengeRef: string | null }> {
     if (this.failStart) throw new Error('provider down');
 
     this.starts.push(phoneE164);
+    this.purposes.push(context.purpose);
 
     return { challengeRef: null };
   }
@@ -140,12 +142,14 @@ class FakeCaptcha {
 
 class FakeProof {
   readonly issued: string[] = [];
+  readonly purposes: string[] = [];
   fail = false;
 
-  async issue(phoneE164: string): Promise<string> {
+  async issue(phoneE164: string, purpose: ProofPurpose): Promise<string> {
     if (this.fail) throw new ServiceUnavailableException();
 
     this.issued.push(phoneE164);
+    this.purposes.push(purpose);
 
     return `proof-${this.issued.length}`;
   }
@@ -186,6 +190,8 @@ describe('OtpService.start', () => {
 
     // The number is normalized before it reaches the provider or any tracker.
     expect(otpProvider.starts).toEqual([PHONE]);
+    // The purpose the caller asked the code for travels with the challenge.
+    expect(otpProvider.purposes).toEqual(['login']);
     expect(captcha.calls).toEqual([{ token: 'captcha-ok', ip: CONTEXT.ip }]);
     expect(rateLimit.calls.map((call) => [call.scope, call.identifier])).toEqual([
       ['otp-start-ip', CONTEXT.ip],
@@ -199,11 +205,19 @@ describe('OtpService.start', () => {
   });
 
   it.each([
-    ['a missing captcha token', { phone: FORMATTED_PHONE }],
+    ['a missing captcha token', { phone: FORMATTED_PHONE, purpose: 'login' }],
+    ['a missing purpose', { phone: FORMATTED_PHONE, captchaToken: 'captcha-ok' }],
+    ['an unknown purpose', { ...START_BODY, purpose: 'admin' }],
     ['an extra field', { ...START_BODY, isAdmin: true }],
-    ['a non-string phone', { phone: 14155552671, captchaToken: 'captcha-ok' }],
-    ['an oversized phone', { phone: `+${'1'.repeat(20)}`, captchaToken: 'captcha-ok' }],
-    ['an oversized captcha token', { phone: FORMATTED_PHONE, captchaToken: 'x'.repeat(2049) }],
+    ['a non-string phone', { phone: 14155552671, purpose: 'login', captchaToken: 'captcha-ok' }],
+    [
+      'an oversized phone',
+      { phone: `+${'1'.repeat(20)}`, purpose: 'login', captchaToken: 'captcha-ok' },
+    ],
+    [
+      'an oversized captcha token',
+      { phone: FORMATTED_PHONE, purpose: 'login', captchaToken: 'x'.repeat(2049) },
+    ],
     ['a non-object body', 'phone=+14155552671'],
     ['null', null],
   ])('rejects %s with a generic 400 before any side effect', async (_label, body) => {
@@ -237,7 +251,10 @@ describe('OtpService.start', () => {
     const { service, otpProvider, rateLimit } = createHarness();
 
     await expect(
-      service.start({ phone: 'not-a-phone', captchaToken: 'captcha-ok' }, CONTEXT),
+      service.start(
+        { phone: 'not-a-phone', purpose: 'login', captchaToken: 'captcha-ok' },
+        CONTEXT,
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(otpProvider.starts).toEqual([]);
     // Nothing phone-bound is recorded, so the input cannot be probed via limits.
@@ -353,6 +370,8 @@ describe('OtpService.verify', () => {
     // Only the normalized number is checked, never the free-form input.
     expect(otpProvider.checks).toEqual([{ phoneE164: PHONE, code: '123456' }]);
     expect(proof.issued).toEqual([PHONE]);
+    // The proof is minted for the purpose the code was verified for.
+    expect(proof.purposes).toEqual(['login']);
     expect(rateLimit.resets).toEqual([{ scope: 'otp-verify-phone', identifier: PHONE }]);
     expect(rateLimit.hits('otp-verify-phone', PHONE)).toBe(0);
     expect(audit.record).toHaveBeenCalledTimes(1);
@@ -379,9 +398,11 @@ describe('OtpService.verify', () => {
   });
 
   it.each([
-    ['a non-numeric code', { phone: FORMATTED_PHONE, code: '12345a' }],
-    ['a short code', { phone: FORMATTED_PHONE, code: '12345' }],
-    ['a missing phone', { code: '123456' }],
+    ['a non-numeric code', { phone: FORMATTED_PHONE, purpose: 'login', code: '12345a' }],
+    ['a short code', { phone: FORMATTED_PHONE, purpose: 'login', code: '12345' }],
+    ['a missing phone', { purpose: 'login', code: '123456' }],
+    ['a missing purpose', { phone: FORMATTED_PHONE, code: '123456' }],
+    ['an unknown purpose', { ...VERIFY_BODY, purpose: 'phone_change' }],
     ['an extra field', { ...VERIFY_BODY, attempt: 1 }],
     ['a non-object body', 'code=123456'],
     ['null', null],
@@ -409,7 +430,9 @@ describe('OtpService.verify', () => {
   it('rejects an unparseable phone as an invalid code', async () => {
     const { service, otpProvider } = createHarness();
 
-    await expect(service.verify({ phone: 'call-me', code: '123456' }, CONTEXT)).resolves.toEqual({
+    await expect(
+      service.verify({ phone: 'call-me', purpose: 'login', code: '123456' }, CONTEXT),
+    ).resolves.toEqual({
       outcome: 'rejected',
     });
     expect(otpProvider.checks).toEqual([]);
@@ -451,6 +474,15 @@ describe('OtpService.verify', () => {
     });
     expect(proof.issued).toEqual([PHONE]);
   });
+
+  it('mints the proof for the purpose the code was verified for', async () => {
+    const { service, proof } = createHarness();
+
+    await expect(service.verify({ ...VERIFY_BODY, purpose: 'register' }, CONTEXT)).resolves.toEqual(
+      { outcome: 'verified', proof: 'proof-1' },
+    );
+    expect(proof.purposes).toEqual(['register']);
+  });
 });
 
 describe('OtpService.verify failure modes', () => {
@@ -460,7 +492,9 @@ describe('OtpService.verify failure modes', () => {
     for (let index = 0; index < OTP_VERIFY_IP_LIMIT.limit; index += 1) {
       const phone = `+1415555${String(index).padStart(4, '0')}`;
 
-      await expect(service.verify({ phone, code: '000000' }, CONTEXT)).resolves.toEqual({
+      await expect(
+        service.verify({ phone, purpose: 'login', code: '000000' }, CONTEXT),
+      ).resolves.toEqual({
         outcome: 'rejected',
       });
     }

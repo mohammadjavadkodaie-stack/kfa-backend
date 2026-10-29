@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PROOF_PURPOSES } from './proof-token';
 
 /**
  * Request bodies for the OTP endpoints.
@@ -12,13 +13,18 @@ export const OTP_CAPTCHA_TOKEN_MAX_LENGTH = 2048;
 
 const phoneSchema = z.string().max(OTP_PHONE_MAX_LENGTH);
 
+/** The action the proof will be spendable on; anything else is a malformed body. */
+const purposeSchema = z.enum(PROOF_PURPOSES);
+
 export const otpStartSchema = z.strictObject({
   phone: phoneSchema,
+  purpose: purposeSchema,
   captchaToken: z.string().max(OTP_CAPTCHA_TOKEN_MAX_LENGTH),
 });
 
 export const otpVerifySchema = z.strictObject({
   phone: phoneSchema,
+  purpose: purposeSchema,
   code: z.string().regex(/^[0-9]{6}$/),
 });
 
