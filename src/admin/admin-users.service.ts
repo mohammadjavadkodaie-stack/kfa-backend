@@ -1,4 +1,11 @@
-import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
 import { AccessAction, type PolicySubject } from '../auth/policy/access-policy';
@@ -38,8 +45,8 @@ const AUDIT_TARGET_TYPE = 'user';
 const REVOCATION_REASON = 'admin_action';
 
 /**
- * Shared helpers for the administrative user endpoints. The controller and the
- * routes arrive in a later step; nothing here answers an HTTP request yet.
+ * Shared helpers for the administrative user endpoints, plus the two state
+ * transitions they own: block and unblock.
  */
 @Injectable()
 export class AdminUsersService {
@@ -74,6 +81,79 @@ export class AdminUsersService {
     if (target === null) return REFUSED;
 
     return this.policy.decide(actor, { action }, target).allowed ? ALLOWED : REFUSED;
+  }
+
+  /**
+   * Block: block first, revoke second, record third.
+   *
+   * The revocation runs even when the account was already blocked, so a retry
+   * finishes a revocation that failed earlier: a blocked account whose sessions
+   * still work is exactly the state this endpoint exists to prevent.
+   */
+  async block(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+    const target = await this.permittedTarget(AccessAction.USER_BLOCK, actor, id);
+
+    const changed = await this.sessions.setStatusIf(target.id, 'ACTIVE', 'BLOCKED');
+
+    try {
+      await this.revokeAllSessionsOrFail(target.id);
+    } catch {
+      // The block is not rolled back: a retry repeats the revocation. Nothing
+      // is recorded, so the log cannot show a block that left a session open.
+      this.logger.warn(
+        { requestId, action: ADMIN_AUDIT_ACTIONS.USER_BLOCK },
+        'admin session revoke failed',
+      );
+
+      throw new InternalServerErrorException();
+    }
+
+    // An account that was already blocked has nothing new to record.
+    if (!changed) return;
+
+    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.USER_BLOCK, actor.id, target.id, requestId, {
+      from: 'ACTIVE',
+      to: 'BLOCKED',
+    });
+  }
+
+  /**
+   * Unblock: the account can sign in again, the sessions it lost stay lost.
+   */
+  async unblock(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+    const target = await this.permittedTarget(AccessAction.USER_UNBLOCK, actor, id);
+
+    const changed = await this.sessions.setStatusIf(target.id, 'BLOCKED', 'ACTIVE');
+
+    if (!changed) return;
+
+    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.USER_UNBLOCK, actor.id, target.id, requestId, {
+      from: 'BLOCKED',
+      to: 'ACTIVE',
+    });
+  }
+
+  /**
+   * Target and permission together, so no endpoint can act before deciding.
+   *
+   * A malformed id owns no row either, so it answers exactly like an unknown
+   * one, and every refusal is the same generic 403: the reason never reaches the
+   * client and no denial row is added here.
+   */
+  private async permittedTarget(
+    action: AccessAction,
+    actor: PolicySubject,
+    id: string,
+  ): Promise<AdminTarget> {
+    const loaded = await this.loadTarget(id);
+
+    if (!loaded.found) throw new NotFoundException();
+
+    const target: PolicySubject = { id: loaded.target.id, role: loaded.target.role };
+
+    if (!this.authorize(action, actor, target).allowed) throw new ForbiddenException();
+
+    return loaded.target;
   }
 
   /**

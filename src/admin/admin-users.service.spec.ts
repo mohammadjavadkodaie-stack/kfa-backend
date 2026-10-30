@@ -1,4 +1,4 @@
-import { ServiceUnavailableException } from '@nestjs/common';
+import { HttpException, ServiceUnavailableException } from '@nestjs/common';
 import type { PinoLogger } from 'nestjs-pino';
 import { FakeAudit, type AuditRecord } from '../../test/helpers/auth-service-harness';
 import type { AuditService } from '../audit/audit.service';
@@ -273,5 +273,192 @@ describe('LogOwnerNotifier', () => {
 
     expect(logged).not.toContain(PHONE);
     expect(logged).not.toContain(USERNAME);
+  });
+});
+
+/** What a refused call looks like from outside: a status and a generic body. */
+async function refusal(run: () => Promise<void>): Promise<{ status: number; body: unknown }> {
+  try {
+    await run();
+  } catch (error) {
+    if (error instanceof HttpException) {
+      return { status: error.getStatus(), body: error.getResponse() };
+    }
+
+    throw error;
+  }
+
+  throw new Error('the call was expected to be refused');
+}
+
+function seed(sessions: InMemorySessionRepository): void {
+  sessions.seedUser({ id: OWNER_ID, phone: '+14155550100', username: 'owner', role: Role.OWNER });
+  sessions.seedUser({ id: ADMIN_ID, phone: '+14155550101', username: 'admin', role: Role.ADMIN });
+  sessions.seedUser({ id: USER_ID, phone: '+14155550102', username: 'ivan', role: Role.USER });
+}
+
+function moderationHarness(
+  sessions: InMemorySessionRepository = new InMemorySessionRepository(),
+  audit: FakeAudit = new FakeAudit(),
+) {
+  seed(sessions);
+
+  return createHarness(audit, sessions);
+}
+
+async function giveSessions(
+  sessions: InMemorySessionRepository,
+  userId: string,
+  count: number,
+): Promise<void> {
+  const now = new Date();
+
+  for (let index = 0; index < count; index += 1) {
+    await sessions.createSession({
+      userId,
+      deviceKeyHash: `device-${index}`,
+      deviceBound: true,
+      deviceLabel: null,
+      now,
+      sessionExpiresAt: new Date(now.getTime() + 3_600_000),
+      refreshTokenHash: `hash-${index}`,
+      refreshExpiresAt: new Date(now.getTime() + 3_600_000),
+      maxActiveSessions: 10,
+    });
+  }
+}
+
+describe('block', () => {
+  it('lets an owner and an admin block a normal account', async () => {
+    for (const actor of [OWNER, ADMIN]) {
+      const { service, sessions, audit } = moderationHarness();
+
+      await service.block(actor, USER_ID, REQUEST_ID);
+
+      expect(sessions.users.get(USER_ID)?.status).toBe('BLOCKED');
+      expect(audit.records.map((row) => row.action)).toEqual(['admin.user.block']);
+    }
+  });
+
+  it('cuts every session of the target', async () => {
+    const { service, sessions } = moderationHarness();
+
+    await giveSessions(sessions, USER_ID, 2);
+
+    await service.block(ADMIN, USER_ID, REQUEST_ID);
+
+    expect(await sessions.listActiveSessions(USER_ID, new Date())).toEqual([]);
+  });
+
+  it('refuses an admin blocking the owner', async () => {
+    const { service, sessions, audit } = moderationHarness();
+
+    const refused = await refusal(() => service.block(ADMIN, OWNER_ID, REQUEST_ID));
+
+    expect(refused.status).toBe(403);
+    expect(refused.body).toEqual({ statusCode: 403, message: 'Forbidden' });
+    expect(sessions.users.get(OWNER_ID)?.status).toBe('ACTIVE');
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('refuses blocking oneself', async () => {
+    const { service } = moderationHarness();
+
+    expect((await refusal(() => service.block(ADMIN, ADMIN_ID, REQUEST_ID))).status).toBe(403);
+  });
+
+  it('answers a malformed id exactly like an unknown one', async () => {
+    const { service } = moderationHarness();
+
+    const unknown = await refusal(() => service.block(ADMIN, UNKNOWN_ID, REQUEST_ID));
+    const malformed = await refusal(() => service.block(ADMIN, 'not-a-uuid', REQUEST_ID));
+
+    expect(unknown.status).toBe(404);
+    expect(unknown).toEqual(malformed);
+  });
+
+  it('blocks an already blocked account once and revokes again', async () => {
+    const sessions = new RecordingSessions();
+    const { service, audit } = moderationHarness(sessions);
+
+    await service.block(ADMIN, USER_ID, REQUEST_ID);
+    await service.block(ADMIN, USER_ID, REQUEST_ID);
+
+    expect(sessions.users.get(USER_ID)?.status).toBe('BLOCKED');
+    expect(sessions.revokedAll).toHaveLength(2);
+    expect(audit.records).toHaveLength(1);
+  });
+
+  it('reports a failed revocation as a generic 500 without a success row', async () => {
+    const sessions = new FailingSessions();
+    const { service, audit } = moderationHarness(sessions);
+
+    const failed = await refusal(() => service.block(ADMIN, USER_ID, REQUEST_ID));
+
+    expect(failed.status).toBe(500);
+    expect(failed.body).toEqual({ statusCode: 500, message: 'Internal Server Error' });
+    // No rollback: the block stands and the next attempt finishes the revocation.
+    expect(sessions.users.get(USER_ID)?.status).toBe('BLOCKED');
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('does not report success when the audit row cannot be written', async () => {
+    const { service, audit } = moderationHarness(
+      new InMemorySessionRepository(),
+      new FailingAudit(),
+    );
+
+    await expect(service.block(ADMIN, USER_ID, REQUEST_ID)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+
+    expect(audit.records).toHaveLength(1);
+  });
+});
+
+describe('unblock', () => {
+  it('lets an owner and an admin unblock an account', async () => {
+    for (const actor of [OWNER, ADMIN]) {
+      const { service, sessions, audit } = moderationHarness();
+
+      await service.block(ADMIN, USER_ID, REQUEST_ID);
+      await service.unblock(actor, USER_ID, REQUEST_ID);
+
+      expect(sessions.users.get(USER_ID)?.status).toBe('ACTIVE');
+      expect(audit.records.map((row) => row.action)).toEqual([
+        'admin.user.block',
+        'admin.user.unblock',
+      ]);
+    }
+  });
+
+  it('does not restore the sessions that were cut', async () => {
+    const { service, sessions } = moderationHarness();
+
+    await giveSessions(sessions, USER_ID, 1);
+    await service.block(ADMIN, USER_ID, REQUEST_ID);
+    await service.unblock(ADMIN, USER_ID, REQUEST_ID);
+
+    expect(await sessions.listActiveSessions(USER_ID, new Date())).toEqual([]);
+  });
+
+  it('refuses unblocking the owner and oneself', async () => {
+    const { service } = moderationHarness();
+
+    expect((await refusal(() => service.unblock(ADMIN, OWNER_ID, REQUEST_ID))).status).toBe(403);
+    expect((await refusal(() => service.unblock(ADMIN, ADMIN_ID, REQUEST_ID))).status).toBe(403);
+  });
+
+  it('records the transition once', async () => {
+    const { service, audit } = moderationHarness();
+
+    await service.block(ADMIN, USER_ID, REQUEST_ID);
+    await service.unblock(ADMIN, USER_ID, REQUEST_ID);
+    await service.unblock(ADMIN, USER_ID, REQUEST_ID);
+
+    expect(audit.records.map((row) => row.action)).toEqual([
+      'admin.user.block',
+      'admin.user.unblock',
+    ]);
   });
 });
