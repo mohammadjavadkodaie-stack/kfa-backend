@@ -60,6 +60,11 @@ enum Role {
   OWNER
 }
 
+/// At most one row may hold the OWNER role. Prisma cannot express a partial
+/// index, so the guarantee lives in raw SQL only:
+/// `users_single_owner_key` is a unique index on a constant expression with
+/// `WHERE role = 'OWNER'`, created by
+/// prisma/migrations/20261107120000_single_owner_partial_index/migration.sql.
 model User {
   id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   phone            String       @unique
