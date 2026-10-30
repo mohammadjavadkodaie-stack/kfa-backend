@@ -377,6 +377,8 @@ describe('TOTP endpoints (e2e)', () => {
     // Enrolment stamped this session; a failed step-up must not move it.
     const stamped = await sessions.getStepUpAt(account.sessionId, account.userId);
 
+    expect(stamped).toBeInstanceOf(Date);
+
     // A caller cannot name another account: the user always comes from the token,
     // and an unexpected field makes the whole body unusable, not a new target.
     for (const body of [
@@ -470,6 +472,9 @@ describe('TOTP endpoints (e2e)', () => {
     const account = await staff();
     const enrolled = await enrollAndConfirm(account);
     const stamped = await sessions.getStepUpAt(account.sessionId, account.userId);
+
+    expect(stamped).toBeInstanceOf(Date);
+
     const wrong = await post('/auth/totp/stepup', account.token, { code: '000000' });
 
     expect(wrong.status).toBe(401);

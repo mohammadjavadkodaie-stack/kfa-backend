@@ -56,7 +56,6 @@ function requirePrincipal(request: AuthenticatedRequest): RequestPrincipal {
  */
 @Controller('auth/totp')
 @Roles(Role.ADMIN, Role.OWNER)
-@AllowWithoutSecondFactor()
 export class TotpController {
   constructor(
     private readonly totp: TotpService,
@@ -65,7 +64,10 @@ export class TotpController {
     private readonly logger: PinoLogger,
   ) {}
 
+  // Each exception below is named on its own route: nothing else in this
+  // controller is reachable before the factor is proved, including routes added later.
   @Get('status')
+  @AllowWithoutSecondFactor()
   @HttpCode(HttpStatus.OK)
   async status(@Req() request: AuthenticatedRequest): Promise<TotpStatus> {
     return this.totp.getStatus(requirePrincipal(request).userId);
@@ -76,6 +78,7 @@ export class TotpController {
    * displayed inside the authenticator app of whoever scans the QR code.
    */
   @Post('enroll')
+  @AllowWithoutSecondFactor()
   @HttpCode(HttpStatus.OK)
   async enroll(
     @Body() body: unknown,
@@ -97,6 +100,7 @@ export class TotpController {
 
   /** Malformed body, wrong code, replay, lockout and nothing-pending look alike. */
   @Post('confirm')
+  @AllowWithoutSecondFactor()
   @HttpCode(HttpStatus.OK)
   async confirm(
     @Body() body: unknown,
@@ -123,6 +127,7 @@ export class TotpController {
    * window opens for this session only. A recovery code is accepted once.
    */
   @Post('stepup')
+  @AllowWithoutSecondFactor()
   @HttpCode(HttpStatus.OK)
   async stepup(
     @Body() body: unknown,
