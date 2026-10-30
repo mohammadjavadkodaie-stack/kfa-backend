@@ -14,6 +14,8 @@ export const SESSION_REPOSITORY = Symbol('SESSION_REPOSITORY');
 export interface AccountRecord {
   readonly id: string;
   readonly status: 'ACTIVE' | 'BLOCKED';
+  /** Read at login: a staff session gets the shorter absolute lifetime. */
+  readonly role: Role;
 }
 
 /** What the admin module may read about a target; it carries no contact data. */
@@ -120,6 +122,10 @@ export type RotateRefreshTokenResult =
       readonly deviceBound: boolean;
       /** Checked after rotation: a blocked account must not keep refreshing. */
       readonly userStatus: 'ACTIVE' | 'BLOCKED';
+      /** Current role, so the caller can apply the staff idle limit. */
+      readonly role: Role;
+      /** Last activity of the session (creation or previous rotation). */
+      readonly lastUsedAt: Date;
       readonly sessionExpiresAt: Date;
       readonly refreshExpiresAt: Date;
     }

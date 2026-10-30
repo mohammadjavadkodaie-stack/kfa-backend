@@ -303,6 +303,15 @@ export const envSchema = z
     /** Absolute session cap: rotation can never extend a session past this. */
     SESSION_ABSOLUTE_DAYS: z.coerce.number().int().min(1).max(365).default(30),
 
+    /**
+     * Absolute cap for staff (ADMIN/OWNER) sessions, in hours. A stolen staff
+     * cookie must age out long before the normal cap, so the unit is shorter.
+     */
+    STAFF_SESSION_ABSOLUTE_HOURS: z.coerce.number().int().min(1).max(8_760).default(12),
+
+    /** A staff session not rotated for this long is refused at refresh time. */
+    STAFF_SESSION_IDLE_MINUTES: z.coerce.number().int().min(1).max(8_760).default(30),
+
     /** Active sessions kept per user; a login beyond it drops the oldest one. */
     SESSIONS_MAX_PER_USER: z.coerce.number().int().min(1).max(50).default(10),
   })
@@ -340,6 +349,24 @@ export const envSchema = z
         code: 'custom',
         path: ['TOTP_ENC_KEY'],
         message: 'must differ from the audit, rate-limit and proof secrets',
+      });
+    }
+
+    // A staff session may only be shorter than a normal one, and the idle limit
+    // has to leave room for at least one rotation inside the absolute cap.
+    if (env.STAFF_SESSION_ABSOLUTE_HOURS * 3_600 > env.SESSION_ABSOLUTE_DAYS * 86_400) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['STAFF_SESSION_ABSOLUTE_HOURS'],
+        message: 'must not exceed SESSION_ABSOLUTE_DAYS',
+      });
+    }
+
+    if (env.STAFF_SESSION_IDLE_MINUTES * 60 > env.STAFF_SESSION_ABSOLUTE_HOURS * 3_600) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['STAFF_SESSION_IDLE_MINUTES'],
+        message: 'must not exceed STAFF_SESSION_ABSOLUTE_HOURS',
       });
     }
 

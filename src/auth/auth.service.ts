@@ -18,6 +18,7 @@ import { loginSchema, parseAuthBody, registerSchema } from './auth.schema';
 import { ephemeralDeviceKey, hashDeviceKey } from './device-key';
 import { maskPhone } from './phone';
 import { ProofTokenService, type ProofPurpose } from './otp/proof-token';
+import { isStaffRole, Role } from './roles';
 import {
   generateRefreshToken,
   hashRefreshToken,
@@ -122,6 +123,8 @@ export class AuthService {
   private readonly accessTokenTtlSeconds: number;
   private readonly refreshTtlSeconds: number;
   private readonly sessionTtlSeconds: number;
+  private readonly staffSessionTtlSeconds: number;
+  private readonly staffIdleMs: number;
   private readonly maxSessionsPerUser: number;
 
   constructor(
@@ -132,6 +135,8 @@ export class AuthService {
       | 'ACCESS_TOKEN_TTL_SECONDS'
       | 'REFRESH_TTL_DAYS'
       | 'SESSION_ABSOLUTE_DAYS'
+      | 'STAFF_SESSION_ABSOLUTE_HOURS'
+      | 'STAFF_SESSION_IDLE_MINUTES'
       | 'SESSIONS_MAX_PER_USER'
     >,
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
@@ -144,6 +149,8 @@ export class AuthService {
     this.accessTokenTtlSeconds = env.ACCESS_TOKEN_TTL_SECONDS;
     this.refreshTtlSeconds = env.REFRESH_TTL_DAYS * SECONDS_PER_DAY;
     this.sessionTtlSeconds = env.SESSION_ABSOLUTE_DAYS * SECONDS_PER_DAY;
+    this.staffSessionTtlSeconds = env.STAFF_SESSION_ABSOLUTE_HOURS * 3_600;
+    this.staffIdleMs = env.STAFF_SESSION_IDLE_MINUTES * 60_000;
     this.maxSessionsPerUser = env.SESSIONS_MAX_PER_USER;
   }
 
@@ -183,7 +190,8 @@ export class AuthService {
     const now = this.now();
     const userId = randomUUID();
     const refreshToken = generateRefreshToken();
-    const sessionExpiresAt = this.sessionExpiry(now);
+    // A new account is always a USER, so it keeps the normal lifetime.
+    const sessionExpiresAt = this.sessionExpiry(now, Role.USER);
     const refreshExpiresAt = this.refreshExpiry(now, sessionExpiresAt);
 
     const created = await this.sessions.createAccount({
@@ -266,7 +274,7 @@ export class AuthService {
 
     const now = this.now();
     const refreshToken = generateRefreshToken();
-    const sessionExpiresAt = this.sessionExpiry(now);
+    const sessionExpiresAt = this.sessionExpiry(now, account.role);
     const refreshExpiresAt = this.refreshExpiry(now, sessionExpiresAt);
 
     const session = await this.sessions.createSession({
@@ -353,6 +361,21 @@ export class AuthService {
       await this.sessions.revokeSession(result.sessionId, 'account_blocked', now);
       await this.writeAudit('auth.refresh.blocked', result.userId, null, context, {});
       throw new ForbiddenException();
+    }
+
+    // Access tokens keep their short TTL, so idleness is only enforced here, at
+    // rotation, where the session's last activity is already known.
+    if (
+      isStaffRole(result.role) &&
+      now.getTime() - result.lastUsedAt.getTime() > this.staffIdleMs
+    ) {
+      await this.sessions.revokeSession(result.sessionId, 'idle_timeout', now);
+      await this.writeAudit('auth.refresh.idle_timeout', result.userId, null, context, {});
+      this.logger.warn(
+        { requestId: context.requestId, userId: result.userId },
+        'refresh rejected: staff session idle',
+      );
+      throw new UnauthorizedException();
     }
 
     const credentials = this.issueCredentials(result, nextToken, now);
@@ -530,8 +553,11 @@ export class AuthService {
   }
 
   /** Absolute cap: rotation can approach it but never pass it. */
-  private sessionExpiry(now: Date): Date {
-    return new Date(now.getTime() + this.sessionTtlSeconds * 1_000);
+  private sessionExpiry(now: Date, role: Role): Date {
+    // Staff sessions are measured in hours, so a leaked cookie ages out sooner.
+    const ttlSeconds = isStaffRole(role) ? this.staffSessionTtlSeconds : this.sessionTtlSeconds;
+
+    return new Date(now.getTime() + ttlSeconds * 1_000);
   }
 
   private refreshExpiry(now: Date, sessionExpiresAt: Date): Date {

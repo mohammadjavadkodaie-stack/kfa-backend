@@ -112,6 +112,19 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   ['an access-token TTL above fifteen minutes', { ...BASE_ENV, ACCESS_TOKEN_TTL_SECONDS: '901' }],
   ['a refresh TTL of zero days', { ...BASE_ENV, REFRESH_TTL_DAYS: '0' }],
   ['an absolute session cap of zero days', { ...BASE_ENV, SESSION_ABSOLUTE_DAYS: '0' }],
+  ['a staff absolute lifetime of zero hours', { ...BASE_ENV, STAFF_SESSION_ABSOLUTE_HOURS: '0' }],
+  ['a negative staff absolute lifetime', { ...BASE_ENV, STAFF_SESSION_ABSOLUTE_HOURS: '-2' }],
+  ['a non numeric staff absolute lifetime', { ...BASE_ENV, STAFF_SESSION_ABSOLUTE_HOURS: '12h' }],
+  [
+    'a staff lifetime above the normal cap',
+    { ...BASE_ENV, SESSION_ABSOLUTE_DAYS: '1', STAFF_SESSION_ABSOLUTE_HOURS: '25' },
+  ],
+  ['a staff idle limit of zero minutes', { ...BASE_ENV, STAFF_SESSION_IDLE_MINUTES: '0' }],
+  ['a negative staff idle limit', { ...BASE_ENV, STAFF_SESSION_IDLE_MINUTES: '-5' }],
+  [
+    'a staff idle limit above the staff lifetime',
+    { ...BASE_ENV, STAFF_SESSION_IDLE_MINUTES: '721' },
+  ],
 ];
 
 describe('loadEnv', () => {
@@ -135,6 +148,8 @@ describe('loadEnv', () => {
       ACCESS_TOKEN_TTL_SECONDS: 600,
       REFRESH_TTL_DAYS: 14,
       SESSION_ABSOLUTE_DAYS: 30,
+      STAFF_SESSION_ABSOLUTE_HOURS: 12,
+      STAFF_SESSION_IDLE_MINUTES: 30,
       SESSIONS_MAX_PER_USER: 10,
     });
   });
@@ -295,6 +310,20 @@ describe('loadEnv', () => {
     expect(env.ACCESS_TOKEN_TTL_SECONDS).toBe(600);
     expect(env.REFRESH_TTL_DAYS).toBe(14);
     expect(env.SESSION_ABSOLUTE_DAYS).toBe(30);
+    expect(env.STAFF_SESSION_ABSOLUTE_HOURS).toBe(12);
+    expect(env.STAFF_SESSION_IDLE_MINUTES).toBe(30);
+  });
+
+  it('accepts a staff lifetime equal to the normal cap and an idle limit equal to it', () => {
+    const env = loadEnv({
+      ...BASE_ENV,
+      SESSION_ABSOLUTE_DAYS: '1',
+      STAFF_SESSION_ABSOLUTE_HOURS: '24',
+      STAFF_SESSION_IDLE_MINUTES: '1440',
+    });
+
+    expect(env.STAFF_SESSION_ABSOLUTE_HOURS).toBe(24);
+    expect(env.STAFF_SESSION_IDLE_MINUTES).toBe(1_440);
   });
 
   it('caps active sessions per user between 1 and 50', () => {

@@ -123,6 +123,8 @@ function createHarness() {
       ACCESS_TOKEN_TTL_SECONDS: 600,
       REFRESH_TTL_DAYS: 14,
       SESSION_ABSOLUTE_DAYS: 30,
+      STAFF_SESSION_ABSOLUTE_HOURS: 12,
+      STAFF_SESSION_IDLE_MINUTES: 30,
       SESSIONS_MAX_PER_USER: 10,
     },
     sessions,

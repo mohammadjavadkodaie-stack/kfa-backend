@@ -157,6 +157,8 @@ export interface HarnessEnv {
   readonly accessTokenTtlSeconds?: number;
   readonly refreshTtlDays?: number;
   readonly sessionAbsoluteDays?: number;
+  readonly staffSessionAbsoluteHours?: number;
+  readonly staffSessionIdleMinutes?: number;
   readonly sessionsMaxPerUser?: number;
 }
 
@@ -173,6 +175,8 @@ export function createHarness(env: HarnessEnv = {}) {
       ACCESS_TOKEN_TTL_SECONDS: env.accessTokenTtlSeconds ?? 600,
       REFRESH_TTL_DAYS: env.refreshTtlDays ?? 14,
       SESSION_ABSOLUTE_DAYS: env.sessionAbsoluteDays ?? 30,
+      STAFF_SESSION_ABSOLUTE_HOURS: env.staffSessionAbsoluteHours ?? 12,
+      STAFF_SESSION_IDLE_MINUTES: env.staffSessionIdleMinutes ?? 30,
       SESSIONS_MAX_PER_USER: env.sessionsMaxPerUser ?? 10,
     },
     sessions,

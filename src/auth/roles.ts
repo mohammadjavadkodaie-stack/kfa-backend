@@ -19,3 +19,8 @@ export const ALL_ROLES: readonly Role[] = Object.freeze(Object.values(Role));
 export function parseRole(value: string): Role | null {
   return ALL_ROLES.find((role) => String(role) === value) ?? null;
 }
+
+/** The roles that get the shorter session policy. */
+export function isStaffRole(role: Role): boolean {
+  return role === Role.ADMIN || role === Role.OWNER;
+}

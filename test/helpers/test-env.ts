@@ -28,6 +28,9 @@ export const TEST_ENV = {
   ACCESS_TOKEN_TTL_SECONDS: '600',
   REFRESH_TTL_DAYS: '14',
   SESSION_ABSOLUTE_DAYS: '30',
+  /** Staff sessions: shorter cap, plus an idle limit checked at refresh. */
+  STAFF_SESSION_ABSOLUTE_HOURS: '12',
+  STAFF_SESSION_IDLE_MINUTES: '30',
   /** Low enough for a suite to reach the cap without a long login loop. */
   SESSIONS_MAX_PER_USER: '10',
   /** Small enough to hit the deployment cap in a test, large enough to be realistic. */

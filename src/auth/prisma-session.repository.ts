@@ -21,6 +21,8 @@ interface ConsumedRow {
   readonly session_id: string;
   readonly user_id: string;
   readonly user_status: string;
+  readonly user_role: string;
+  readonly last_used_at: Date;
   readonly device_key_hash: string;
   readonly device_bound: boolean;
   readonly session_expires_at: Date;
@@ -54,10 +56,17 @@ export class PrismaSessionRepository implements SessionRepository {
   }
 
   async findUserByPhone(phoneE164: string): Promise<AccountRecord | null> {
-    return this.prisma.user.findUnique({
+    const user = await this.prisma.user.findUnique({
       where: { phone: phoneE164 },
-      select: { id: true, status: true },
+      select: { id: true, status: true, role: true },
     });
+
+    if (user === null) return null;
+
+    // Same fail-closed rule as the guard: an unknown role owns no session.
+    const role = parseRole(user.role);
+
+    return role === null ? null : { id: user.id, status: user.status, role };
   }
 
   async findPhoneByUserId(userId: string): Promise<string | null> {
@@ -265,7 +274,8 @@ export class PrismaSessionRepository implements SessionRepository {
            AND s.revoked_at IS NULL
            AND s.expires_at > ${input.now}
         RETURNING rt.id, s.id AS session_id, s.user_id, u.status AS user_status,
-                  d.device_key_hash, s.device_bound, s.expires_at AS session_expires_at
+                  u.role AS user_role, s.last_used_at, d.device_key_hash, s.device_bound,
+                  s.expires_at AS session_expires_at
       `;
 
       const consumed = rows[0];
@@ -308,6 +318,9 @@ export class PrismaSessionRepository implements SessionRepository {
         deviceKeyHash: consumed.device_key_hash,
         deviceBound: consumed.device_bound,
         userStatus: consumed.user_status === 'BLOCKED' ? 'BLOCKED' : 'ACTIVE',
+        // An unmapped role cannot be staff, so it stays on the normal policy.
+        role: parseRole(consumed.user_role) ?? Role.USER,
+        lastUsedAt: new Date(consumed.last_used_at),
         sessionExpiresAt,
         refreshExpiresAt,
       };

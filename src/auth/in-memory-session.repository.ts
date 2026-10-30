@@ -72,7 +72,7 @@ export class InMemorySessionRepository implements SessionRepository {
   async findUserByPhone(phoneE164: string): Promise<AccountRecord | null> {
     const user = [...this.users.values()].find((candidate) => candidate.phone === phoneE164);
 
-    return user === undefined ? null : { id: user.id, status: user.status };
+    return user === undefined ? null : { id: user.id, status: user.status, role: user.role };
   }
 
   async findPhoneByUserId(userId: string): Promise<string | null> {
@@ -200,6 +200,10 @@ export class InMemorySessionRepository implements SessionRepository {
 
     if (!usable) return { outcome: 'unknown' };
 
+    // Captured before the rotation below moves it forward.
+    const lastUsedAt = session.lastUsedAt;
+    const role = this.users.get(session.userId)?.role ?? Role.USER;
+
     token.usedAt = input.now;
     session.lastUsedAt = input.now;
 
@@ -216,6 +220,8 @@ export class InMemorySessionRepository implements SessionRepository {
       deviceKeyHash: session.deviceKeyHash,
       deviceBound: session.deviceBound,
       userStatus: this.users.get(session.userId)?.status ?? 'BLOCKED',
+      role,
+      lastUsedAt,
       sessionExpiresAt: session.expiresAt,
       refreshExpiresAt,
     };
