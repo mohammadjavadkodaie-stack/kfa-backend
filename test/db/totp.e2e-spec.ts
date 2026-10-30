@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { PinoLogger } from 'nestjs-pino';
 import type { AuditService } from '../../src/audit/audit.service';
 import { PrismaTotpRepository } from '../../src/auth/totp/prisma-totp.repository';
+import { InMemoryTotpRotationStore } from '../../src/auth/totp/totp-rotation.store';
 import { base32Decode, totpAt } from '../../src/auth/totp/totp';
 import { TotpService } from '../../src/auth/totp/totp.service';
 import type { PrismaService } from '../../src/database/prisma.service';
@@ -191,6 +192,7 @@ describeWithDatabase('totp persistence (PostgreSQL)', () => {
     const service = new TotpService(
       { TOTP_ENC_KEY: ENC_KEY },
       repository,
+      new InMemoryTotpRotationStore(),
       permissiveLimiter as unknown as RateLimitService,
       { record: async () => undefined } as unknown as AuditService,
       { warn: () => undefined } as unknown as PinoLogger,

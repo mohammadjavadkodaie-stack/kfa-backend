@@ -169,6 +169,17 @@ export interface SessionRepository {
   revokeUserSession(sessionId: string, userId: string, reason: string, now: Date): Promise<boolean>;
   revokeAllUserSessions(userId: string, reason: string, now: Date): Promise<void>;
   /**
+   * Revokes every live session of `userId` except `keepSessionId`, together with
+   * their refresh tokens. Used after a factor rotation: the device that proved
+   * the new factor keeps working, every other one must authenticate again.
+   */
+  revokeOtherUserSessions(
+    userId: string,
+    keepSessionId: string,
+    reason: string,
+    now: Date,
+  ): Promise<void>;
+  /**
    * Moves the account to a new number and revokes every other session of that
    * user in one transaction. `conflict` and `not_found` are both reported as the
    * same generic rejection by the caller.

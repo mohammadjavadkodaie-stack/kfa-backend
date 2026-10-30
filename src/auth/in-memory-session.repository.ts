@@ -264,6 +264,20 @@ export class InMemorySessionRepository implements SessionRepository {
     }
   }
 
+  /** The kept session is never touched, so its step-up stamp survives the loop. */
+  async revokeOtherUserSessions(
+    userId: string,
+    keepSessionId: string,
+    reason: string,
+    now: Date,
+  ): Promise<void> {
+    for (const session of [...this.sessions.values()]) {
+      if (session.userId === userId && session.id !== keepSessionId) {
+        await this.revokeSession(session.id, reason, now);
+      }
+    }
+  }
+
   async changePhone(input: ChangePhoneInput): Promise<ChangePhoneResult> {
     const user = this.users.get(input.userId);
 

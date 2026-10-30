@@ -34,6 +34,19 @@ export interface TotpRepository {
    */
   confirm(userId: string, step: number, codeHashes: readonly string[]): Promise<boolean>;
   /**
+   * Swaps a confirmed credential for its pending replacement and replaces the
+   * recovery codes in one transaction. The old ciphertext is part of the
+   * predicate, so a reset or a concurrent rotation wins instead of being
+   * overwritten. False means nothing was swapped.
+   */
+  rotate(
+    userId: string,
+    expectedSecretEnc: string,
+    nextSecretEnc: string,
+    step: number,
+    codeHashes: readonly string[],
+  ): Promise<boolean>;
+  /**
    * Single-statement replay guard: false when the row is unknown, unconfirmed
    * or already at (or past) `step`.
    */

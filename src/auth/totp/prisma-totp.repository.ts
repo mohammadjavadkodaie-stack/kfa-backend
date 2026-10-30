@@ -74,6 +74,44 @@ export class PrismaTotpRepository implements TotpRepository {
     });
   }
 
+  /**
+   * One transaction: the conditional swap decides, the code replacement
+   * follows. A vanished or changed credential rolls the whole rotation back.
+   */
+  async rotate(
+    userId: string,
+    expectedSecretEnc: string,
+    nextSecretEnc: string,
+    step: number,
+    codeHashes: readonly string[],
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<UpdatedRow[]>`
+        UPDATE totp_credentials
+           SET secret_enc = ${nextSecretEnc},
+               confirmed_at = now(),
+               last_used_step = ${step}::bigint,
+               updated_at = now()
+         WHERE user_id = ${userId}::uuid
+           AND confirmed_at IS NOT NULL
+           AND secret_enc = ${expectedSecretEnc}
+        RETURNING id
+      `;
+
+      if (rows.length === 0) return false;
+
+      await tx.recoveryCode.deleteMany({ where: { userId } });
+
+      if (codeHashes.length > 0) {
+        await tx.recoveryCode.createMany({
+          data: codeHashes.map((codeHash) => ({ userId, codeHash })),
+        });
+      }
+
+      return true;
+    });
+  }
+
   /** Replay guard: only a strictly newer step can win, in one statement. */
   async advanceStep(userId: string, step: number): Promise<boolean> {
     const rows = await this.prisma.$queryRaw<UpdatedRow[]>`

@@ -6,6 +6,7 @@ import type { RateLimitDecision, RateLimitService } from '../../rate-limit/rate-
 import { InMemoryTotpRepository } from './in-memory-totp.repository';
 import { hashRecoveryCode } from './recovery-codes';
 import { base32Decode, totpAt } from './totp';
+import { InMemoryTotpRotationStore, ROTATION_PENDING_TTL_SECONDS } from './totp-rotation.store';
 import { TOTP_VERIFY_USER_LIMIT, TotpService } from './totp.service';
 
 const USER_ID = '6b1f2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d';
@@ -81,18 +82,21 @@ class FakeRateLimit {
 
 function createHarness(options: { encKey?: string | null } = {}) {
   const repository = new InMemoryTotpRepository();
+  const rotationClock = { now: 0 };
+  const rotations = new InMemoryTotpRotationStore(() => rotationClock.now);
   const rateLimit = new FakeRateLimit();
   const audit = { record: jest.fn().mockResolvedValue(undefined) };
   const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   const service = new TotpService(
     { TOTP_ENC_KEY: options.encKey === null ? undefined : (options.encKey ?? ENC_KEY) },
     repository,
+    rotations,
     rateLimit as unknown as RateLimitService,
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
   );
 
-  return { service, repository, rateLimit, audit, logger };
+  return { service, repository, rotations, rotationClock, rateLimit, audit, logger };
 }
 
 type Harness = ReturnType<typeof createHarness>;
@@ -414,6 +418,12 @@ describe('TotpService fail-closed', () => {
     await expect(harness.service.verifyCode(USER_ID, '123456', NOW_MS)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
+    await expect(harness.service.startRotation(USER_ID, USERNAME)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    await expect(harness.service.confirmRotation(USER_ID, '123456', NOW_MS)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
 
     // Fail closed without a side effect: no row, no limiter call, no audit row.
     expect(harness.repository.credentials.size).toBe(0);
@@ -440,5 +450,176 @@ describe('TotpService fail-closed', () => {
     ).resolves.toEqual({ outcome: 'rejected' });
 
     expect((await harness.repository.getCredential(otherId))?.confirmedAt).toBeNull();
+  });
+});
+
+describe('TotpService rotation', () => {
+  it('keeps the active factor and its recovery codes while a replacement is pending', async () => {
+    const { harness, secret, codes } = await enroll();
+    const before = await harness.repository.getCredential(USER_ID);
+    const start = await harness.service.startRotation(USER_ID, USERNAME);
+
+    expect(start.otpauthUri).toContain(`otpauth://totp/KFA:${USERNAME}`);
+    expect(start.otpauthUri).toContain(`secret=${start.secretBase32}`);
+    expect(base32Decode(start.secretBase32)).not.toEqual(secret);
+
+    // The pending value is ciphertext, bound to the ciphertext it replaces.
+    const pending = await harness.rotations.read(USER_ID);
+    expect(pending?.secretEnc).not.toContain(start.secretBase32);
+    expect(pending?.expectedSecretEnc).toBe(before?.secretEnc);
+
+    // Nothing about the active credential moved.
+    const during = await harness.repository.getCredential(USER_ID);
+    expect(during?.secretEnc).toBe(before?.secretEnc);
+    expect(during?.lastUsedStep).toBe(before?.lastUsedStep);
+
+    await expect(
+      harness.service.verifyCode(USER_ID, codeAt(secret, 1), NOW_MS + STEP_MS),
+    ).resolves.toEqual({ ok: true, method: 'totp' });
+    await expect(harness.service.verifyCode(USER_ID, codes[0], NOW_MS + STEP_MS)).resolves.toEqual({
+      ok: true,
+      method: 'recovery',
+    });
+    expect(await harness.repository.countUnusedRecoveryCodes(USER_ID)).toBe(9);
+  });
+
+  it('counts a wrong rotation code as an attempt and leaves the active factor alone', async () => {
+    const { harness, secret } = await enroll();
+    const start = await harness.service.startRotation(USER_ID, USERNAME);
+    const next = base32Decode(start.secretBase32);
+    const before = await harness.repository.getCredential(USER_ID);
+    const activeHashes = (harness.repository.recoveryCodes.get(USER_ID) ?? []).map(
+      (code) => code.codeHash,
+    );
+
+    await expect(
+      harness.service.confirmRotation(USER_ID, wrongCode(next), NOW_MS),
+    ).resolves.toEqual({ outcome: 'rejected' });
+
+    const after = await harness.repository.getCredential(USER_ID);
+    expect(after?.secretEnc).toBe(before?.secretEnc);
+    expect(
+      (harness.repository.recoveryCodes.get(USER_ID) ?? []).map((code) => code.codeHash),
+    ).toEqual(activeHashes);
+    expect(await harness.repository.countUnusedRecoveryCodes(USER_ID)).toBe(10);
+
+    // The wrong answer spent exactly one attempt of the shared budget.
+    expect(harness.rateLimit.hits('totp-verify-user', USER_ID)).toBe(1);
+
+    // The pending replacement survives a wrong attempt and the old factor works.
+    await expect(
+      harness.service.verifyCode(USER_ID, codeAt(secret, 1), NOW_MS + STEP_MS),
+    ).resolves.toEqual({ ok: true, method: 'totp' });
+  });
+
+  it('swaps in the replacement with ten fresh single-use recovery codes', async () => {
+    const { harness, secret, codes } = await enroll();
+    const before = await harness.repository.getCredential(USER_ID);
+    const start = await harness.service.startRotation(USER_ID, USERNAME);
+    const next = base32Decode(start.secretBase32);
+    const rotation = await harness.service.confirmRotation(USER_ID, codeAt(next), NOW_MS);
+
+    expect(rotation.outcome).toBe('rotated');
+
+    if (rotation.outcome !== 'rotated') return;
+
+    expect(rotation.recoveryCodes).toHaveLength(10);
+    expect(new Set(rotation.recoveryCodes).size).toBe(10);
+
+    for (const code of rotation.recoveryCodes) {
+      expect(code).toMatch(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/);
+    }
+
+    const after = await harness.repository.getCredential(USER_ID);
+    expect(after?.secretEnc).not.toBe(before?.secretEnc);
+    expect(after?.confirmedAt).toBeInstanceOf(Date);
+    expect(after?.lastUsedStep).toBe(stepOf(NOW_MS));
+    // The pending value is gone, so a second confirm starts from nothing.
+    expect(await harness.rotations.read(USER_ID)).toBeNull();
+    expect(await harness.repository.countUnusedRecoveryCodes(USER_ID)).toBe(10);
+
+    // The old authenticator and every old recovery code are worthless now.
+    await expect(
+      harness.service.verifyCode(USER_ID, codeAt(secret, 1), NOW_MS + STEP_MS),
+    ).resolves.toEqual({ ok: false });
+    await expect(harness.service.verifyCode(USER_ID, codes[0], NOW_MS + STEP_MS)).resolves.toEqual({
+      ok: false,
+    });
+
+    // The replacement works, and each new recovery code works once.
+    await expect(
+      harness.service.verifyCode(USER_ID, codeAt(next, 1), NOW_MS + STEP_MS),
+    ).resolves.toEqual({ ok: true, method: 'totp' });
+    await expect(
+      harness.service.verifyCode(USER_ID, rotation.recoveryCodes[0], NOW_MS + STEP_MS),
+    ).resolves.toEqual({ ok: true, method: 'recovery' });
+    await expect(
+      harness.service.verifyCode(USER_ID, rotation.recoveryCodes[0], NOW_MS + STEP_MS),
+    ).resolves.toEqual({ ok: false });
+    expect(await harness.repository.countUnusedRecoveryCodes(USER_ID)).toBe(9);
+  });
+
+  it('refuses an expired replacement and keeps the active factor', async () => {
+    const { harness } = await enroll();
+    const before = await harness.repository.getCredential(USER_ID);
+    const start = await harness.service.startRotation(USER_ID, USERNAME);
+    const next = base32Decode(start.secretBase32);
+
+    harness.rotationClock.now += ROTATION_PENDING_TTL_SECONDS * 1_000;
+
+    await expect(harness.service.confirmRotation(USER_ID, codeAt(next), NOW_MS)).resolves.toEqual({
+      outcome: 'rejected',
+    });
+    expect((await harness.repository.getCredential(USER_ID))?.secretEnc).toBe(before?.secretEnc);
+  });
+
+  it('lets a second start replace the first pending secret', async () => {
+    const { harness } = await enroll();
+    const first = await harness.service.startRotation(USER_ID, USERNAME);
+    const second = await harness.service.startRotation(USER_ID, USERNAME);
+    const firstSecret = base32Decode(first.secretBase32);
+    const secondSecret = base32Decode(second.secretBase32);
+
+    expect(first.secretBase32).not.toBe(second.secretBase32);
+    await expect(
+      harness.service.confirmRotation(USER_ID, codeAt(firstSecret), NOW_MS),
+    ).resolves.toEqual({ outcome: 'rejected' });
+    const confirmation = await harness.service.confirmRotation(
+      USER_ID,
+      codeAt(secondSecret),
+      NOW_MS,
+    );
+
+    expect(confirmation.outcome).toBe('rotated');
+  });
+
+  it('refuses to start a rotation without a confirmed factor', async () => {
+    const harness = createHarness();
+
+    await expect(harness.service.startRotation(USER_ID, USERNAME)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+
+    // A pending enrollment is not a factor yet; it has to be confirmed first.
+    await harness.service.startEnrollment(USER_ID, USERNAME);
+
+    await expect(harness.service.startRotation(USER_ID, USERNAME)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(await harness.rotations.read(USER_ID)).toBeNull();
+  });
+
+  it('fails closed when the limiter is down', async () => {
+    const { harness } = await enroll();
+    const before = await harness.repository.getCredential(USER_ID);
+    const start = await harness.service.startRotation(USER_ID, USERNAME);
+    const next = base32Decode(start.secretBase32);
+
+    harness.rateLimit.unavailable = true;
+
+    await expect(
+      harness.service.confirmRotation(USER_ID, codeAt(next), NOW_MS),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect((await harness.repository.getCredential(USER_ID))?.secretEnc).toBe(before?.secretEnc);
   });
 });

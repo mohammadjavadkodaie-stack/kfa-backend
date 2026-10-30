@@ -54,6 +54,33 @@ export class InMemoryTotpRepository implements TotpRepository {
     return true;
   }
 
+  /**
+   * The check and the swap share one synchronous turn, so a reader never sees
+   * the new secret with the old recovery codes (or the other way round).
+   */
+  async rotate(
+    userId: string,
+    expectedSecretEnc: string,
+    nextSecretEnc: string,
+    step: number,
+    codeHashes: readonly string[],
+  ): Promise<boolean> {
+    const stored = this.credentials.get(userId);
+
+    if (stored === undefined || stored.confirmedAt === null) return false;
+    if (stored.secretEnc !== expectedSecretEnc) return false;
+
+    stored.secretEnc = nextSecretEnc;
+    stored.confirmedAt = new Date();
+    stored.lastUsedStep = step;
+    this.recoveryCodes.set(
+      userId,
+      codeHashes.map((codeHash) => ({ codeHash, usedAt: null })),
+    );
+
+    return true;
+  }
+
   async advanceStep(userId: string, step: number): Promise<boolean> {
     const stored = this.credentials.get(userId);
 

@@ -7,6 +7,7 @@ import { RateLimitService } from '../../rate-limit/rate-limit.service';
 import { generateRecoveryCodes, hashRecoveryCode, normalizeRecoveryCode } from './recovery-codes';
 import { base32Encode, buildOtpauthUri, generateTotpSecret, verifyTotp } from './totp';
 import { TOTP_REPOSITORY, type TotpRepository } from './totp.repository';
+import { TOTP_ROTATION_STORE, type TotpRotationStore } from './totp-rotation.store';
 import { decryptTotpSecret, encryptTotpSecret } from './totp-secret-box';
 
 /**
@@ -38,6 +39,11 @@ export type EnrollmentConfirmation =
 export type TotpVerification =
   { readonly ok: true; readonly method: 'totp' | 'recovery' } | { readonly ok: false };
 
+/** Same one-answer rule as enrollment: no pending, wrong, stale or locked out. */
+export type RotationConfirmation =
+  | { readonly outcome: 'rotated'; readonly recoveryCodes: string[] }
+  | { readonly outcome: 'rejected' };
+
 /** What the client may know about its own factor. No secret, no hash. */
 export interface TotpStatus {
   readonly confirmed: boolean;
@@ -65,6 +71,7 @@ export class TotpService {
   constructor(
     @Inject(ENV) env: Pick<Env, 'TOTP_ENC_KEY'>,
     @Inject(TOTP_REPOSITORY) private readonly repository: TotpRepository,
+    @Inject(TOTP_ROTATION_STORE) private readonly rotations: TotpRotationStore,
     private readonly rateLimit: RateLimitService,
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
@@ -148,6 +155,90 @@ export class TotpService {
     });
 
     return { outcome: 'confirmed', recoveryCodes };
+  }
+
+  /**
+   * Starts a replacement for an already confirmed factor.
+   *
+   * The pending ciphertext is held outside the credential row, so the current
+   * authenticator keeps working until the replacement is proven. A second start
+   * simply replaces the older pending one. No confirmed credential means there
+   * is nothing to rotate, which answers like a second enrollment.
+   */
+  async startRotation(userId: string, label: string): Promise<EnrollmentStart> {
+    const key = this.requireKey();
+    const active = await this.repository.getCredential(userId);
+
+    if (active === null || active.confirmedAt === null) throw new ConflictException();
+
+    const secret = generateTotpSecret();
+    const secretEnc = encryptTotpSecret(secret, key, userId);
+
+    await this.rotations.save(userId, { secretEnc, expectedSecretEnc: active.secretEnc });
+
+    const secretBase32 = base32Encode(secret);
+
+    return {
+      secretBase32,
+      otpauthUri: buildOtpauthUri({ issuer: ISSUER, label, secretBase32 }),
+    };
+  }
+
+  /**
+   * Proves the pending replacement, then swaps it in with fresh recovery codes.
+   *
+   * A wrong code spends the same per-user attempt budget as a step-up and never
+   * reaches the repository, so the active factor and its codes stay untouched.
+   * The swap itself is one repository transaction bound to the old ciphertext.
+   */
+  async confirmRotation(
+    userId: string,
+    code: string,
+    nowMs: number,
+  ): Promise<RotationConfirmation> {
+    const key = this.requireKey();
+
+    if (!(await this.beginAttempt(userId))) return { outcome: 'rejected' };
+
+    const pending = await this.rotations.read(userId);
+
+    if (pending === null) return { outcome: 'rejected' };
+
+    const active = await this.repository.getCredential(userId);
+
+    // A reset or another swap since the start invalidates the replacement.
+    if (
+      active === null ||
+      active.confirmedAt === null ||
+      active.secretEnc !== pending.expectedSecretEnc
+    ) {
+      return { outcome: 'rejected' };
+    }
+
+    const step = this.matchCode(pending.secretEnc, key, userId, code, nowMs);
+
+    if (step === null) return { outcome: 'rejected' };
+
+    const recoveryCodes = generateRecoveryCodes(RECOVERY_CODE_COUNT);
+    const codeHashes = recoveryCodes.map((recoveryCode) => hashRecoveryCode(recoveryCode, key));
+
+    if (
+      !(await this.repository.rotate(
+        userId,
+        pending.expectedSecretEnc,
+        pending.secretEnc,
+        step,
+        codeHashes,
+      ))
+    ) {
+      return { outcome: 'rejected' };
+    }
+
+    // The swap already invalidated the pending value; clearing keeps it tidy.
+    await this.rotations.clear(userId);
+    await this.rateLimit.reset({ scope: VERIFY_SCOPE, identifier: userId });
+
+    return { outcome: 'rotated', recoveryCodes };
   }
 
   /**

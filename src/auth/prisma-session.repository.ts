@@ -394,6 +394,28 @@ export class PrismaSessionRepository implements SessionRepository {
     });
   }
 
+  async revokeOtherUserSessions(
+    userId: string,
+    keepSessionId: string,
+    reason: string,
+    now: Date,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.session.updateMany({
+        where: { userId, id: { not: keepSessionId }, revokedAt: null },
+        data: { revokedAt: now, revokedReason: reason },
+      });
+
+      await tx.refreshToken.updateMany({
+        where: {
+          revokedAt: null,
+          session: { userId, id: { not: keepSessionId } },
+        },
+        data: { revokedAt: now },
+      });
+    });
+  }
+
   /**
    * Writes the new number first, so a taken number is refused by the unique
    * index instead of a read that a concurrent registration would invalidate.

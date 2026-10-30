@@ -18,7 +18,7 @@ import { parseBody } from '../otp/otp.schema';
 import { Role } from '../roles';
 import { SESSION_REPOSITORY, type SessionRepository } from '../session.repository';
 import { AllowWithoutSecondFactor } from './staff-gate.guard';
-import { STEPUP_WINDOW_MS } from './step-up.guard';
+import { RequireStepUp, STEPUP_WINDOW_MS } from './step-up.guard';
 import { totpCodeSchema, totpEnrollSchema } from './totp.schema';
 import { TotpService, type TotpStatus } from './totp.service';
 
@@ -152,6 +152,69 @@ export class TotpController {
     return { ok: true, validForSeconds: STEPUP_WINDOW_MS / 1_000 };
   }
 
+  /**
+   * Starts a replacement factor. The fresh step-up makes this useless to a
+   * stolen session, and the current authenticator keeps working until confirm.
+   */
+  @Post('rotate/start')
+  @Roles(Role.ADMIN, Role.OWNER)
+  @RequireStepUp()
+  @AllowWithoutSecondFactor()
+  @HttpCode(HttpStatus.OK)
+  async startRotation(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<TotpEnrollResponse> {
+    const principal = requirePrincipal(request);
+
+    // Same contract as enrollment: an empty body, nothing else.
+    if (parseBody(totpEnrollSchema, body ?? {}) === null) throw new BadRequestException();
+
+    const username = await this.sessions.findUsernameByUserId(principal.userId);
+
+    if (username === null) throw new UnauthorizedException();
+
+    const start = await this.totp.startRotation(principal.userId, username);
+
+    return { secretBase32: start.secretBase32, otpauthUri: start.otpauthUri };
+  }
+
+  /**
+   * Proves the replacement, swaps it in and ends every other session of the
+   * account. A wrong code is indistinguishable from any other refusal, and the
+   * active factor stays untouched.
+   */
+  @Post('rotate/confirm')
+  @Roles(Role.ADMIN, Role.OWNER)
+  @RequireStepUp()
+  @AllowWithoutSecondFactor()
+  @HttpCode(HttpStatus.OK)
+  async confirmRotation(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<TotpConfirmResponse> {
+    const principal = requirePrincipal(request);
+    const input = parseBody(totpCodeSchema, body);
+
+    if (input === null) throw new UnauthorizedException();
+
+    const result = await this.totp.confirmRotation(principal.userId, input.code, Date.now());
+
+    if (result.outcome !== 'rotated') throw new UnauthorizedException();
+
+    // Only the session that proved the new factor survives; it keeps its stamp.
+    await this.sessions.revokeOtherUserSessions(
+      principal.userId,
+      principal.sessionId,
+      'totp_rotated',
+      new Date(),
+    );
+
+    await this.writeRotationAudit(principal.userId, result.recoveryCodes.length);
+
+    return { recoveryCodes: result.recoveryCodes };
+  }
+
   /** Details carry the method only: never the code, a secret or a recovery code. */
   private async writeAudit(userId: string, method: 'totp' | 'recovery'): Promise<void> {
     try {
@@ -165,6 +228,22 @@ export class TotpController {
     } catch {
       // The step-up already happened; a broken trail must not undo it.
       this.logger.warn({ userId, action: 'auth.stepup' }, 'step-up audit failed');
+    }
+  }
+
+  /** Counts only: no code, recovery code, secret or ciphertext. */
+  private async writeRotationAudit(userId: string, recoveryCodesIssued: number): Promise<void> {
+    try {
+      await this.audit.record({
+        action: 'totp.rotated',
+        actorId: userId,
+        targetType: 'user',
+        targetId: userId,
+        metadata: { recoveryCodesIssued },
+      });
+    } catch {
+      // The new factor is already live; a broken trail must not undo it.
+      this.logger.warn({ userId, action: 'totp.rotated' }, 'rotation audit failed');
     }
   }
 }

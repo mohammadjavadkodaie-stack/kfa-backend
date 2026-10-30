@@ -93,6 +93,11 @@ interface Enrolled {
   readonly recoveryCodes: string[];
 }
 
+interface Session {
+  readonly token: string;
+  readonly sessionId: string;
+}
+
 describe('TOTP endpoints (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
@@ -155,6 +160,22 @@ describe('TOTP endpoints (e2e)', () => {
 
   const staff = (role: Role = Role.ADMIN) => signUp(role);
 
+  /** A second device of the same account: a fresh session with no stamp. */
+  async function login(account: Account): Promise<Session> {
+    const response = await post('/auth/login', undefined, {
+      proof: await proofs.issue(account.phone, 'login'),
+    });
+
+    expect(response.status).toBe(200);
+
+    const rows = [...sessions.sessions.values()].filter((row) => row.userId === account.userId);
+    const newest = rows[rows.length - 1];
+
+    if (newest === undefined) throw new Error('session was not stored');
+
+    return { token: (response.body as { accessToken: string }).accessToken, sessionId: newest.id };
+  }
+
   /** Enrolment plus confirmation, the state every step-up test starts from. */
   async function enrollAndConfirm(account: Account): Promise<Enrolled> {
     const enroll = await post('/auth/totp/enroll', account.token);
@@ -216,12 +237,14 @@ describe('TOTP endpoints (e2e)', () => {
     await app.close();
   });
 
-  it('refuses anonymous callers on all four routes', async () => {
+  it('refuses anonymous callers on all six routes', async () => {
     const responses = [
       await get('/auth/totp/status'),
       await post('/auth/totp/enroll'),
       await post('/auth/totp/confirm', undefined, { code: '123456' }),
       await post('/auth/totp/stepup', undefined, { code: '123456' }),
+      await post('/auth/totp/rotate/start'),
+      await post('/auth/totp/rotate/confirm', undefined, { code: '123456' }),
     ];
 
     for (const response of responses) {
@@ -240,6 +263,8 @@ describe('TOTP endpoints (e2e)', () => {
         await post('/auth/totp/enroll', account.token),
         await post('/auth/totp/confirm', account.token, { code: '123456' }),
         await post('/auth/totp/stepup', account.token, { code: '123456' }),
+        await post('/auth/totp/rotate/start', account.token),
+        await post('/auth/totp/rotate/confirm', account.token, { code: '123456' }),
       ]) {
         expect(response.status).toBe(403);
         expect(response.body).toMatchObject(FORBIDDEN);
@@ -497,6 +522,123 @@ describe('TOTP endpoints (e2e)', () => {
       confirmed: true,
       recoveryCodesLeft: 10,
     });
+  });
+
+  it('rotates the factor: old codes die, new codes work once, other sessions end', async () => {
+    const account = await staff();
+    const enrolled = await enrollAndConfirm(account);
+    const second = await login(account);
+
+    // The active factor keeps working while the replacement is only pending.
+    const start = await post('/auth/totp/rotate/start', account.token);
+
+    expect(start.status).toBe(200);
+    expectNoStore(start);
+
+    const { secretBase32, otpauthUri } = start.body as {
+      secretBase32: string;
+      otpauthUri: string;
+    };
+
+    expect(Object.keys(start.body as object).sort()).toEqual(['otpauthUri', 'secretBase32']);
+    expect(otpauthUri).toContain(`otpauth://totp/KFA:${encodeURIComponent(account.username)}`);
+    expect(otpauthUri).not.toContain(account.phone.replace('+', '').slice(-6));
+    expect(secretBase32).not.toBe(enrolled.secretBase32);
+
+    const next = base32Decode(secretBase32);
+
+    expect(
+      (await post('/auth/totp/stepup', account.token, { code: freshCode(enrolled.secret) })).status,
+    ).toBe(200);
+
+    const rotation = await post('/auth/totp/rotate/confirm', account.token, {
+      code: totpAt(next, Date.now()),
+    });
+
+    expect(rotation.status).toBe(200);
+    expectNoStore(rotation);
+    expect(Object.keys(rotation.body as object)).toEqual(['recoveryCodes']);
+
+    const { recoveryCodes } = rotation.body as { recoveryCodes: string[] };
+
+    expect(recoveryCodes).toHaveLength(10);
+    expect(new Set(recoveryCodes).size).toBe(10);
+
+    for (const code of recoveryCodes) {
+      expect(code).toMatch(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/);
+    }
+
+    expect(rotation.body).not.toHaveProperty('secretBase32');
+
+    // The session that proved the new factor survives, the other device does not.
+    expect((await get('/test/sensitive', account.token)).status).toBe(200);
+    expect((await get('/auth/totp/status', second.token)).status).toBe(401);
+
+    // The old authenticator and every old recovery code are worthless now.
+    expect(
+      (await post('/auth/totp/stepup', account.token, { code: freshCode(enrolled.secret) })).status,
+    ).toBe(401);
+    expect(
+      (await post('/auth/totp/stepup', account.token, { code: enrolled.recoveryCodes[0] })).status,
+    ).toBe(401);
+
+    // The replacement works, and each new recovery code works exactly once.
+    expect((await post('/auth/totp/stepup', account.token, { code: freshCode(next) })).status).toBe(
+      200,
+    );
+    expect(
+      (await post('/auth/totp/stepup', account.token, { code: recoveryCodes[0] })).status,
+    ).toBe(200);
+    expect(
+      (await post('/auth/totp/stepup', account.token, { code: recoveryCodes[0] })).status,
+    ).toBe(401);
+
+    expect((await get('/auth/totp/status', account.token)).body).toEqual({
+      confirmed: true,
+      recoveryCodesLeft: 9,
+    });
+  });
+
+  it('refuses rotation without a fresh step-up and returns no secret', async () => {
+    const account = await staff();
+
+    await enrollAndConfirm(account);
+
+    const second = await login(account);
+
+    // The gate is opened on these routes, so the step-up guard is the refusal:
+    // one generic 403 with the actionable code, and no secret.
+    for (const [path, body] of [
+      ['/auth/totp/rotate/start', {}],
+      ['/auth/totp/rotate/confirm', { code: '123456' }],
+    ] as const) {
+      const refused = await post(path, second.token, body);
+
+      expect(refused.status).toBe(403);
+      expect(refused.body).toEqual({
+        statusCode: 403,
+        message: 'Forbidden',
+        code: 'step_up_required',
+        requestId: expect.any(String),
+      });
+      expect(JSON.stringify(refused.body)).not.toContain('secret');
+      expectNoStore(refused);
+    }
+
+    // A stale proof is refused as well, with the code the client can act on.
+    expireStepUp(account);
+
+    const stale = await post('/auth/totp/rotate/start', account.token);
+
+    expect(stale.status).toBe(403);
+    expect(stale.body).toEqual({
+      statusCode: 403,
+      message: 'Forbidden',
+      code: 'step_up_required',
+      requestId: expect.any(String),
+    });
+    expect(stale.body).not.toHaveProperty('secretBase32');
+    expectNoStore(stale);
   });
 
   it('keeps the code and the secret out of the logs', async () => {
