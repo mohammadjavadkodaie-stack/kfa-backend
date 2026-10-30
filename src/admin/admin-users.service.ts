@@ -47,7 +47,7 @@ const REVOCATION_REASON = 'admin_action';
 
 /**
  * Shared helpers for the administrative user endpoints, plus the state
- * transitions they own: block, unblock and the admin grant.
+ * transitions they own: block, unblock, the admin grant and the admin revoke.
  */
 @Injectable()
 export class AdminUsersService {
@@ -176,6 +176,45 @@ export class AdminUsersService {
   }
 
   /**
+   * Revoke admin: role first, revoke second, record last.
+   *
+   * Only an account that is an admin right now can be demoted. An id that owns
+   * no row, an id that is not a uuid and an account holding any other role all
+   * leave through the same generic 403, so the endpoint never states which ids
+   * exist or what they hold.
+   *
+   * A lost compare-and-set means a parallel revoke demoted the target first:
+   * the revocation still runs, because a session created while the account was
+   * staff is what this endpoint exists to cut, and nothing is recorded for it.
+   * The second factor is a separate permission and is left untouched: the
+   * demotion changes the role and nothing else.
+   */
+  async revokeAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+    const target = await this.revokeTarget(actor, id);
+    const demoted = await this.demote(target);
+
+    try {
+      await this.revokeAllSessionsOrFail(target.id);
+    } catch {
+      // Same rule as the grant: no rollback, nothing recorded, and a target
+      // that is still an admin can be demoted again on the next attempt.
+      this.logger.warn(
+        { requestId, action: ADMIN_AUDIT_ACTIONS.ADMIN_REVOKE },
+        'admin session revoke failed',
+      );
+
+      throw new InternalServerErrorException();
+    }
+
+    if (!demoted) return;
+
+    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.ADMIN_REVOKE, actor.id, target.id, requestId, {
+      from: Role.ADMIN,
+      to: Role.USER,
+    });
+  }
+
+  /**
    * Target and permission together, so no endpoint can act before deciding.
    *
    * A malformed id owns no row either, so it answers exactly like an unknown
@@ -240,6 +279,48 @@ export class AdminUsersService {
     const current = await this.loadTarget(target.id);
 
     if (current.found && current.target.role === Role.ADMIN) return false;
+
+    throw new ForbiddenException();
+  }
+
+  /**
+   * Who may be demoted, and by whom.
+   *
+   * The target has to be an admin as storage reports it right now, and every
+   * other answer is the same generic 403: an unknown id, a malformed id and an
+   * account that never held the role cannot be told apart, so nothing here says
+   * which ids exist. The policy then answers the permission half, with the same
+   * refusal for an admin actor, for oneself and for the owner row.
+   */
+  private async revokeTarget(actor: PolicySubject, id: string): Promise<AdminTarget> {
+    const loaded = await this.loadTarget(id);
+
+    if (!loaded.found) throw new ForbiddenException();
+    if (loaded.target.role !== Role.ADMIN) throw new ForbiddenException();
+
+    const decision = this.policy.decide(
+      actor,
+      { action: AccessAction.ADMIN_REVOKE },
+      { id: loaded.target.id, role: loaded.target.role },
+    );
+
+    if (!decision.allowed) throw new ForbiddenException();
+
+    return loaded.target;
+  }
+
+  /**
+   * The demotion itself: one compare-and-set from the stored role, so a request
+   * body cannot choose the starting point and two revokes cannot both count as
+   * the change. False means another revoke got there first.
+   */
+  private async demote(target: AdminTarget): Promise<boolean> {
+    if (await this.sessions.setRoleIf(target.id, Role.ADMIN, Role.USER)) return true;
+
+    // Lost the race: a demoted target is the only acceptable outcome here.
+    const current = await this.loadTarget(target.id);
+
+    if (current.found && current.target.role === Role.USER) return false;
 
     throw new ForbiddenException();
   }

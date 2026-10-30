@@ -113,6 +113,17 @@ class FlakySessions extends InMemorySessionRepository {
   }
 }
 
+/** Loses the compare-and-set: a parallel request demoted the row first. */
+class LosingSessions extends InMemorySessionRepository {
+  override async setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean> {
+    const user = this.users.get(userId);
+
+    if (user?.role === expectedRole) user.role = newRole;
+
+    return false;
+  }
+}
+
 function createHarness(
   audit: FakeAudit = new FakeAudit(),
   sessions: InMemorySessionRepository = new InMemorySessionRepository(),
@@ -389,6 +400,21 @@ function grantHarness(
   });
 
   return createHarness(audit, sessions, notifier);
+}
+
+function revokeHarness(
+  sessions: InMemorySessionRepository = new InMemorySessionRepository(),
+  audit: FakeAudit = new FakeAudit(),
+) {
+  seed(sessions);
+  sessions.seedUser({
+    id: PEER_ADMIN_ID,
+    phone: '+14155550105',
+    username: 'boris',
+    role: Role.ADMIN,
+  });
+
+  return createHarness(audit, sessions);
 }
 
 describe('block', () => {
@@ -693,5 +719,138 @@ describe('grant admin', () => {
 
     expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
     expect(audit.records).toHaveLength(1);
+  });
+});
+
+describe('revoke admin', () => {
+  it('demotes an admin to the base role', async () => {
+    const { service, sessions, audit } = revokeHarness();
+
+    await service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID);
+
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
+    expect(audit.records.map((row) => row.action)).toEqual([ADMIN_AUDIT_ACTIONS.ADMIN_REVOKE]);
+    expect(audit.records[0]?.metadata).toEqual({ from: Role.ADMIN, to: Role.USER });
+  });
+
+  it('leaves the rest of the account alone', async () => {
+    const { service, sessions } = revokeHarness();
+
+    sessions.setUserRole(ADMIN_ID, { identityVerifier: true });
+
+    await service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID);
+
+    // The verifier flag and the second factor are separate permissions.
+    expect(sessions.users.get(ADMIN_ID)).toMatchObject({
+      role: Role.USER,
+      status: 'ACTIVE',
+      identityVerifier: true,
+    });
+  });
+
+  it('refuses an admin actor on a peer and on itself', async () => {
+    const { service, sessions, audit } = revokeHarness();
+
+    const peer = await refusal(() => service.revokeAdmin(ADMIN, PEER_ADMIN_ID, REQUEST_ID));
+    const self = await refusal(() => service.revokeAdmin(ADMIN, ADMIN_ID, REQUEST_ID));
+
+    expect(peer.status).toBe(403);
+    expect(peer.body).toEqual({ statusCode: 403, message: 'Forbidden' });
+    expect(self).toEqual(peer);
+    expect(sessions.users.get(PEER_ADMIN_ID)?.role).toBe(Role.ADMIN);
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.ADMIN);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('refuses the owner as a target', async () => {
+    const { service, sessions, audit } = revokeHarness();
+
+    const refused = await refusal(() => service.revokeAdmin(OWNER, OWNER_ID, REQUEST_ID));
+
+    expect(refused.status).toBe(403);
+    expect(sessions.users.get(OWNER_ID)?.role).toBe(Role.OWNER);
+    expect(sessions.users.get(OWNER_ID)?.status).toBe('ACTIVE');
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('answers a user target and an unknown id alike', async () => {
+    const { service, sessions, audit } = revokeHarness();
+
+    const target = await refusal(() => service.revokeAdmin(OWNER, USER_ID, REQUEST_ID));
+    const unknown = await refusal(() => service.revokeAdmin(OWNER, UNKNOWN_ID, REQUEST_ID));
+    const malformed = await refusal(() => service.revokeAdmin(OWNER, 'not-a-uuid', REQUEST_ID));
+
+    expect(target.status).toBe(403);
+    expect(target.body).toEqual({ statusCode: 403, message: 'Forbidden' });
+    expect(unknown).toEqual(target);
+    expect(malformed).toEqual(target);
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.USER);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('cuts every session of the target', async () => {
+    const sessions = new InMemorySessionRepository();
+    const { service } = revokeHarness(sessions);
+
+    await giveSessions(sessions, ADMIN_ID, 2);
+
+    await service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID);
+
+    expect(await sessions.listActiveSessions(ADMIN_ID, new Date())).toEqual([]);
+  });
+
+  it('reports a failed revocation as a generic 500 without a success row', async () => {
+    const { service, sessions, audit } = revokeHarness(new FailingSessions());
+
+    const failed = await refusal(() => service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID));
+
+    expect(failed.status).toBe(500);
+    expect(failed.body).toEqual({ statusCode: 500, message: 'Internal Server Error' });
+    // No rollback: the demotion stands and nothing claims a finished revoke.
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('does not report success when the audit row cannot be written', async () => {
+    const { service, sessions, audit } = revokeHarness(
+      new InMemorySessionRepository(),
+      new FailingAudit(),
+    );
+
+    await expect(service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
+    expect(audit.records).toHaveLength(1);
+  });
+
+  it('answers a repeated revoke alike and records once', async () => {
+    const sessions = new RecordingSessions();
+    const { service, audit } = revokeHarness(sessions);
+
+    await service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID);
+
+    const repeated = await refusal(() => service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID));
+
+    // The demoted account keeps its role, and only the first call recorded it.
+    expect(repeated.status).toBe(403);
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
+    expect(sessions.revokedAll).toHaveLength(1);
+    expect(audit.records).toHaveLength(1);
+  });
+
+  it('repeats the revocation when a parallel revoke demoted first', async () => {
+    const sessions = new LosingSessions();
+    const { service, audit } = revokeHarness(sessions);
+
+    await giveSessions(sessions, ADMIN_ID, 1);
+
+    await service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID);
+
+    // The demotion was somebody else's; the revocation is still ours to finish.
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
+    expect(await sessions.listActiveSessions(ADMIN_ID, new Date())).toEqual([]);
+    expect(audit.records).toHaveLength(0);
   });
 });

@@ -1,4 +1,12 @@
-import { Controller, ForbiddenException, HttpCode, Param, Post, Req } from '@nestjs/common';
+import {
+  Controller,
+  Delete,
+  ForbiddenException,
+  HttpCode,
+  Param,
+  Post,
+  Req,
+} from '@nestjs/common';
 import { Roles } from '../auth/decorators/roles.decorator';
 import type { AuthenticatedRequest } from '../auth/guards/auth.guard';
 import type { PolicySubject } from '../auth/policy/access-policy';
@@ -8,7 +16,7 @@ import { getRequestId } from '../common/middleware/request-id.middleware';
 import { AdminUsersService } from './admin-users.service';
 
 /**
- * Moderation and promotion of an account.
+ * Moderation, promotion and demotion of an account.
  *
  * Every route changes who may use the API, so each one carries the staff role
  * and a fresh second factor; the global staff gate stays in front of them.
@@ -46,6 +54,18 @@ export class AdminUsersController {
   @HttpCode(204)
   async grantAdmin(@Param('id') id: string, @Req() request: AuthenticatedRequest): Promise<void> {
     await this.users.grantAdmin(this.actor(request), id, getRequestId(request));
+  }
+
+  /**
+   * Demotion. The same markers, for the same reason: only the owner may demote,
+   * and an admin actor is refused by the policy with the generic 403.
+   */
+  @Roles(Role.ADMIN, Role.OWNER)
+  @RequireStepUp()
+  @Delete(':id/admin')
+  @HttpCode(204)
+  async revokeAdmin(@Param('id') id: string, @Req() request: AuthenticatedRequest): Promise<void> {
+    await this.users.revokeAdmin(this.actor(request), id, getRequestId(request));
   }
 
   /** AuthGuard runs first, so a missing principal is a wiring bug, not input. */
