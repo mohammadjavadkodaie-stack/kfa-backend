@@ -4,7 +4,9 @@ useDefault = true
 
 # Narrow global allowlist. Everything listed here is a placeholder that is
 # committed on purpose: local dev defaults, test fixtures and CI-only values.
-[allowlist]
+# (Array-of-tables form: gitleaks 8.x refuses to load a config that mixes the
+# deprecated singular [allowlist] with [[allowlists]]. Entries are unchanged.)
+[[allowlists]]
 description = 'Fake placeholder credentials committed on purpose (dev template, tests, CI)'
 
 # The documented dev template; every value in it is a placeholder by design.
@@ -18,4 +20,21 @@ stopwords = [
   "db-test-",
   "unit-test-",
   "ci-only-",
+]
+
+# Fake TOTP_ENC_KEY / PROD_TOTP_ENC_KEY values in three test files only. The
+# values are base64url blobs, so the plain-text stopwords above cannot catch
+# them. Requiring path AND assignment name means a real key in any other file,
+# or a real TOTP key in any other file, is still reported.
+[[allowlists]]
+description = 'Fake test-only TOTP keys: base64 form escapes the plain-text stopwords'
+condition = "AND"
+paths = [
+  '''^src/config/env\.spec\.ts$''',
+  '''^src/rate-limit/throttler\.config\.spec\.ts$''',
+  '''^test/helpers/test-env\.ts$''',
+]
+regexTarget = "match"
+regexes = [
+  '''(?i)\b(?:PROD_)?TOTP_ENC_KEY\b["'`]?\s*(?:=>|=|:)\s*["'`]?[A-Za-z0-9_\-+/=]{8,}''',
 ]
