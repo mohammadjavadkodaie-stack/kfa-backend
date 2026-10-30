@@ -15,7 +15,8 @@ import { TEST_ENV } from './helpers/test-env';
  *
  * What must hold:
  * - a route marked with `@Roles(...)` admits exactly the listed roles,
- * - a route without it keeps admitting any authenticated user,
+ * - a route marked with `@Authenticated()` admits any signed-in role,
+ * - a non-public route with no marker at all is refused for every role,
  * - the role and the verifier flag always come from the database, never from
  *   the token, so a forged or stale claim changes nothing,
  * - every refusal looks the same from outside.
@@ -276,5 +277,32 @@ describe('Role-based route protection (e2e)', () => {
 
     await server().get('/test/admin').expect(401);
     await server().get('/test/protected').expect(401);
+  });
+
+  it('refuses an unmarked route for a normal user and for an admin', async () => {
+    const user = await signUp({ role: Role.USER });
+    const admin = await signUp({ role: Role.ADMIN });
+
+    // The admin is past the second-factor gate, so only the marker decides here.
+    for (const token of [user.token, admin.token]) {
+      const refusal = await get('/test/unmarked', token);
+
+      expect(refusal.status).toBe(403);
+      expect(refusal.body).toEqual({ ...FORBIDDEN, requestId: expect.any(String) });
+    }
+  });
+
+  it('gives an unmarked route the same refusal as a wrong role', async () => {
+    const { token } = await signUp({ role: Role.USER });
+
+    const unmarked = await get('/test/unmarked', token);
+    const wrongRole = await get('/test/admin', token);
+    const normalise = (body: object): string => JSON.stringify({ ...body, requestId: '-' });
+
+    expect(normalise(unmarked.body)).toBe(normalise(wrongRole.body));
+  });
+
+  it('still asks for authentication on an unmarked route', async () => {
+    await server().get('/test/unmarked').expect(401);
   });
 });

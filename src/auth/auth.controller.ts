@@ -27,6 +27,7 @@ import {
   type SessionPrincipal,
   type SessionSummary,
 } from './auth.service';
+import { Authenticated } from './decorators/authenticated.decorator';
 import { DEVICE_KEY_HEADER, readDeviceKey } from './device-key';
 import { OriginCheckGuard } from './guards/origin.guard';
 import type { AuthenticatedRequest } from './guards/auth.guard';
@@ -219,6 +220,7 @@ export class AuthController {
    * The caller's own device list. Requires the access token, so the id space is
    * never reachable with a refresh cookie alone.
    */
+  @Authenticated()
   @Get('sessions')
   async listSessions(
     @Req() request: AuthenticatedRequest,
@@ -237,6 +239,7 @@ export class AuthController {
    * Revokes one of the caller's sessions. 404 covers unknown, already revoked
    * and foreign ids alike, so a caller cannot learn whether an id exists.
    */
+  @Authenticated()
   @Delete('sessions/:sessionId')
   @HttpCode(HttpStatus.NO_CONTENT)
   async revokeSession(
@@ -268,6 +271,7 @@ export class AuthController {
   }
 
   /** Revokes every session of the caller, including the one that asked. */
+  @Authenticated()
   @AllowWithoutSecondFactor()
   @Post('logout-all')
   @HttpCode(HttpStatus.NO_CONTENT)

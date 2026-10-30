@@ -10,6 +10,7 @@ import {
   Req,
 } from '@nestjs/common';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { Authenticated } from '../../src/auth/decorators/authenticated.decorator';
 import { RequireVerifier, Roles } from '../../src/auth/decorators/roles.decorator';
 import type { AuthenticatedRequest } from '../../src/auth/guards/auth.guard';
 import { InMemorySessionRepository } from '../../src/auth/in-memory-session.repository';
@@ -60,8 +61,18 @@ export class TestController {
     return { ok: true };
   }
 
+  @Authenticated()
   @Get('protected')
   protectedRoute(): { ok: true } {
+    return { ok: true };
+  }
+
+  /**
+   * Deliberately carries no marker: it stands in for a future route whose
+   * decorator was forgotten, and must be refused for every role.
+   */
+  @Get('unmarked')
+  unmarked(): { ok: true } {
     return { ok: true };
   }
 
@@ -108,13 +119,14 @@ export class TestController {
   }
 
   /**
-   * Exercises the access policy over HTTP. It is deliberately *not* marked with
+   * Exercises the access policy over HTTP. It carries `@Authenticated()` and no
    * `@Roles`: the policy, not the guard, has to answer here, and a demoted actor
    * must be refused on the next request without touching the access token.
    *
    * The target is read from the in-memory store the way an endpoint would read
    * it from the database; 204 means the policy allowed the action.
    */
+  @Authenticated()
   @Post('authorize')
   @HttpCode(204)
   async authorize(@Body() dto: AuthorizeDto, @Req() request: AuthenticatedRequest): Promise<void> {

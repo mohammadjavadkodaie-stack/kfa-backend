@@ -13,6 +13,7 @@ import type { Request, Response } from 'express';
 import { writeTooManyRequests, type ErrorResponseBody } from '../../common/errors/error-response';
 import { getRequestId } from '../../common/middleware/request-id.middleware';
 import type { AuthRequestContext, SessionPrincipal } from '../auth.service';
+import { Authenticated } from '../decorators/authenticated.decorator';
 import { DEVICE_KEY_HEADER, readDeviceKey } from '../device-key';
 import type { AuthenticatedRequest } from '../guards/auth.guard';
 import { OriginCheckGuard } from '../guards/origin.guard';
@@ -65,6 +66,7 @@ function requirePrincipal(request: AuthenticatedRequest): SessionPrincipal {
 export class PhoneChangeController {
   constructor(private readonly phoneChange: PhoneChangeService) {}
 
+  @Authenticated()
   @Post('start')
   @HttpCode(HttpStatus.ACCEPTED)
   async start(
@@ -85,6 +87,7 @@ export class PhoneChangeController {
     return { ok: true };
   }
 
+  @Authenticated()
   @Post('verify-new')
   @HttpCode(HttpStatus.OK)
   async verifyNew(
@@ -110,6 +113,7 @@ export class PhoneChangeController {
     return { proof: result.proof };
   }
 
+  @Authenticated()
   @Post('verify-old')
   @HttpCode(HttpStatus.OK)
   async verifyOld(
@@ -140,6 +144,7 @@ export class PhoneChangeController {
    * working. Every failure is the same 400, so a taken number cannot be told
    * apart from an expired proof.
    */
+  @Authenticated()
   @Post('confirm')
   @HttpCode(HttpStatus.NO_CONTENT)
   async confirm(

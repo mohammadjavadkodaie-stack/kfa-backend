@@ -1,6 +1,7 @@
 import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
+import { AUTHENTICATED_KEY } from '../decorators/authenticated.decorator';
 import { REQUIRES_IDENTITY_VERIFIER_KEY, ROLES_KEY } from '../decorators/roles.decorator';
 import { Role } from '../roles';
 import type { AuthenticatedRequest, RequestPrincipal } from './auth.guard';
@@ -16,6 +17,7 @@ interface Metadata {
   readonly isPublic?: boolean;
   readonly roles?: readonly Role[];
   readonly requiresVerifier?: boolean;
+  readonly authenticated?: boolean;
 }
 
 function principal(role: Role, identityVerifier = false): RequestPrincipal {
@@ -53,6 +55,8 @@ function createHarness(metadata: Metadata, authenticated?: RequestPrincipal) {
         return metadata.roles;
       case REQUIRES_IDENTITY_VERIFIER_KEY:
         return metadata.requiresVerifier;
+      case AUTHENTICATED_KEY:
+        return metadata.authenticated;
       default:
         return undefined;
     }
@@ -78,11 +82,12 @@ function denied(metadata: Metadata, authenticated?: RequestPrincipal): void {
 }
 
 describe('RolesGuard', () => {
-  it('leaves a route without @Roles or @RequireVerifier open to any authenticated user', () => {
-    for (const role of Object.values(Role)) {
-      expect(allowed({}, principal(role))).toBe(true);
-    }
-  });
+  it.each([Role.USER, Role.ATHLETE, Role.ADMIN, Role.OWNER])(
+    'refuses %s on a non-public route with no marker',
+    (role) => {
+      denied({}, principal(role));
+    },
+  );
 
   it('does nothing for @Public routes, even without a principal', () => {
     expect(allowed({ isPublic: true }, principal(Role.USER))).toBe(true);
@@ -90,6 +95,30 @@ describe('RolesGuard', () => {
     const { guard, context } = createHarness({ isPublic: true, roles: [Role.ADMIN] });
 
     expect(guard.canActivate(context)).toBe(true);
+  });
+
+  it('admits every role on an @Authenticated route', () => {
+    for (const role of Object.values(Role)) {
+      expect(allowed({ authenticated: true }, principal(role))).toBe(true);
+    }
+  });
+
+  it('lets @Roles win when @Authenticated is there too', () => {
+    const metadata: Metadata = { roles: [Role.ADMIN], authenticated: true };
+
+    expect(allowed(metadata, principal(Role.ADMIN))).toBe(true);
+    denied(metadata, principal(Role.USER));
+    denied(metadata, principal(Role.OWNER));
+  });
+
+  it('fails closed when the marker metadata is unusable', () => {
+    const { context } = createHarness({}, principal(Role.ADMIN));
+    // Only a hand-written reflector can produce this; it must not read as "open".
+    const guard = new RolesGuard({
+      getAllAndOverride: (key: string) => (key === ROLES_KEY ? 'ADMIN' : undefined),
+    } as unknown as Reflector);
+
+    expect(() => guard.canActivate(context)).toThrow(ForbiddenException);
   });
 
   it('lets a listed role through', () => {
@@ -126,6 +155,8 @@ describe('RolesGuard', () => {
   it('fails closed when a protected route has no principal', () => {
     denied({ roles: [Role.ADMIN] });
     denied({ requiresVerifier: true });
+    denied({ authenticated: true });
+    denied({});
   });
 
   it('refuses everyone when @Roles() lists no role', () => {
