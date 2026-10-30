@@ -10,9 +10,10 @@ import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
 import { AccessAction, type PolicySubject } from '../auth/policy/access-policy';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
-import type { Role } from '../auth/roles';
+import { Role } from '../auth/roles';
 import { SESSION_REPOSITORY, type SessionRepository } from '../auth/session.repository';
 import { isUuid } from '../common/middleware/request-id.middleware';
+import { OWNER_NOTIFIER, type OwnerNotifier } from './owner-notifier';
 
 /** Audit names for the actions this module performs; the set is closed. */
 export const ADMIN_AUDIT_ACTIONS = {
@@ -45,8 +46,8 @@ const AUDIT_TARGET_TYPE = 'user';
 const REVOCATION_REASON = 'admin_action';
 
 /**
- * Shared helpers for the administrative user endpoints, plus the two state
- * transitions they own: block and unblock.
+ * Shared helpers for the administrative user endpoints, plus the state
+ * transitions they own: block, unblock and the admin grant.
  */
 @Injectable()
 export class AdminUsersService {
@@ -55,6 +56,7 @@ export class AdminUsersService {
     private readonly policy: AccessPolicyService,
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
+    @Inject(OWNER_NOTIFIER) private readonly notifier: OwnerNotifier,
   ) {}
 
   /**
@@ -134,6 +136,46 @@ export class AdminUsersService {
   }
 
   /**
+   * Grant admin: role first, revoke second, notify third, record last.
+   *
+   * The order carries the guarantees. The new role only applies to a session
+   * created after the revocation, and the row is written after the delivery
+   * attempt so its metadata can state whether the owner was actually told.
+   *
+   * A retry after an interrupted grant finds the target already an admin: it
+   * still revokes (a promoted account whose old sessions work is the state this
+   * endpoint exists to prevent) and records nothing, exactly like a repeated
+   * block.
+   */
+  async grantAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+    const target = await this.grantTarget(actor, id);
+    const granted = await this.promote(target);
+
+    try {
+      await this.revokeAllSessionsOrFail(target.id);
+    } catch {
+      // Same rule as block: the role change is not rolled back, nothing is
+      // recorded, and the next attempt finishes the revocation.
+      this.logger.warn(
+        { requestId, action: ADMIN_AUDIT_ACTIONS.ADMIN_GRANT },
+        'admin session revoke failed',
+      );
+
+      throw new InternalServerErrorException();
+    }
+
+    if (!granted) return;
+
+    const notified = await this.notifyOwner(actor.id, target.id, requestId);
+
+    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.ADMIN_GRANT, actor.id, target.id, requestId, {
+      from: target.role,
+      to: Role.ADMIN,
+      notified,
+    });
+  }
+
+  /**
    * Target and permission together, so no endpoint can act before deciding.
    *
    * A malformed id owns no row either, so it answers exactly like an unknown
@@ -154,6 +196,75 @@ export class AdminUsersService {
     if (!this.authorize(action, actor, target).allowed) throw new ForbiddenException();
 
     return loaded.target;
+  }
+
+  /**
+   * Who may be promoted, and by whom.
+   *
+   * The policy answers the permission half. It also refuses a target that is
+   * already an admin, which is the retry case and not a permission problem:
+   * that one reason is the only refusal this path lets through, and an ADMIN
+   * actor never reaches it because the actor rule runs first. Everything else,
+   * including a blocked target, is the same generic 403 as every other refusal.
+   */
+  private async grantTarget(actor: PolicySubject, id: string): Promise<AdminTarget> {
+    const loaded = await this.loadTarget(id);
+
+    if (!loaded.found) throw new NotFoundException();
+
+    // Only a live account can take on staff duties; why it is not live stays here.
+    if (loaded.target.status !== 'ACTIVE') throw new ForbiddenException();
+
+    const decision = this.policy.decide(
+      actor,
+      { action: AccessAction.ADMIN_GRANT },
+      { id: loaded.target.id, role: loaded.target.role },
+    );
+
+    if (decision.allowed || decision.reason === 'target_already_admin') return loaded.target;
+
+    throw new ForbiddenException();
+  }
+
+  /**
+   * The compare-and-set owns the transition and the stored role is the only
+   * expectation accepted, so a request body cannot choose the starting point.
+   * False means the target is already an admin and there is nothing to record.
+   */
+  private async promote(target: AdminTarget): Promise<boolean> {
+    if (target.role === Role.ADMIN) return false;
+
+    if (await this.sessions.setRoleIf(target.id, target.role, Role.ADMIN)) return true;
+
+    // Lost a race: only a concurrent grant of the same privilege is acceptable.
+    const current = await this.loadTarget(target.id);
+
+    if (current.found && current.target.role === Role.ADMIN) return false;
+
+    throw new ForbiddenException();
+  }
+
+  /**
+   * Best effort by contract: the grant already happened, so a failed delivery is
+   * logged without ids and reported in the audit metadata, never undone.
+   */
+  private async notifyOwner(
+    actorId: string,
+    targetId: string,
+    requestId: string,
+  ): Promise<boolean> {
+    try {
+      await this.notifier.notifyAdminGranted({ actorId, targetId, at: new Date() });
+
+      return true;
+    } catch {
+      this.logger.warn(
+        { requestId, action: ADMIN_AUDIT_ACTIONS.ADMIN_GRANT },
+        'owner notify failed',
+      );
+
+      return false;
+    }
   }
 
   /**

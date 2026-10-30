@@ -1,4 +1,8 @@
-import { HttpException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  HttpException,
+  InternalServerErrorException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import type { PinoLogger } from 'nestjs-pino';
 import { FakeAudit, type AuditRecord } from '../../test/helpers/auth-service-harness';
 import type { AuditService } from '../audit/audit.service';
@@ -7,13 +11,15 @@ import { AccessAction, type PolicySubject } from '../auth/policy/access-policy';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
 import { Role } from '../auth/roles';
 import { ADMIN_AUDIT_ACTIONS, AdminUsersService } from './admin-users.service';
-import { LogOwnerNotifier } from './owner-notifier';
+import { LogOwnerNotifier, type AdminGrantedNotice, type OwnerNotifier } from './owner-notifier';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const ADMIN_ID = '22222222-2222-4222-8222-222222222222';
 const PEER_ADMIN_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '44444444-4444-4444-8444-444444444444';
 const UNKNOWN_ID = '55555555-5555-4555-8555-555555555555';
+const ATHLETE_ID = '66666666-6666-4666-8666-666666666666';
+const BLOCKED_ID = '77777777-7777-4777-8777-777777777777';
 /** Never passed to the service; proves nothing contact-like is recorded. */
 const PHONE = '+14155550123';
 const USERNAME = 'ivan';
@@ -75,9 +81,42 @@ class CountingSessions extends InMemorySessionRepository {
   }
 }
 
+/** Keeps what the owner would receive, so a spec can prove ids are all it holds. */
+class RecordingNotifier implements OwnerNotifier {
+  readonly notices: AdminGrantedNotice[] = [];
+
+  async notifyAdminGranted(notice: AdminGrantedNotice): Promise<void> {
+    this.notices.push(notice);
+  }
+}
+
+class FailingNotifier implements OwnerNotifier {
+  calls = 0;
+
+  async notifyAdminGranted(): Promise<void> {
+    this.calls += 1;
+
+    throw new Error('the messaging gateway is unavailable');
+  }
+}
+
+/** Fails the first revocation, so a retry has to finish the job. */
+class FlakySessions extends InMemorySessionRepository {
+  revocations = 0;
+
+  override async revokeAllUserSessions(userId: string, reason: string, now: Date): Promise<void> {
+    this.revocations += 1;
+
+    if (this.revocations === 1) throw new Error('sessions are unavailable');
+
+    return super.revokeAllUserSessions(userId, reason, now);
+  }
+}
+
 function createHarness(
   audit: FakeAudit = new FakeAudit(),
   sessions: InMemorySessionRepository = new InMemorySessionRepository(),
+  notifier: OwnerNotifier = new LogOwnerNotifier(new RecordingLogger() as unknown as PinoLogger),
 ) {
   const policy = new AccessPolicyService(
     audit as unknown as AuditService,
@@ -89,9 +128,10 @@ function createHarness(
     policy,
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
+    notifier,
   );
 
-  return { service, sessions, audit, logger };
+  return { service, sessions, audit, logger, notifier };
 }
 
 describe('in-memory CAS', () => {
@@ -328,6 +368,29 @@ async function giveSessions(
   }
 }
 
+function grantHarness(
+  sessions: InMemorySessionRepository = new InMemorySessionRepository(),
+  audit: FakeAudit = new FakeAudit(),
+  notifier: OwnerNotifier = new RecordingNotifier(),
+) {
+  seed(sessions);
+  sessions.seedUser({
+    id: ATHLETE_ID,
+    phone: '+14155550103',
+    username: 'olga',
+    role: Role.ATHLETE,
+  });
+  sessions.seedUser({
+    id: BLOCKED_ID,
+    phone: '+14155550104',
+    username: 'pavel',
+    role: Role.USER,
+    status: 'BLOCKED',
+  });
+
+  return createHarness(audit, sessions, notifier);
+}
+
 describe('block', () => {
   it('lets an owner and an admin block a normal account', async () => {
     for (const actor of [OWNER, ADMIN]) {
@@ -460,5 +523,175 @@ describe('unblock', () => {
       'admin.user.block',
       'admin.user.unblock',
     ]);
+  });
+});
+
+describe('grant admin', () => {
+  it('promotes an active user and an active athlete', async () => {
+    for (const [id, from] of [
+      [USER_ID, Role.USER],
+      [ATHLETE_ID, Role.ATHLETE],
+    ] as const) {
+      const { service, sessions, audit } = grantHarness();
+
+      await service.grantAdmin(OWNER, id, REQUEST_ID);
+
+      expect(sessions.users.get(id)?.role).toBe(Role.ADMIN);
+      expect(audit.records.map((row) => row.action)).toEqual([ADMIN_AUDIT_ACTIONS.ADMIN_GRANT]);
+      expect(audit.records[0]?.metadata).toEqual({ from, to: Role.ADMIN, notified: true });
+    }
+  });
+
+  it('refuses an admin actor', async () => {
+    const { service, sessions, audit } = grantHarness();
+
+    const refused = await refusal(() => service.grantAdmin(ADMIN, USER_ID, REQUEST_ID));
+
+    expect(refused.status).toBe(403);
+    expect(refused.body).toEqual({ statusCode: 403, message: 'Forbidden' });
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.USER);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('refuses the owner as a target', async () => {
+    const { service, sessions, audit } = grantHarness();
+
+    const refused = await refusal(() => service.grantAdmin(OWNER, OWNER_ID, REQUEST_ID));
+
+    expect(refused.status).toBe(403);
+    expect(sessions.users.get(OWNER_ID)?.role).toBe(Role.OWNER);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('answers a blocked target like any other refusal', async () => {
+    const { service, sessions } = grantHarness();
+
+    const blocked = await refusal(() => service.grantAdmin(OWNER, BLOCKED_ID, REQUEST_ID));
+    const notAnOwner = await refusal(() => service.grantAdmin(ADMIN, USER_ID, REQUEST_ID));
+
+    expect(blocked.status).toBe(403);
+    expect(blocked).toEqual(notAnOwner);
+    expect(sessions.users.get(BLOCKED_ID)?.role).toBe(Role.USER);
+  });
+
+  it('answers an unknown or malformed id as not found', async () => {
+    const { service } = grantHarness();
+
+    const unknown = await refusal(() => service.grantAdmin(OWNER, UNKNOWN_ID, REQUEST_ID));
+    const malformed = await refusal(() => service.grantAdmin(OWNER, 'not-a-uuid', REQUEST_ID));
+
+    expect(unknown.status).toBe(404);
+    expect(unknown).toEqual(malformed);
+  });
+
+  it('records nothing for a target that is already an admin', async () => {
+    const notifier = new RecordingNotifier();
+    const sessions = new RecordingSessions();
+    const { service, audit } = grantHarness(sessions, new FakeAudit(), notifier);
+
+    await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
+    await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
+
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
+    // A retry only repeats the revocation of the grant that was already made.
+    expect(sessions.revokedAll).toHaveLength(2);
+    expect(audit.records).toHaveLength(1);
+    expect(notifier.notices).toHaveLength(1);
+  });
+
+  it('cuts every session of the target', async () => {
+    const sessions = new InMemorySessionRepository();
+    const { service } = grantHarness(sessions);
+
+    await giveSessions(sessions, USER_ID, 2);
+    await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
+
+    expect(await sessions.listActiveSessions(USER_ID, new Date())).toEqual([]);
+  });
+
+  it('tells the owner once, with ids only', async () => {
+    const notifier = new RecordingNotifier();
+    const { service } = grantHarness(new InMemorySessionRepository(), new FakeAudit(), notifier);
+
+    await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
+
+    expect(notifier.notices).toHaveLength(1);
+
+    const notice = notifier.notices[0];
+
+    expect(notice).toEqual({ actorId: OWNER_ID, targetId: USER_ID, at: expect.any(Date) });
+    expect(Object.keys(notice ?? {}).sort()).toEqual(['actorId', 'at', 'targetId']);
+    expect(JSON.stringify(notice)).not.toContain(USERNAME);
+    expect(JSON.stringify(notice)).not.toContain('+14155550102');
+  });
+
+  it('keeps the grant when the notification fails', async () => {
+    const notifier = new FailingNotifier();
+    const { service, sessions, audit, logger } = grantHarness(
+      new InMemorySessionRepository(),
+      new FakeAudit(),
+      notifier,
+    );
+
+    await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
+
+    expect(notifier.calls).toBe(1);
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
+    expect(audit.records[0]?.metadata).toEqual({
+      from: Role.USER,
+      to: Role.ADMIN,
+      notified: false,
+    });
+    expect(logger.warns.map((call) => call.message)).toEqual(['owner notify failed']);
+  });
+
+  it('reports a failed revocation as a generic 500 without a success row', async () => {
+    const { service, sessions, audit } = grantHarness(
+      new FailingSessions(),
+      new FakeAudit(),
+      new RecordingNotifier(),
+    );
+
+    const failed = await refusal(() => service.grantAdmin(OWNER, USER_ID, REQUEST_ID));
+
+    expect(failed.status).toBe(500);
+    expect(failed.body).toEqual({ statusCode: 500, message: 'Internal Server Error' });
+    // No rollback: the role change stands and the next attempt finishes the job.
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('finishes an interrupted grant on the next attempt', async () => {
+    const notifier = new RecordingNotifier();
+    const sessions = new FlakySessions();
+    const { service, audit } = grantHarness(sessions, new FakeAudit(), notifier);
+
+    await giveSessions(sessions, USER_ID, 1);
+    await expect(service.grantAdmin(OWNER, USER_ID, REQUEST_ID)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
+
+    await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
+
+    expect(sessions.revocations).toBe(2);
+    expect(await sessions.listActiveSessions(USER_ID, new Date())).toEqual([]);
+    // The interrupted attempt recorded nothing, the retry has nothing new to add.
+    expect(audit.records).toHaveLength(0);
+    expect(notifier.notices).toHaveLength(0);
+  });
+
+  it('does not report success when the audit row cannot be written', async () => {
+    const { service, sessions, audit } = grantHarness(
+      new InMemorySessionRepository(),
+      new FailingAudit(),
+      new RecordingNotifier(),
+    );
+
+    await expect(service.grantAdmin(OWNER, USER_ID, REQUEST_ID)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
+    expect(audit.records).toHaveLength(1);
   });
 });

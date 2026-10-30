@@ -8,9 +8,9 @@ import { getRequestId } from '../common/middleware/request-id.middleware';
 import { AdminUsersService } from './admin-users.service';
 
 /**
- * Blocking and unblocking an account.
+ * Moderation and promotion of an account.
  *
- * Both routes change who may use the API, so each one carries the staff role
+ * Every route changes who may use the API, so each one carries the staff role
  * and a fresh second factor; the global staff gate stays in front of them.
  * There is no body: the only input is the id in the path, which the service
  * validates against storage.
@@ -33,6 +33,19 @@ export class AdminUsersController {
   @HttpCode(204)
   async unblock(@Param('id') id: string, @Req() request: AuthenticatedRequest): Promise<void> {
     await this.users.unblock(this.actor(request), id, getRequestId(request));
+  }
+
+  /**
+   * Promotion to admin. The markers admit both staff roles so the policy decides:
+   * only the owner may promote, and an admin actor is refused there with the
+   * same generic 403 as every other refusal.
+   */
+  @Roles(Role.ADMIN, Role.OWNER)
+  @RequireStepUp()
+  @Post(':id/admin')
+  @HttpCode(204)
+  async grantAdmin(@Param('id') id: string, @Req() request: AuthenticatedRequest): Promise<void> {
+    await this.users.grantAdmin(this.actor(request), id, getRequestId(request));
   }
 
   /** AuthGuard runs first, so a missing principal is a wiring bug, not input. */
