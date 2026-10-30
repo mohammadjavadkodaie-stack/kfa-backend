@@ -16,6 +16,13 @@ export interface AccountRecord {
   readonly status: 'ACTIVE' | 'BLOCKED';
 }
 
+/** What the admin module may read about a target; it carries no contact data. */
+export interface AdminUserRecord {
+  readonly id: string;
+  readonly role: Role;
+  readonly status: 'ACTIVE' | 'BLOCKED';
+}
+
 /**
  * What the guard needs from one live session.
  *
@@ -129,6 +136,19 @@ export interface SessionRepository {
   findPhoneByUserId(userId: string): Promise<string | null>;
   /** Username of one account. Used as the TOTP label, never the phone. */
   findUsernameByUserId(userId: string): Promise<string | null>;
+  /** Administrative view of one account, or null when the id owns no row. */
+  findUserById(userId: string): Promise<AdminUserRecord | null>;
+  /**
+   * Compare-and-set on the status: one statement with the expected value in the
+   * predicate, so two callers holding the same expectation cannot both win.
+   */
+  setStatusIf(
+    userId: string,
+    expectedStatus: 'ACTIVE' | 'BLOCKED',
+    newStatus: 'ACTIVE' | 'BLOCKED',
+  ): Promise<boolean>;
+  /** Same contract as `setStatusIf`, for the role. */
+  setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean>;
   /** User, device, session and first refresh token in one transaction. */
   createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null>;
   createSession(input: CreateSessionInput): Promise<IssuedSessionRecord>;

@@ -1,9 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import { parseRole } from './roles';
+import { parseRole, Role } from './roles';
 import type {
   AccountRecord,
   ActiveSessionRecord,
+  AdminUserRecord,
   ChangePhoneInput,
   ChangePhoneResult,
   CreateAccountInput,
@@ -24,6 +25,14 @@ interface ConsumedRow {
   readonly device_bound: boolean;
   readonly session_expires_at: Date;
 }
+
+/** Prisma's generated Role and our Role carry the same four names. */
+const PRISMA_ROLE: Record<Role, 'USER' | 'ATHLETE' | 'ADMIN' | 'OWNER'> = {
+  [Role.USER]: 'USER',
+  [Role.ATHLETE]: 'ATHLETE',
+  [Role.ADMIN]: 'ADMIN',
+  [Role.OWNER]: 'OWNER',
+};
 
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error
@@ -67,6 +76,48 @@ export class PrismaSessionRepository implements SessionRepository {
     });
 
     return user === null ? null : user.username;
+  }
+
+  async findUserById(userId: string): Promise<AdminUserRecord | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, status: true },
+    });
+
+    if (user === null) return null;
+
+    // A stored value outside the enum cannot happen through Prisma; fail closed
+    // instead of handing an unknown role to the policy layer.
+    const role = parseRole(user.role);
+
+    return role === null ? null : { id: user.id, role, status: user.status };
+  }
+
+  /**
+   * One UPDATE with the old value in the predicate. PostgreSQL re-checks the
+   * predicate against the committed row, so of two callers that read the same
+   * value exactly one changes a row.
+   */
+  async setStatusIf(
+    userId: string,
+    expectedStatus: 'ACTIVE' | 'BLOCKED',
+    newStatus: 'ACTIVE' | 'BLOCKED',
+  ): Promise<boolean> {
+    const updated = await this.prisma.user.updateMany({
+      where: { id: userId, status: expectedStatus },
+      data: { status: newStatus },
+    });
+
+    return updated.count === 1;
+  }
+
+  async setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean> {
+    const updated = await this.prisma.user.updateMany({
+      where: { id: userId, role: PRISMA_ROLE[expectedRole] },
+      data: { role: PRISMA_ROLE[newRole] },
+    });
+
+    return updated.count === 1;
   }
 
   /** Null means "phone or username already exists"; the caller stays generic. */

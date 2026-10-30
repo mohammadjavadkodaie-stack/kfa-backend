@@ -3,10 +3,11 @@ import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../../audit/audit.service';
 import { parseRole, Role } from '../roles';
 import {
-  decide,
+  decide as decidePolicy,
   parseAccessAction,
   type AccessRequest,
   type DenialReason,
+  type PolicyDecision,
   type PolicySubject,
 } from './access-policy';
 
@@ -38,6 +39,14 @@ export class AccessPolicyService {
   ) {}
 
   /**
+   * The pure rule set, for a caller that answers with its own generic refusal
+   * instead of an HTTP exception. It writes nothing and logs nothing.
+   */
+  decide(actor: PolicySubject, request: AccessRequest, target: PolicySubject): PolicyDecision {
+    return decidePolicy(actor, request, target);
+  }
+
+  /**
    * Resolves when the action is allowed and throws the generic
    * `ForbiddenException` otherwise. A refused staff action is audited once,
    * before the throw: losing the trail never turns a refusal into an allow.
@@ -48,7 +57,7 @@ export class AccessPolicyService {
     target: PolicySubject,
     context: AccessPolicyContext,
   ): Promise<void> {
-    const decision = decide(actor, request, target);
+    const decision = decidePolicy(actor, request, target);
 
     if (decision.allowed) return;
 

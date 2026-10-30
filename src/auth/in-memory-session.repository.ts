@@ -3,6 +3,7 @@ import { Role } from './roles';
 import type {
   AccountRecord,
   ActiveSessionRecord,
+  AdminUserRecord,
   ChangePhoneInput,
   ChangePhoneResult,
   CreateAccountInput,
@@ -80,6 +81,37 @@ export class InMemorySessionRepository implements SessionRepository {
 
   async findUsernameByUserId(userId: string): Promise<string | null> {
     return this.users.get(userId)?.username ?? null;
+  }
+
+  async findUserById(userId: string): Promise<AdminUserRecord | null> {
+    const user = this.users.get(userId);
+
+    return user === undefined ? null : { id: user.id, role: user.role, status: user.status };
+  }
+
+  /** Check and write without an await in between: the in-process row lock. */
+  async setStatusIf(
+    userId: string,
+    expectedStatus: 'ACTIVE' | 'BLOCKED',
+    newStatus: 'ACTIVE' | 'BLOCKED',
+  ): Promise<boolean> {
+    const user = this.users.get(userId);
+
+    if (user === undefined || user.status !== expectedStatus) return false;
+
+    user.status = newStatus;
+
+    return true;
+  }
+
+  async setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean> {
+    const user = this.users.get(userId);
+
+    if (user === undefined || user.role !== expectedRole) return false;
+
+    user.role = newRole;
+
+    return true;
   }
 
   async createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null> {
