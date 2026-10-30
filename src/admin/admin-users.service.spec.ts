@@ -10,6 +10,7 @@ import { InMemorySessionRepository } from '../auth/in-memory-session.repository'
 import { AccessAction, type PolicySubject } from '../auth/policy/access-policy';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
 import { Role } from '../auth/roles';
+import { InMemoryTotpRepository } from '../auth/totp/in-memory-totp.repository';
 import { ADMIN_AUDIT_ACTIONS, AdminUsersService } from './admin-users.service';
 import { LogOwnerNotifier, type AdminGrantedNotice, type OwnerNotifier } from './owner-notifier';
 
@@ -128,6 +129,7 @@ function createHarness(
   audit: FakeAudit = new FakeAudit(),
   sessions: InMemorySessionRepository = new InMemorySessionRepository(),
   notifier: OwnerNotifier = new LogOwnerNotifier(new RecordingLogger() as unknown as PinoLogger),
+  totp: InMemoryTotpRepository = new InMemoryTotpRepository(),
 ) {
   const policy = new AccessPolicyService(
     audit as unknown as AuditService,
@@ -136,13 +138,14 @@ function createHarness(
   const logger = new RecordingLogger();
   const service = new AdminUsersService(
     sessions,
+    totp,
     policy,
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
     notifier,
   );
 
-  return { service, sessions, audit, logger, notifier };
+  return { service, sessions, audit, logger, notifier, totp };
 }
 
 describe('in-memory CAS', () => {
@@ -852,5 +855,134 @@ describe('revoke admin', () => {
     expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
     expect(await sessions.listActiveSessions(ADMIN_ID, new Date())).toEqual([]);
     expect(audit.records).toHaveLength(0);
+  });
+});
+
+/** A confirmed factor with two unused codes: what a reset has to remove. */
+function seedFactor(totp: InMemoryTotpRepository, userId: string): void {
+  totp.credentials.set(userId, {
+    secretEnc: 'test-envelope',
+    confirmedAt: new Date(),
+    lastUsedStep: 1,
+  });
+  totp.recoveryCodes.set(userId, [
+    { codeHash: 'hash-one', usedAt: null },
+    { codeHash: 'hash-two', usedAt: null },
+  ]);
+}
+
+function resetHarness(
+  sessions: InMemorySessionRepository = new InMemorySessionRepository(),
+  audit: FakeAudit = new FakeAudit(),
+  totp: InMemoryTotpRepository = new InMemoryTotpRepository(),
+) {
+  seed(sessions);
+  sessions.seedUser({
+    id: PEER_ADMIN_ID,
+    phone: '+14155550105',
+    username: 'boris',
+    role: Role.ADMIN,
+  });
+
+  return createHarness(audit, sessions, undefined, totp);
+}
+
+describe('resetTotp', () => {
+  it('lets the owner clear the factor of an admin', async () => {
+    const { service, sessions, audit, totp } = resetHarness();
+
+    seedFactor(totp, ADMIN_ID);
+    await giveSessions(sessions, ADMIN_ID, 2);
+
+    await service.resetTotp(OWNER, ADMIN_ID, REQUEST_ID);
+
+    expect(totp.credentials.has(ADMIN_ID)).toBe(false);
+    expect(totp.recoveryCodes.has(ADMIN_ID)).toBe(false);
+    expect(await sessions.listActiveSessions(ADMIN_ID, new Date())).toEqual([]);
+    // The role is untouched: the gate, not a demotion, keeps the target out.
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.ADMIN);
+    expect(audit.records.map((row) => row.action)).toEqual([ADMIN_AUDIT_ACTIONS.TOTP_RESET]);
+    expect(audit.records[0]?.metadata).toEqual({ role: Role.ADMIN });
+  });
+
+  it('refuses an admin actor on a peer and on itself', async () => {
+    const { service, audit, totp } = resetHarness();
+
+    seedFactor(totp, ADMIN_ID);
+    seedFactor(totp, PEER_ADMIN_ID);
+
+    const self = await refusal(() => service.resetTotp(ADMIN, ADMIN_ID, REQUEST_ID));
+    const peer = await refusal(() => service.resetTotp(ADMIN, PEER_ADMIN_ID, REQUEST_ID));
+
+    expect(self.status).toBe(403);
+    expect(self.body).toEqual({ statusCode: 403, message: 'Forbidden' });
+    expect(peer).toEqual(self);
+    expect(totp.credentials.size).toBe(2);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('answers the owner, a user and an unknown id alike', async () => {
+    const { service, sessions, audit, totp } = resetHarness();
+
+    seedFactor(totp, ADMIN_ID);
+
+    const ownerTarget = await refusal(() => service.resetTotp(OWNER, OWNER_ID, REQUEST_ID));
+    const memberTarget = await refusal(() => service.resetTotp(OWNER, USER_ID, REQUEST_ID));
+    const unknown = await refusal(() => service.resetTotp(OWNER, UNKNOWN_ID, REQUEST_ID));
+    const malformed = await refusal(() => service.resetTotp(OWNER, 'not-a-uuid', REQUEST_ID));
+
+    expect(ownerTarget.status).toBe(403);
+    expect(ownerTarget.body).toEqual({ statusCode: 403, message: 'Forbidden' });
+    expect(memberTarget).toEqual(ownerTarget);
+    expect(unknown).toEqual(ownerTarget);
+    expect(malformed).toEqual(ownerTarget);
+    expect(sessions.users.get(OWNER_ID)?.role).toBe(Role.OWNER);
+    expect(totp.credentials.has(ADMIN_ID)).toBe(true);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('reports a failed revocation as a generic 500 without a success row', async () => {
+    const sessions = new FailingSessions();
+    const { service, audit, totp } = resetHarness(sessions);
+
+    seedFactor(totp, ADMIN_ID);
+
+    const failed = await refusal(() => service.resetTotp(OWNER, ADMIN_ID, REQUEST_ID));
+
+    expect(failed.status).toBe(500);
+    expect(failed.body).toEqual({ statusCode: 500, message: 'Internal Server Error' });
+    // No rollback: the factor is gone, and only the revocation is left to retry.
+    expect(totp.credentials.has(ADMIN_ID)).toBe(false);
+    expect(audit.records).toHaveLength(0);
+  });
+
+  it('does not report success when the audit row cannot be written', async () => {
+    const { service, audit, totp } = resetHarness(undefined, new FailingAudit());
+
+    seedFactor(totp, ADMIN_ID);
+
+    await expect(service.resetTotp(OWNER, ADMIN_ID, REQUEST_ID)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+
+    expect(totp.credentials.has(ADMIN_ID)).toBe(false);
+    expect(audit.records).toHaveLength(1);
+  });
+
+  it('answers a repeated reset alike and records once', async () => {
+    const sessions = new RecordingSessions();
+    const { service, audit, totp } = resetHarness(sessions);
+
+    seedFactor(totp, ADMIN_ID);
+
+    await service.resetTotp(OWNER, ADMIN_ID, REQUEST_ID);
+    await service.resetTotp(OWNER, ADMIN_ID, REQUEST_ID);
+
+    // The second call still revokes, but there is no second change to record.
+    expect(sessions.revokedAll).toEqual([
+      { userId: ADMIN_ID, reason: 'admin_action' },
+      { userId: ADMIN_ID, reason: 'admin_action' },
+    ]);
+    expect(audit.records).toHaveLength(1);
   });
 });

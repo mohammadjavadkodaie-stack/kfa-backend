@@ -12,6 +12,7 @@ import { AccessAction, type PolicySubject } from '../auth/policy/access-policy';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
 import { Role } from '../auth/roles';
 import { SESSION_REPOSITORY, type SessionRepository } from '../auth/session.repository';
+import { TOTP_REPOSITORY, type TotpRepository } from '../auth/totp/totp.repository';
 import { isUuid } from '../common/middleware/request-id.middleware';
 import { OWNER_NOTIFIER, type OwnerNotifier } from './owner-notifier';
 
@@ -21,6 +22,7 @@ export const ADMIN_AUDIT_ACTIONS = {
   USER_UNBLOCK: 'admin.user.unblock',
   ADMIN_GRANT: 'admin.admin.grant',
   ADMIN_REVOKE: 'admin.admin.revoke',
+  TOTP_RESET: 'admin.totp.reset',
 } as const;
 
 export type AdminAuditAction = (typeof ADMIN_AUDIT_ACTIONS)[keyof typeof ADMIN_AUDIT_ACTIONS];
@@ -47,12 +49,14 @@ const REVOCATION_REASON = 'admin_action';
 
 /**
  * Shared helpers for the administrative user endpoints, plus the state
- * transitions they own: block, unblock, the admin grant and the admin revoke.
+ * transitions they own: block, unblock, the admin grant, the admin revoke and
+ * the second-factor reset.
  */
 @Injectable()
 export class AdminUsersService {
   constructor(
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
+    @Inject(TOTP_REPOSITORY) private readonly totp: TotpRepository,
     private readonly policy: AccessPolicyService,
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
@@ -190,7 +194,7 @@ export class AdminUsersService {
    * demotion changes the role and nothing else.
    */
   async revokeAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
-    const target = await this.revokeTarget(actor, id);
+    const target = await this.adminOnlyTarget(actor, id, AccessAction.ADMIN_REVOKE);
     const demoted = await this.demote(target);
 
     try {
@@ -211,6 +215,39 @@ export class AdminUsersService {
     await this.recordSuccess(ADMIN_AUDIT_ACTIONS.ADMIN_REVOKE, actor.id, target.id, requestId, {
       from: Role.ADMIN,
       to: Role.USER,
+    });
+  }
+
+  /**
+   * Second-factor reset: delete first, revoke second, record third.
+   *
+   * The credential and its recovery codes go in one repository transaction. The
+   * revocation runs even when nothing was left to delete, so a retry after a
+   * failed revocation finishes it; only a call that actually removed something
+   * is recorded, exactly like a repeated block. The role stays ADMIN: the staff
+   * gate keeps the account on the second-factor routes until it enrolls again.
+   */
+  async resetTotp(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+    const target = await this.adminOnlyTarget(actor, id, AccessAction.TOTP_RESET);
+    const removed = await this.totp.deleteCredential(target.id);
+
+    try {
+      await this.revokeAllSessionsOrFail(target.id);
+    } catch {
+      // Same rule as the other actions: no rollback, nothing recorded, and the
+      // next attempt still revokes what the failed one missed.
+      this.logger.warn(
+        { requestId, action: ADMIN_AUDIT_ACTIONS.TOTP_RESET },
+        'admin session revoke failed',
+      );
+
+      throw new InternalServerErrorException();
+    }
+
+    if (!removed) return;
+
+    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.TOTP_RESET, actor.id, target.id, requestId, {
+      role: Role.ADMIN,
     });
   }
 
@@ -284,7 +321,7 @@ export class AdminUsersService {
   }
 
   /**
-   * Who may be demoted, and by whom.
+   * Who may be demoted or lose a factor, and by whom.
    *
    * The target has to be an admin as storage reports it right now, and every
    * other answer is the same generic 403: an unknown id, a malformed id and an
@@ -292,7 +329,11 @@ export class AdminUsersService {
    * which ids exist. The policy then answers the permission half, with the same
    * refusal for an admin actor, for oneself and for the owner row.
    */
-  private async revokeTarget(actor: PolicySubject, id: string): Promise<AdminTarget> {
+  private async adminOnlyTarget(
+    actor: PolicySubject,
+    id: string,
+    action: AccessAction.ADMIN_REVOKE | AccessAction.TOTP_RESET,
+  ): Promise<AdminTarget> {
     const loaded = await this.loadTarget(id);
 
     if (!loaded.found) throw new ForbiddenException();
@@ -300,7 +341,7 @@ export class AdminUsersService {
 
     const decision = this.policy.decide(
       actor,
-      { action: AccessAction.ADMIN_REVOKE },
+      { action },
       { id: loaded.target.id, role: loaded.target.role },
     );
 

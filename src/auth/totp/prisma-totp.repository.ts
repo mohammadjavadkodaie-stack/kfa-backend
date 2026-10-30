@@ -104,4 +104,22 @@ export class PrismaTotpRepository implements TotpRepository {
   async countUnusedRecoveryCodes(userId: string): Promise<number> {
     return this.prisma.recoveryCode.count({ where: { userId, usedAt: null } });
   }
+
+  /**
+   * Both deletes commit together. Codes go first because the credential row may
+   * be referenced by them; only that row says whether anything was removed.
+   */
+  async deleteCredential(userId: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.recoveryCode.deleteMany({ where: { userId } });
+
+      const rows = await tx.$queryRaw<UpdatedRow[]>`
+        DELETE FROM totp_credentials
+         WHERE user_id = ${userId}::uuid
+        RETURNING id
+      `;
+
+      return rows.length === 1;
+    });
+  }
 }

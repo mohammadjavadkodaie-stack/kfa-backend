@@ -17,6 +17,7 @@ import { TotpService } from './totp.service';
     { provide: TOTP_REPOSITORY, useClass: PrismaTotpRepository },
     TotpService,
   ],
-  exports: [TotpService],
+  // The admin reset needs the store itself, not the enrollment policy.
+  exports: [TotpService, TOTP_REPOSITORY],
 })
 export class TotpModule {}

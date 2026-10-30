@@ -60,6 +60,18 @@ export class AdminUsersController {
     await this.users.revokeAdmin(this.actor(request), id, getRequestId(request));
   }
 
+  /**
+   * Owner-initiated second-factor reset: the one path back for an admin who
+   * lost the device and the recovery codes. No body; the target keeps its role.
+   */
+  @Roles(Role.ADMIN, Role.OWNER)
+  @RequireStepUp()
+  @Post(':id/totp/reset')
+  @HttpCode(204)
+  async resetTotp(@Param('id') id: string, @Req() request: AuthenticatedRequest): Promise<void> {
+    await this.users.resetTotp(this.actor(request), id, getRequestId(request));
+  }
+
   /** AuthGuard runs first, so a missing principal is a wiring bug, not input. */
   private actor(request: AuthenticatedRequest): PolicySubject {
     const principal = request.auth;

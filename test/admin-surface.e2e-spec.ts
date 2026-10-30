@@ -6,11 +6,11 @@ import { STEPUP_WINDOW_MS, STEP_UP_REQUIRED_KEY } from '../src/auth/totp/step-up
 import { createAdminHarness, type AdminAccount, type AdminHarness } from './helpers/admin-harness';
 
 /**
- * The four admin routes as one surface, checked once over the whole set: every
+ * The five admin routes as one surface, checked once over the whole set: every
  * refusal looks the same from outside, both gates refuse in their own words,
  * every handler carries the markers, and a doubled request records one row.
  *
- * Earlier suites prove each route on its own; this one exists so a fifth route
+ * Earlier suites prove each route on its own; this one exists so a sixth route
  * cannot arrive with weaker refusal bytes or without a step-up.
  */
 
@@ -24,10 +24,11 @@ const ROUTES = [
   { path: 'unblock', method: 'POST' },
   { path: 'admin', method: 'POST' },
   { path: 'admin', method: 'DELETE' },
+  { path: 'totp/reset', method: 'POST' },
 ] as const;
 
 /** The handlers that answer `ROUTES`, in the order above. */
-const HANDLERS = ['block', 'unblock', 'grantAdmin', 'revokeAdmin'] as const;
+const HANDLERS = ['block', 'unblock', 'grantAdmin', 'revokeAdmin', 'resetTotp'] as const;
 
 /** Bodies carry a per-request id; two refusals are compared without it. */
 const withoutRequestId = (body: unknown): Record<string, unknown> => ({
@@ -99,6 +100,7 @@ describe('Admin surface (e2e)', () => {
     expect(admin.sessions.users.get(member.userId)?.role).toBe(Role.USER);
     expect(admin.rows('admin.admin.grant')).toHaveLength(0);
     expect(admin.rows('admin.admin.revoke')).toHaveLength(0);
+    expect(admin.rows('admin.totp.reset')).toHaveLength(0);
   });
 
   it('closes every route without a second factor, then without a fresh one', async () => {
@@ -123,6 +125,7 @@ describe('Admin surface (e2e)', () => {
 
     expect(admin.rows('admin.user.block', member.userId)).toHaveLength(0);
     expect(admin.rows('admin.admin.grant')).toHaveLength(0);
+    expect(admin.rows('admin.totp.reset')).toHaveLength(0);
   });
 
   it('marks every route of the controller with staff roles and a step-up', () => {

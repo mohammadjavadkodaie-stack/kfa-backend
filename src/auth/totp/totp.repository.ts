@@ -41,4 +41,10 @@ export interface TotpRepository {
   /** Single-statement single-use consume; false when nothing was updated. */
   consumeRecoveryCode(userId: string, codeHash: string): Promise<boolean>;
   countUnusedRecoveryCodes(userId: string): Promise<number>;
+  /**
+   * Removes the credential and every recovery code of one account together, for
+   * the owner-initiated reset. False means the account had no credential, which
+   * is the retry case and not a failure.
+   */
+  deleteCredential(userId: string): Promise<boolean>;
 }

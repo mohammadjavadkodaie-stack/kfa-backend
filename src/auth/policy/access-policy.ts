@@ -14,6 +14,7 @@ export enum AccessAction {
   USER_CHANGE_ROLE = 'user.change_role',
   ADMIN_GRANT = 'admin.grant',
   ADMIN_REVOKE = 'admin.revoke',
+  TOTP_RESET = 'totp.reset',
   OWNER_GRANT = 'owner.grant',
 }
 
@@ -128,6 +129,8 @@ export function decide(
       return decideAdminGrant(actorRole, targetRole);
     case AccessAction.ADMIN_REVOKE:
       return decideAdminRevoke(actorRole, targetRole);
+    case AccessAction.TOTP_RESET:
+      return decideTotpReset(actorRole, targetRole);
   }
 }
 
@@ -183,6 +186,17 @@ function decideAdminGrant(actorRole: Role, targetRole: Role): PolicyDecision {
 }
 
 function decideAdminRevoke(actorRole: Role, targetRole: Role): PolicyDecision {
+  if (actorRole !== Role.OWNER) return deny('admin_management_requires_owner');
+
+  return targetRole === Role.ADMIN ? allow() : deny('target_not_admin');
+}
+
+/**
+ * Clearing a lost second factor hands the target a fresh enrollment, so it is
+ * owner work and only on an admin: an admin resetting a peer could take over
+ * their account. The owner row and the actor themselves were refused above.
+ */
+function decideTotpReset(actorRole: Role, targetRole: Role): PolicyDecision {
   if (actorRole !== Role.OWNER) return deny('admin_management_requires_owner');
 
   return targetRole === Role.ADMIN ? allow() : deny('target_not_admin');

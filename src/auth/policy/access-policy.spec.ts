@@ -99,6 +99,7 @@ const MATRIX: readonly PairRules[] = [
       AccessAction.USER_DELETE,
       AccessAction.USER_CHANGE_ROLE,
       AccessAction.ADMIN_REVOKE,
+      AccessAction.TOTP_RESET,
     ],
     changeTo: Role.USER,
   },
@@ -169,6 +170,41 @@ describe('decide: user.delete is owner-only', () => {
       reason: 'self_action',
     });
   });
+});
+
+/** [actor role, target role, expected] - written out by hand, like the tables above. */
+const TOTP_RESET_RULES: readonly (readonly [Role, Role, string])[] = [
+  // An admin never resets a factor, not even a peer's.
+  [Role.ADMIN, Role.ADMIN, 'admin_management_requires_owner'],
+  [Role.ADMIN, Role.USER, 'admin_management_requires_owner'],
+  // Only an admin has a staff factor to lose, so other targets are out of scope.
+  [Role.OWNER, Role.USER, 'target_not_admin'],
+  [Role.OWNER, Role.ATHLETE, 'target_not_admin'],
+  [Role.OWNER, Role.ADMIN, 'allowed'],
+  // The owner row is outside the application, and nobody acts on themselves.
+  [Role.OWNER, Role.OWNER, 'target_is_owner'],
+  [Role.USER, Role.ADMIN, 'actor_not_permitted'],
+  [Role.ATHLETE, Role.ADMIN, 'actor_not_permitted'],
+];
+
+describe('decide: totp.reset is owner-only on an admin', () => {
+  for (const [actorRole, targetRole, expected] of TOTP_RESET_RULES) {
+    const label = expected === 'allowed' ? 'allows' : 'refuses';
+
+    it(`${label} ${actorRole} resetting the factor of ${targetRole}`, () => {
+      const decision = decide(
+        actorOf(actorRole),
+        request(AccessAction.TOTP_RESET),
+        targetOf(targetRole),
+      );
+
+      if (expected === 'allowed') {
+        expect(decision).toEqual({ allowed: true });
+      } else {
+        expect(decision).toEqual({ allowed: false, reason: expected });
+      }
+    });
+  }
 });
 
 /** [actor role, target role, requested role, allowed] - written out by hand. */

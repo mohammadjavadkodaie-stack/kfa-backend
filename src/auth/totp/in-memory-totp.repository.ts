@@ -81,4 +81,13 @@ export class InMemoryTotpRepository implements TotpRepository {
   async countUnusedRecoveryCodes(userId: string): Promise<number> {
     return (this.recoveryCodes.get(userId) ?? []).filter((code) => code.usedAt === null).length;
   }
+
+  /** No `await` between the two removals, so a reader never sees half a reset. */
+  async deleteCredential(userId: string): Promise<boolean> {
+    const removed = this.credentials.delete(userId);
+
+    this.recoveryCodes.delete(userId);
+
+    return removed;
+  }
 }
