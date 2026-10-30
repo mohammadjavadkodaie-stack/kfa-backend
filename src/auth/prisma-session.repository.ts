@@ -320,6 +320,9 @@ export class PrismaSessionRepository implements SessionRepository {
         userStatus: consumed.user_status === 'BLOCKED' ? 'BLOCKED' : 'ACTIVE',
         // An unmapped role cannot be staff, so it stays on the normal policy.
         role: parseRole(consumed.user_role) ?? Role.USER,
+        // Pre-rotation on purpose: the statement above only writes the refresh
+        // token, and the session stamp moves in the update below. The idle check
+        // in AuthService.refresh must see the old value, or it can never fire.
         lastUsedAt: new Date(consumed.last_used_at),
         sessionExpiresAt,
         refreshExpiresAt,

@@ -185,6 +185,16 @@ describe('Staff session policy over HTTP (e2e)', () => {
 
     expect(refused.status).toBe(401);
     expect(refused.body).toEqual(GENERIC_UNAUTHORIZED);
+
+    // Byte for byte the same answer as an ordinary invalid refresh: the idle
+    // limit must not become an oracle that tells a client its cookie was real.
+    const unknown = await server()
+      .post('/auth/refresh')
+      .set('Cookie', `${REFRESH_COOKIE_NAME}=${'A'.repeat(43)}`);
+
+    expect(unknown.status).toBe(refused.status);
+    expect(unknown.text).toBe(refused.text);
+
     expect(revocationsSince(baseline)).toEqual([{ sessionId, reason: 'idle_timeout' }]);
     // The dead cookie is cleared, so the client re-authenticates.
     expect(setCookies(refused)).toContainEqual(expect.stringContaining(`${REFRESH_COOKIE_NAME}=;`));
