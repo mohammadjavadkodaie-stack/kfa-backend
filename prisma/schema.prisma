@@ -60,6 +60,13 @@ enum Role {
   OWNER
 }
 
+enum Gender {
+  FEMALE
+  MALE
+  OTHER
+  UNDISCLOSED
+}
+
 /// At most one row may hold the OWNER role. Prisma cannot express a partial
 /// index, so the guarantee lives in raw SQL only:
 /// `users_single_owner_key` is a unique index on a constant expression with
@@ -80,7 +87,32 @@ model User {
   sessions         Session[]
   totpCredential   TotpCredential?
   recoveryCodes    RecoveryCode[]
+  athleteProfile   AthleteProfile?
   @@map("users")
+}
+
+/// One profile per user. Minority is derived from `dateOfBirth` at read time and
+/// never stored, and the row deliberately holds no national ID and no address:
+/// the format and range rules live in the migration's CHECK constraints.
+model AthleteProfile {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId             String   @unique @map("user_id") @db.Uuid
+  legalFirstName     String   @map("legal_first_name")
+  legalLastName      String   @map("legal_last_name")
+  dateOfBirth        DateTime @map("date_of_birth") @db.Date
+  gender             Gender
+  /// ISO 3166-1 alpha-2, uppercase.
+  nationality        String   @db.VarChar(2)
+  countryOfResidence String   @map("country_of_residence") @db.VarChar(2)
+  city               String
+  clubName           String?  @map("club_name")
+  weightKg           Int?     @map("weight_kg")
+  heightCm           Int?     @map("height_cm")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("athlete_profiles")
 }
 
 model Device {
