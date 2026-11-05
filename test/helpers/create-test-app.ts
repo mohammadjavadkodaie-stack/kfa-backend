@@ -3,6 +3,10 @@ import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/app.setup';
+import {
+  ATHLETE_PROFILE_REPOSITORY,
+  type AthleteProfileRepository,
+} from '../../src/athlete/profile/athlete-profile.repository';
 import { AuthModule } from '../../src/auth/auth.module';
 import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/otp/proof-token';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
@@ -38,6 +42,8 @@ export interface CreateTestAppOptions {
   readonly proofNonceStore?: ProofNonceStore;
   /** Allows the explicit auth limits without a Redis store. */
   readonly rateLimit?: RateLimitService;
+  /** In-memory profiles, so the athlete endpoints run without PostgreSQL. */
+  readonly athleteProfileRepository?: AthleteProfileRepository;
 }
 
 /**
@@ -79,6 +85,12 @@ export async function createTestApp(
 
   if (options.rateLimit !== undefined) {
     builder = builder.overrideProvider(RateLimitService).useValue(options.rateLimit);
+  }
+
+  if (options.athleteProfileRepository !== undefined) {
+    builder = builder
+      .overrideProvider(ATHLETE_PROFILE_REPOSITORY)
+      .useValue(options.athleteProfileRepository);
   }
 
   const moduleRef = await builder.compile();

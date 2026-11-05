@@ -4,6 +4,7 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { LoggerModule } from 'nestjs-pino';
 import { AdminUsersModule } from './admin/admin-users.module';
+import { AthleteModule } from './athlete/athlete.module';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { AuthGuard } from './auth/guards/auth.guard';
@@ -30,6 +31,7 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
     AuditModule,
     AuthModule,
     AdminUsersModule,
+    AthleteModule,
     HealthModule,
   ],
   providers: [

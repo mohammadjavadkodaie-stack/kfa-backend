@@ -5,6 +5,7 @@ import { ProofTokenService, type ProofNonceStore } from '../../src/auth/otp/proo
 import { Role } from '../../src/auth/roles';
 import { InMemoryTotpRepository } from '../../src/auth/totp/in-memory-totp.repository';
 import type { RateLimitDecision, RateLimitService } from '../../src/rate-limit/rate-limit.service';
+import type { CreateTestAppOptions } from './create-test-app';
 import { createTestApp } from './create-test-app';
 
 /**
@@ -98,7 +99,7 @@ export interface AdminAccount {
  * readable in a failure report; every suite owns its own store, so the counters
  * never collide between suites.
  */
-export async function createAdminHarness(prefix = 'admin') {
+export async function createAdminHarness(prefix = 'admin', extra: CreateTestAppOptions = {}) {
   const sessions = new InMemorySessionRepository();
   const auditPrisma = createAuditPrisma();
   let sequence = 0;
@@ -111,6 +112,8 @@ export async function createAdminHarness(prefix = 'admin') {
       totpRepository: new InMemoryTotpRepository(),
       proofNonceStore: new InMemoryNonceStore(),
       rateLimit: new PermissiveRateLimit() as unknown as RateLimitService,
+      // One more in-memory store for a suite that needs it; omitted everywhere else.
+      ...extra,
     },
   );
   const proofs = app.get(ProofTokenService);
