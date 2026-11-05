@@ -29,6 +29,15 @@ export const ACCESS_TOKEN_SECRET_MIN_LENGTH = 32;
 /** Exact decoded length of the TOTP secret encryption key (AES-256). */
 export const TOTP_ENC_KEY_BYTES = 32;
 
+/** Exact decoded length of the document master key that wraps data keys (AES-256). */
+export const DOCUMENT_MASTER_KEY_BYTES = 32;
+
+/** Label assumed for the current master key when DOCUMENT_MASTER_KEY_ID is unset. */
+export const DOCUMENT_MASTER_KEY_DEFAULT_ID = 'v1';
+
+/** Short label that identifies one master-key version (`v1`, `v2`, ...). */
+const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
+
 /** Maximum accepted length of a database connection URL. */
 const DATABASE_URL_MAX_LENGTH = 2048;
 
@@ -140,6 +149,20 @@ function redisUrlHasPassword(url: string): boolean {
  */
 function isBase64UrlOfLength(value: string, bytes: number): boolean {
   return /^[A-Za-z0-9_-]+$/.test(value) && Buffer.from(value, 'base64url').length === bytes;
+}
+
+/**
+ * Decodes standard base64 (padding included) and returns `null` unless it holds
+ * exactly `bytes` bytes. The alphabet and the length are checked first because
+ * Buffer's decoder silently drops invalid characters, which would otherwise turn
+ * a typo into a shorter - and therefore weaker - key.
+ */
+export function decodeBase64Key(value: string, bytes: number): Buffer | null {
+  if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+
+  const decoded = Buffer.from(value, 'base64');
+
+  return decoded.length === bytes ? decoded : null;
 }
 
 const httpOriginSchema = z.string().transform((value, ctx) => {
@@ -278,6 +301,57 @@ export const envSchema = z
       })
       .optional(),
 
+    /**
+     * Master key that wraps the per-document data keys (Stage 4.2a), base64 of
+     * exactly 32 bytes. Optional outside production, where documents are simply
+     * unconfigured; required in production.
+     */
+    DOCUMENT_MASTER_KEY: z
+      .string()
+      .max(1024, 'must be at most 1024 characters')
+      .superRefine((value, ctx) => {
+        if (decodeBase64Key(value, DOCUMENT_MASTER_KEY_BYTES) === null) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `must be base64 that decodes to exactly ${DOCUMENT_MASTER_KEY_BYTES} bytes`,
+          });
+        }
+      })
+      .optional(),
+
+    /**
+     * Label stored next to every wrapped data key. Optional: the wrapper falls
+     * back to DOCUMENT_MASTER_KEY_DEFAULT_ID.
+     */
+    DOCUMENT_MASTER_KEY_ID: z
+      .string()
+      .regex(KEY_ID_PATTERN, 'must be a short label of letters, digits, - or _')
+      .optional(),
+
+    /**
+     * Master key being rotated out. Unwrap only: new data keys are always
+     * wrapped with DOCUMENT_MASTER_KEY, old blobs stay readable until they are
+     * re-encrypted.
+     */
+    DOCUMENT_MASTER_KEY_PREVIOUS: z
+      .string()
+      .max(1024, 'must be at most 1024 characters')
+      .superRefine((value, ctx) => {
+        if (decodeBase64Key(value, DOCUMENT_MASTER_KEY_BYTES) === null) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `must be base64 that decodes to exactly ${DOCUMENT_MASTER_KEY_BYTES} bytes`,
+          });
+        }
+      })
+      .optional(),
+
+    /** Label of the previous key; mandatory with DOCUMENT_MASTER_KEY_PREVIOUS. */
+    DOCUMENT_MASTER_KEY_PREVIOUS_ID: z
+      .string()
+      .regex(KEY_ID_PATTERN, 'must be a short label of letters, digits, - or _')
+      .optional(),
+
     /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
     OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
 
@@ -349,6 +423,31 @@ export const envSchema = z
         code: 'custom',
         path: ['TOTP_ENC_KEY'],
         message: 'must differ from the audit, rate-limit and proof secrets',
+      });
+    }
+
+    // A previous key is only useful as a labelled entry: without an id it could
+    // never be selected, and the same id twice would make the map ambiguous.
+    if (
+      (env.DOCUMENT_MASTER_KEY_PREVIOUS === undefined) !==
+      (env.DOCUMENT_MASTER_KEY_PREVIOUS_ID === undefined)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DOCUMENT_MASTER_KEY_PREVIOUS_ID'],
+        message: 'must be set together with DOCUMENT_MASTER_KEY_PREVIOUS',
+      });
+    }
+
+    if (
+      env.DOCUMENT_MASTER_KEY_PREVIOUS_ID !== undefined &&
+      env.DOCUMENT_MASTER_KEY_PREVIOUS_ID ===
+        (env.DOCUMENT_MASTER_KEY_ID ?? DOCUMENT_MASTER_KEY_DEFAULT_ID)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DOCUMENT_MASTER_KEY_PREVIOUS_ID'],
+        message: 'must differ from DOCUMENT_MASTER_KEY_ID',
       });
     }
 
@@ -444,6 +543,14 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['ACCESS_TOKEN_SECRET'],
+        message: 'is required in production',
+      });
+    }
+
+    if (env.DOCUMENT_MASTER_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DOCUMENT_MASTER_KEY'],
         message: 'is required in production',
       });
     }

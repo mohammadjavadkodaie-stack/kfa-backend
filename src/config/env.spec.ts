@@ -27,6 +27,9 @@ const PROD_REDIS_URL = 'rediss://:prod-only-redis-password@redis.internal:6380/0
 /** Fixed, fake AES key: base64url of exactly 32 bytes (decodes to "kfa-unit-test-..."). */
 const PROD_TOTP_ENC_KEY = 'a2ZhLXVuaXQtdGVzdC10b3RwLWVuYy1rZXktMTIzNDU';
 
+/** Fixed, fake master key: base64 of exactly 32 bytes ("kfa-test-only-document-..."). */
+const PROD_DOCUMENT_MASTER_KEY = 'a2ZhLXRlc3Qtb25seS1kb2N1bWVudC1tYXN0ZXIta2U=';
+
 /** A production environment that satisfies every production-only rule. */
 const PROD_ENV: NodeJS.ProcessEnv = {
   ...BASE_ENV,
@@ -35,6 +38,7 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgresql://kfa_app:app-secret@db.internal:5432/kfa?sslmode=require',
   REDIS_URL: PROD_REDIS_URL,
   TOTP_ENC_KEY: PROD_TOTP_ENC_KEY,
+  DOCUMENT_MASTER_KEY: PROD_DOCUMENT_MASTER_KEY,
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
 };
@@ -92,6 +96,28 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
     { ...BASE_ENV, TOTP_ENC_KEY: Buffer.alloc(31, 7).toString('base64url') },
   ],
   ['a missing TOTP_ENC_KEY in production', { ...PROD_ENV, TOTP_ENC_KEY: undefined }],
+  [
+    'a DOCUMENT_MASTER_KEY of the wrong decoded length',
+    { ...BASE_ENV, DOCUMENT_MASTER_KEY: Buffer.alloc(31, 7).toString('base64') },
+  ],
+  [
+    'a DOCUMENT_MASTER_KEY that is not base64',
+    { ...BASE_ENV, DOCUMENT_MASTER_KEY: 'not-an-eight-byte-safe-key!!' },
+  ],
+  [
+    'a previous document key without an id',
+    { ...BASE_ENV, DOCUMENT_MASTER_KEY_PREVIOUS: PROD_DOCUMENT_MASTER_KEY },
+  ],
+  [
+    'a previous document key id without a key',
+    { ...BASE_ENV, DOCUMENT_MASTER_KEY_PREVIOUS_ID: 'v0' },
+  ],
+  [
+    'the same document key id twice',
+    { ...BASE_ENV, DOCUMENT_MASTER_KEY_ID: 'v1', DOCUMENT_MASTER_KEY_PREVIOUS_ID: 'v1' },
+  ],
+  ['an unsupported document key id', { ...BASE_ENV, DOCUMENT_MASTER_KEY_ID: 'version/1' }],
+  ['a missing DOCUMENT_MASTER_KEY in production', { ...PROD_ENV, DOCUMENT_MASTER_KEY: undefined }],
   ['an OTP send cap of zero', { ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: '0' }],
   ['a non numeric OTP send cap', { ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: 'many' }],
   ['a short ACCESS_TOKEN_SECRET', { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'too-short' }],
@@ -293,6 +319,63 @@ describe('loadEnv', () => {
       throw new Error('expected loadEnv to reject a malformed TOTP key');
     } catch (error) {
       expect((error as Error).message).toContain('TOTP_ENC_KEY');
+      expect((error as Error).message).not.toContain(value);
+    }
+  });
+
+  it('keeps the document master key optional outside production', () => {
+    expect(loadEnv({ ...BASE_ENV }).DOCUMENT_MASTER_KEY).toBeUndefined();
+    expect(
+      loadEnv({ ...BASE_ENV, DOCUMENT_MASTER_KEY: PROD_DOCUMENT_MASTER_KEY }).DOCUMENT_MASTER_KEY,
+    ).toBe(PROD_DOCUMENT_MASTER_KEY);
+    expect(loadEnv({ ...BASE_ENV }).DOCUMENT_MASTER_KEY_ID).toBeUndefined();
+  });
+
+  it('requires a 32-byte document master key in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, DOCUMENT_MASTER_KEY: undefined })).toThrow(
+      /DOCUMENT_MASTER_KEY.*required in production/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV, DOCUMENT_MASTER_KEY: 'too-short' })).toThrow(
+      /DOCUMENT_MASTER_KEY/,
+    );
+    expect(() =>
+      loadEnv({ ...PROD_ENV, DOCUMENT_MASTER_KEY: Buffer.alloc(32, 1).toString('base64url') }),
+    ).toThrow(/DOCUMENT_MASTER_KEY/);
+    expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
+  });
+
+  it('accepts a previous document master key only as a labelled pair', () => {
+    const rotated = {
+      ...BASE_ENV,
+      DOCUMENT_MASTER_KEY: PROD_DOCUMENT_MASTER_KEY,
+      DOCUMENT_MASTER_KEY_ID: 'v2',
+      DOCUMENT_MASTER_KEY_PREVIOUS: Buffer.alloc(32, 9).toString('base64'),
+      DOCUMENT_MASTER_KEY_PREVIOUS_ID: 'v1',
+    };
+
+    expect(loadEnv(rotated).DOCUMENT_MASTER_KEY_PREVIOUS_ID).toBe('v1');
+    expect(() => loadEnv({ ...rotated, DOCUMENT_MASTER_KEY_PREVIOUS_ID: undefined })).toThrow(
+      /DOCUMENT_MASTER_KEY_PREVIOUS_ID/,
+    );
+    expect(() => loadEnv({ ...rotated, DOCUMENT_MASTER_KEY_PREVIOUS: undefined })).toThrow(
+      /DOCUMENT_MASTER_KEY_PREVIOUS_ID/,
+    );
+    expect(() => loadEnv({ ...rotated, DOCUMENT_MASTER_KEY_PREVIOUS_ID: 'v2' })).toThrow(
+      /must differ/,
+    );
+    expect(() =>
+      loadEnv({ ...rotated, DOCUMENT_MASTER_KEY_PREVIOUS: Buffer.alloc(8, 9).toString('base64') }),
+    ).toThrow(/DOCUMENT_MASTER_KEY_PREVIOUS/);
+  });
+
+  it('never echoes the document master key', () => {
+    const value = 'do-not-log-this-document-key-0123';
+
+    try {
+      loadEnv({ ...PROD_ENV, DOCUMENT_MASTER_KEY: value });
+      throw new Error('expected loadEnv to reject a malformed document master key');
+    } catch (error) {
+      expect((error as Error).message).toContain('DOCUMENT_MASTER_KEY');
       expect((error as Error).message).not.toContain(value);
     }
   });

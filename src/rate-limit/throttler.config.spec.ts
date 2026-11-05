@@ -21,6 +21,8 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
   // Fake base64url of 32 bytes; also required from stage 3.2a on.
   TOTP_ENC_KEY: 'a2ZhLXVuaXQtdGVzdC10b3RwLWVuYy1rZXktMTIzNDU',
+  // Fake base64 of 32 bytes; required from stage 4.2a on (document encryption).
+  DOCUMENT_MASTER_KEY: 'a2ZhLXRlc3Qtb25seS1kb2N1bWVudC1tYXN0ZXIta2U=',
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
 };
