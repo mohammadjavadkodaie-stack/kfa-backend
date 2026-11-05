@@ -25,6 +25,7 @@ import {
 import { PhoneChangeController } from './phone-change/phone-change.controller';
 import { PhoneChangeService } from './phone-change/phone-change.service';
 import { AccessPolicyService } from './policy/access-policy.service';
+import { ResourceOwnershipService } from './policy/resource-ownership.service';
 import { PrismaSessionRepository } from './prisma-session.repository';
 import { SESSION_REPOSITORY } from './session.repository';
 import { StaffGateGuard } from './totp/staff-gate.guard';
@@ -77,6 +78,7 @@ import { TotpModule } from './totp/totp.module';
     StaffGateGuard,
     OriginCheckGuard,
     AccessPolicyService,
+    ResourceOwnershipService,
   ],
   exports: [
     OTP_PROVIDER,
@@ -92,6 +94,9 @@ import { TotpModule } from './totp/totp.module';
     // The administrative modules must inject this rather than re-implement a
     // rule; it is the only place that decides and audits a staff action.
     AccessPolicyService,
+    // The one ownership check; a resource module injects this instead of
+    // comparing user ids on its own.
+    ResourceOwnershipService,
   ],
 })
 export class AuthModule implements NestModule {
