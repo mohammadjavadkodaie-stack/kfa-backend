@@ -1,4 +1,4 @@
-# Local development dependencies ONLY (Postgres + Redis). Not for staging or production.
+# Local development dependencies ONLY (Postgres + Redis + MinIO). Not for staging or production.
 # Credentials are dev placeholders and can be overridden from the shell.
 # Every published port is bound to loopback so nothing is reachable from the LAN.
 services:
@@ -51,5 +51,71 @@ services:
       timeout: 5s
       retries: 10
 
+  # S3-compatible object store for encrypted documents. Only ciphertext ever
+  # reaches it (the crypto layer encrypts first), and both the bucket and every
+  # object stay private: the API never sets an ACL and never hands out a URL.
+  # Bound to loopback like the other services, so nothing is reachable from the
+  # LAN; the console port is published only because it is handy locally.
+  #
+  # Pulled from quay.io because MinIO no longer publishes community images to
+  # Docker Hub; these are the exact tags its own Helm chart pins (never `latest`).
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: kfa-minio-dev
+    restart: unless-stopped
+    command:
+      - server
+      - /data
+      - --address
+      - ':9000'
+      - --console-address
+      - ':9001'
+    environment:
+      # Required from the shell: compose refuses to start instead of silently
+      # falling back to the well-known minioadmin default.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set it}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set it}
+    ports:
+      - '127.0.0.1:${MINIO_API_PORT:-9000}:9000'
+      - '127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001'
+    volumes:
+      - kfa-minio-dev-data:/data
+    healthcheck:
+      # The image ships `mc`, and `mc ready` is its own readiness probe: it
+      # exits non-zero until the server answers on the S3 port.
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # One-shot bootstrap. Creates the bucket and keeps it private: `anonymous set
+  # none` removes any anonymous policy, which is an explicit statement of intent
+  # rather than a default. Both commands are idempotent, so re-running after
+  # `docker compose down` (or after the bucket was already there) is safe, and
+  # `restart: 'no'` means the container simply exits once the bucket exists.
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z
+    container_name: kfa-minio-init-dev
+    restart: 'no'
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set it}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set it}
+      S3_BUCKET: ${S3_BUCKET:-kfa-documents}
+    # `$$` keeps compose from interpolating: the shell inside the container
+    # reads the credentials from its own environment, so they never appear in
+    # the compose file or in `docker inspect` output as arguments.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$S3_BUCKET"
+        mc anonymous set none "local/$$S3_BUCKET"
+
 volumes:
   kfa-postgres-dev-data:
+  kfa-minio-dev-data:

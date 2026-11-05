@@ -43,6 +43,16 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   CAPTCHA_PROVIDER: 'recaptcha',
 };
 
+/** A complete object store configuration: MinIO in development, S3 elsewhere. */
+const S3_ENV: NodeJS.ProcessEnv = {
+  S3_ENDPOINT: 'https://minio.internal:9000',
+  S3_REGION: 'eu-central-1',
+  S3_BUCKET: 'kfa-documents',
+  S3_ACCESS_KEY_ID: 'kfa-documents-writer',
+  S3_SECRET_ACCESS_KEY: 'unit-test-s3-secret-0123456789',
+  S3_FORCE_PATH_STYLE: 'true',
+};
+
 const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   ['a missing APP_ORIGINS', { ...BASE_ENV, APP_ORIGINS: undefined }],
   ['a wildcard origin', { ...BASE_ENV, APP_ORIGINS: '*' }],
@@ -150,6 +160,35 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   [
     'a staff idle limit above the staff lifetime',
     { ...BASE_ENV, STAFF_SESSION_IDLE_MINUTES: '721' },
+  ],
+  ['an unparsable S3_ENDPOINT', { ...BASE_ENV, ...S3_ENV, S3_ENDPOINT: 'not-a-url' }],
+  ['a non http(s) S3_ENDPOINT', { ...BASE_ENV, ...S3_ENV, S3_ENDPOINT: 'ftp://minio.internal' }],
+  [
+    'an S3_ENDPOINT with credentials',
+    { ...BASE_ENV, ...S3_ENV, S3_ENDPOINT: 'https://user:pass@minio.internal:9000' },
+  ],
+  [
+    'an S3_ENDPOINT with a query string',
+    { ...BASE_ENV, ...S3_ENV, S3_ENDPOINT: 'https://minio.internal:9000/?signature=xyz' },
+  ],
+  ['an S3_BUCKET with uppercase letters', { ...BASE_ENV, ...S3_ENV, S3_BUCKET: 'KFA-documents' }],
+  ['an S3_BUCKET with an underscore', { ...BASE_ENV, ...S3_ENV, S3_BUCKET: 'kfa_documents' }],
+  ['a one-character S3_BUCKET', { ...BASE_ENV, ...S3_ENV, S3_BUCKET: 'k' }],
+  ['an S3_REGION with uppercase letters', { ...BASE_ENV, ...S3_ENV, S3_REGION: 'EU-central-1' }],
+  ['an empty S3_ACCESS_KEY_ID', { ...BASE_ENV, ...S3_ENV, S3_ACCESS_KEY_ID: '' }],
+  ['a short S3_SECRET_ACCESS_KEY', { ...BASE_ENV, ...S3_ENV, S3_SECRET_ACCESS_KEY: 'short' }],
+  [
+    'an S3 store without credentials',
+    { ...BASE_ENV, S3_ENDPOINT: S3_ENV.S3_ENDPOINT, S3_BUCKET: S3_ENV.S3_BUCKET },
+  ],
+  [
+    'an S3 secret without the rest of the store',
+    { ...BASE_ENV, S3_SECRET_ACCESS_KEY: 'unit-test-s3-secret-0123456789' },
+  ],
+  ['an S3_FORCE_PATH_STYLE that is not a boolean', { ...BASE_ENV, S3_FORCE_PATH_STYLE: 'yes' }],
+  [
+    'a plain-http S3_ENDPOINT in production',
+    { ...PROD_ENV, ...S3_ENV, S3_ENDPOINT: 'http://minio.internal:9000' },
   ],
 ];
 
@@ -376,6 +415,74 @@ describe('loadEnv', () => {
       throw new Error('expected loadEnv to reject a malformed document master key');
     } catch (error) {
       expect((error as Error).message).toContain('DOCUMENT_MASTER_KEY');
+      expect((error as Error).message).not.toContain(value);
+    }
+  });
+
+  it('keeps object storage optional until it is fully configured', () => {
+    const env = loadEnv({ ...BASE_ENV });
+
+    expect(env.S3_ENDPOINT).toBeUndefined();
+    expect(env.S3_REGION).toBeUndefined();
+    expect(env.S3_BUCKET).toBeUndefined();
+    expect(env.S3_ACCESS_KEY_ID).toBeUndefined();
+    expect(env.S3_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(env.S3_FORCE_PATH_STYLE).toBeUndefined();
+  });
+
+  it('accepts a complete object store configuration', () => {
+    const env = loadEnv({ ...BASE_ENV, ...S3_ENV });
+
+    expect(env.S3_ENDPOINT).toBe('https://minio.internal:9000');
+    expect(env.S3_REGION).toBe('eu-central-1');
+    expect(env.S3_BUCKET).toBe('kfa-documents');
+    expect(env.S3_ACCESS_KEY_ID).toBe('kfa-documents-writer');
+
+    // Absent means absent: a store may be configured per instance without the
+    // optional switches, which keeps the parsed object as wide as the input.
+    expect(loadEnv({ ...BASE_ENV, ...S3_ENV, S3_REGION: undefined }).S3_REGION).toBeUndefined();
+  });
+
+  it('parses the path-style flag as a boolean', () => {
+    expect(
+      loadEnv({ ...BASE_ENV, ...S3_ENV, S3_FORCE_PATH_STYLE: 'false' }).S3_FORCE_PATH_STYLE,
+    ).toBe(false);
+    expect(loadEnv({ ...BASE_ENV, ...S3_ENV }).S3_FORCE_PATH_STYLE).toBe(true);
+  });
+
+  it('requires an all-or-nothing object store, naming every missing variable', () => {
+    try {
+      loadEnv({ ...BASE_ENV, S3_ENDPOINT: S3_ENV.S3_ENDPOINT });
+      throw new Error('expected loadEnv to reject a half-configured object store');
+    } catch (error) {
+      const message = (error as Error).message;
+
+      expect(message).toContain('S3_BUCKET');
+      expect(message).toContain('S3_ACCESS_KEY_ID');
+      expect(message).toContain('S3_SECRET_ACCESS_KEY');
+      expect(message).not.toContain('S3_REGION');
+    }
+  });
+
+  it('requires TLS for the object store in production', () => {
+    expect(() =>
+      loadEnv({ ...PROD_ENV, ...S3_ENV, S3_ENDPOINT: 'http://minio.internal:9000' }),
+    ).toThrow(/S3_ENDPOINT.*https.*production/);
+    // Storage is still optional in production: the service has not been chosen.
+    expect(loadEnv({ ...PROD_ENV }).S3_ENDPOINT).toBeUndefined();
+    expect(() => loadEnv({ ...PROD_ENV, ...S3_ENV })).not.toThrow();
+  });
+
+  it('never echoes the object store secret', () => {
+    // Too long rather than too short: a short value could appear inside the
+    // variable name in the message and make the assertion meaningless.
+    const value = `do-not-log-${'s'.repeat(300)}`;
+
+    try {
+      loadEnv({ ...BASE_ENV, ...S3_ENV, S3_SECRET_ACCESS_KEY: value });
+      throw new Error('expected loadEnv to reject an oversized object store secret');
+    } catch (error) {
+      expect((error as Error).message).toContain('S3_SECRET_ACCESS_KEY');
       expect((error as Error).message).not.toContain(value);
     }
   });

@@ -56,6 +56,8 @@ const SENSITIVE_CONFIG_PATHS = [
   'TOTP_ENC_KEY',
   'DOCUMENT_MASTER_KEY',
   'DOCUMENT_MASTER_KEY_PREVIOUS',
+  'S3_ACCESS_KEY_ID',
+  'S3_SECRET_ACCESS_KEY',
 ] as const;
 
 export function buildRedactPaths(): string[] {

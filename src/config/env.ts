@@ -44,6 +44,9 @@ const DATABASE_URL_MAX_LENGTH = 2048;
 /** Maximum accepted length of a Redis connection URL. */
 const REDIS_URL_MAX_LENGTH = 2048;
 
+/** Maximum accepted length of an S3-compatible endpoint URL. */
+const S3_ENDPOINT_MAX_LENGTH = 2048;
+
 /** Postgres TLS modes that actually encrypt the connection. */
 const TLS_REQUIRED_SSLMODES = new Set(['require', 'verify-ca', 'verify-full']);
 
@@ -142,6 +145,15 @@ function redisUrlHasPassword(url: string): boolean {
   }
 }
 
+function s3EndpointUsesHttps(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch {
+    // Shape errors are reported by s3EndpointSchema already.
+    return false;
+  }
+}
+
 /**
  * True when `value` is base64url that decodes to exactly `bytes` bytes. The
  * alphabet is checked first because Buffer's decoder silently skips invalid
@@ -213,6 +225,40 @@ const appOriginsSchema = z
   )
   .pipe(z.array(httpOriginSchema).min(1).max(20))
   .transform((origins) => [...new Set(origins)]);
+
+/**
+ * Validates an S3-compatible endpoint without ever echoing its value.
+ * Credentials, a query and a fragment are refused: they belong in the dedicated
+ * S3_* variables, and a signed URL used as an endpoint would leak a secret into
+ * every request.
+ */
+const s3EndpointSchema = z
+  .string()
+  .max(S3_ENDPOINT_MAX_LENGTH, `must be at most ${S3_ENDPOINT_MAX_LENGTH} characters`)
+  .superRefine((value, ctx) => {
+    let url: URL;
+
+    try {
+      url = new URL(value);
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'must be a valid absolute http(s) URL' });
+      return;
+    }
+
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      ctx.addIssue({ code: 'custom', message: 'must use the http or https scheme' });
+      return;
+    }
+
+    if (url.username.length > 0 || url.password.length > 0) {
+      ctx.addIssue({ code: 'custom', message: 'must not contain credentials' });
+    }
+
+    if (url.search.length > 0 || url.hash.length > 0) {
+      ctx.addIssue({ code: 'custom', message: 'must not contain a query or fragment' });
+    }
+  })
+  .transform((value) => value.trim());
 
 export const envSchema = z
   .object({
@@ -352,6 +398,54 @@ export const envSchema = z
       .regex(KEY_ID_PATTERN, 'must be a short label of letters, digits, - or _')
       .optional(),
 
+    /**
+     * S3-compatible object store for encrypted documents (Stage 4.2b). The four
+     * settings S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY
+     * are all-or-nothing: a half-configured store is a boot error, not a surprise
+     * at the first upload. None of them is required yet, not even in production,
+     * because the production storage service has not been chosen.
+     */
+    S3_ENDPOINT: s3EndpointSchema.optional(),
+
+    /** Signing region; defaults to us-east-1 in the adapter when unset. */
+    S3_REGION: z
+      .string()
+      .regex(/^[a-z0-9-]{1,63}$/, 'must be a lowercase region label')
+      .optional(),
+
+    /** Bucket that holds the ciphertext. It must stay private. */
+    S3_BUCKET: z
+      .string()
+      .regex(
+        /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/,
+        'must be a bucket name of 3-63 lowercase letters, digits, dots or -',
+      )
+      .optional(),
+
+    /** Access key of a dedicated storage user; never an administrator key. */
+    S3_ACCESS_KEY_ID: z
+      .string()
+      .min(1, 'must not be empty')
+      .max(256, 'must be at most 256 characters')
+      .optional(),
+
+    /** Secret paired with S3_ACCESS_KEY_ID. Redacted from every log line. */
+    S3_SECRET_ACCESS_KEY: z
+      .string()
+      .min(8, 'must be at least 8 characters')
+      .max(256, 'must be at most 256 characters')
+      .optional(),
+
+    /**
+     * Path-style addressing (`endpoint/bucket/key`) instead of virtual-host
+     * style. MinIO needs it, AWS S3 does not. Absent stays absent and means
+     * false, so the parsed object is exactly as wide as the input.
+     */
+    S3_FORCE_PATH_STYLE: z
+      .enum(['true', 'false'], 'must be true or false')
+      .optional()
+      .transform((value) => (value === undefined ? undefined : value === 'true')),
+
     /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
     OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
 
@@ -437,6 +531,28 @@ export const envSchema = z
         path: ['DOCUMENT_MASTER_KEY_PREVIOUS_ID'],
         message: 'must be set together with DOCUMENT_MASTER_KEY_PREVIOUS',
       });
+    }
+
+    // Object storage is all-or-nothing: a bucket without credentials (or an
+    // endpoint without a bucket) would pass boot and fail on the first upload.
+    const s3Required = [
+      'S3_ENDPOINT',
+      'S3_BUCKET',
+      'S3_ACCESS_KEY_ID',
+      'S3_SECRET_ACCESS_KEY',
+    ] as const;
+    const s3SetCount = s3Required.filter((name) => env[name] !== undefined).length;
+
+    if (s3SetCount > 0 && s3SetCount < s3Required.length) {
+      for (const name of s3Required) {
+        if (env[name] === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message: 'must be set together with the other S3 settings',
+          });
+        }
+      }
     }
 
     if (
@@ -552,6 +668,17 @@ export const envSchema = z
         code: 'custom',
         path: ['DOCUMENT_MASTER_KEY'],
         message: 'is required in production',
+      });
+    }
+
+    // Documents are not mandatory in production yet (the production storage
+    // service is still undecided), but a configured store must be reached over
+    // TLS: ciphertext and the storage credentials both travel on that hop.
+    if (env.S3_ENDPOINT !== undefined && !s3EndpointUsesHttps(env.S3_ENDPOINT)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['S3_ENDPOINT'],
+        message: 'must use the https scheme in production',
       });
     }
 

@@ -28,6 +28,8 @@ describe('buildRedactPaths', () => {
       'REDIS_URL',
       'AUDIT_HMAC_KEY',
       'RATE_LIMIT_HMAC_KEY',
+      'S3_ACCESS_KEY_ID',
+      'S3_SECRET_ACCESS_KEY',
     ]) {
       expect(paths).toContain(name);
       expect(paths).toContain(`env.${name}`);
@@ -79,6 +81,29 @@ describe('pino redaction', () => {
     expect(output).not.toContain('rate-limit-hmac-secret');
     expect(output).toContain(REDACTED);
     expect(output).toContain('boot');
+  });
+
+  it('never emits the object store credentials', () => {
+    const { logger, lines } = createCapturingLogger();
+
+    logger.info(
+      {
+        S3_ACCESS_KEY_ID: 'test-only-access-key',
+        S3_SECRET_ACCESS_KEY: 'test-only-secret-access-key',
+        env: {
+          S3_ACCESS_KEY_ID: 'test-only-access-key',
+          S3_SECRET_ACCESS_KEY: 'test-only-secret-access-key',
+        },
+      },
+      'storage ready',
+    );
+
+    const output = lines.join('');
+
+    expect(output).not.toContain('test-only-access-key');
+    expect(output).not.toContain('test-only-secret-access-key');
+    expect(output).toContain(REDACTED);
+    expect(output).toContain('storage ready');
   });
 
   it('redacts request credentials while keeping the request id', () => {

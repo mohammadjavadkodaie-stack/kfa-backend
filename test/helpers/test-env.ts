@@ -48,6 +48,16 @@ export const TEST_ENV = {
    * `applyTestEnv()` also removes a leaked value between suites.
    */
   REDIS_URL: undefined,
+  /**
+   * Object storage is unset by default too: no suite reaches a bucket, and the S3
+   * adapter is exercised with a recorded client. The keys are listed so that
+   * `applyTestEnv()` also removes a leaked, half-configured store between suites
+   * (the four settings are all-or-nothing once any of them is present).
+   */
+  S3_ENDPOINT: undefined,
+  S3_BUCKET: undefined,
+  S3_ACCESS_KEY_ID: undefined,
+  S3_SECRET_ACCESS_KEY: undefined,
 } as const;
 
 export type TestEnvOverrides = Partial<Record<keyof typeof TEST_ENV, string | undefined>>;
