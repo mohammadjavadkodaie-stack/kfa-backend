@@ -66,8 +66,15 @@ export class PrismaAthleteProfileRepository implements AthleteProfileRepository 
   }
 
   /** One statement: the unique `user_id` resolves insert versus replace atomically. */
-  async upsertForUser(userId: string, data: AthleteProfileInput): Promise<AthleteProfileRecord> {
-    const row = await this.prisma.athleteProfile.upsert({
+  async upsertForUser(
+    userId: string,
+    data: AthleteProfileInput,
+    tx?: Prisma.TransactionClient,
+  ): Promise<AthleteProfileRecord> {
+    // The caller's transaction when there is one; the statement is atomic either
+    // way, but only the shared client lets it roll back with the audit row.
+    const client: Prisma.TransactionClient = tx ?? this.prisma;
+    const row = await client.athleteProfile.upsert({
       where: { userId },
       create: { userId, ...toColumns(data) },
       update: toColumns(data),

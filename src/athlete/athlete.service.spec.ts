@@ -1,4 +1,5 @@
 import { ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import type { PinoLogger } from 'nestjs-pino';
 import { FakeAudit, type AuditRecord } from '../../test/helpers/auth-service-harness';
 import type { AuditService } from '../audit/audit.service';
@@ -6,6 +7,7 @@ import type { PolicySubject } from '../auth/policy/access-policy';
 import type { AccessPolicyContext } from '../auth/policy/access-policy.service';
 import { ResourceOwnershipService } from '../auth/policy/resource-ownership.service';
 import { Role } from '../auth/roles';
+import type { PrismaService } from '../database/prisma.service';
 import { ATHLETE_AUDIT_ACTIONS, AthleteService } from './athlete.service';
 import type {
   AthleteProfileInput,
@@ -65,13 +67,20 @@ function record(
 class RecordingProfiles implements AthleteProfileRepository {
   readonly rows = new Map<string, AthleteProfileRecord>();
   readonly upserts: string[] = [];
+  /** The client each write went through; `undefined` when the call had none. */
+  readonly transactions: (Prisma.TransactionClient | undefined)[] = [];
 
   async findByUserId(userId: string): Promise<AthleteProfileRecord | null> {
     return this.rows.get(userId) ?? null;
   }
 
-  async upsertForUser(userId: string, data: AthleteProfileInput): Promise<AthleteProfileRecord> {
+  async upsertForUser(
+    userId: string,
+    data: AthleteProfileInput,
+    tx?: Prisma.TransactionClient,
+  ): Promise<AthleteProfileRecord> {
     this.upserts.push(userId);
+    this.transactions.push(tx);
 
     const previous = this.rows.get(userId);
     const next: AthleteProfileRecord = {
@@ -88,11 +97,49 @@ class RecordingProfiles implements AthleteProfileRepository {
 
     return next;
   }
+
+  /** The commits a rollback has to undo. */
+  snapshot(): Map<string, AthleteProfileRecord> {
+    return new Map(this.rows);
+  }
+
+  restore(snapshot: Map<string, AthleteProfileRecord>): void {
+    this.rows.clear();
+    snapshot.forEach((row, userId) => this.rows.set(userId, row));
+  }
+}
+
+/**
+ * The one thing the service needs from Prisma: an interactive transaction. A
+ * throw from the callback discards everything the callback wrote, exactly as the
+ * real client does, so a fail-closed path can be checked for a real rollback.
+ */
+class FakePrisma {
+  readonly transactions: Prisma.TransactionClient[] = [];
+
+  constructor(private readonly profiles: RecordingProfiles) {}
+
+  async $transaction<T>(run: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    // A plain marker: both fakes ignore the client and only have to agree on it.
+    const tx = { isTransaction: true } as unknown as Prisma.TransactionClient;
+
+    this.transactions.push(tx);
+
+    const before = this.profiles.snapshot();
+
+    try {
+      return await run(tx);
+    } catch (error) {
+      this.profiles.restore(before);
+
+      throw error;
+    }
+  }
 }
 
 class FailingAudit extends FakeAudit {
-  override async record(entry: AuditRecord): Promise<void> {
-    await super.record(entry);
+  override async record(entry: AuditRecord, tx?: unknown): Promise<void> {
+    await super.record(entry, tx);
 
     throw new Error('audit chain is unavailable');
   }
@@ -108,11 +155,13 @@ class QuietLogger {
 
 function createService(audit: FakeAudit = new FakeAudit(), profiles = new RecordingProfiles()) {
   const logger = new QuietLogger();
+  const prisma = new FakePrisma(profiles);
   const ownership = new ResourceOwnershipService(
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
   );
   const service = new AthleteService(
+    prisma as unknown as PrismaService,
     profiles,
     ownership,
     audit as unknown as AuditService,
@@ -120,7 +169,7 @@ function createService(audit: FakeAudit = new FakeAudit(), profiles = new Record
     () => NOW,
   );
 
-  return { service, audit, profiles, logger };
+  return { service, audit, profiles, logger, prisma };
 }
 
 function successRecords(audit: FakeAudit): AuditRecord[] {
@@ -207,8 +256,25 @@ describe('AthleteService', () => {
 
     await refusalOf(service.saveProfile(actor, INPUT, CONTEXT), ServiceUnavailableException);
 
-    // The row exists; the answer is still a failure, never a silent success.
+    // The upsert ran first, but the failed trail rolls the row back with it.
     expect(profiles.upserts).toEqual([USER_ID]);
+    expect(profiles.rows.size).toBe(0);
+  });
+
+  it('writes the row and the trail through the same transaction', async () => {
+    const audit = new FakeAudit();
+    const { service, profiles, prisma } = createService(audit);
+
+    await service.saveProfile(actor, INPUT, CONTEXT);
+
+    const [tx] = prisma.transactions;
+
+    expect(prisma.transactions).toHaveLength(1);
+    expect(tx).toBeDefined();
+    // One unit of work: the row and its audit row commit together or not at all.
+    expect(profiles.transactions).toEqual([tx]);
+    expect(audit.transactions).toEqual([tx]);
+    expect(profiles.rows.has(USER_ID)).toBe(true);
   });
 
   it('derives isMinor from the injected clock', async () => {

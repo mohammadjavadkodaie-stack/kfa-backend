@@ -133,8 +133,11 @@ export interface AuditRecord {
 
 export class FakeAudit {
   readonly records: AuditRecord[] = [];
+  /** The client each row was asked to join; `undefined` when the call had none. */
+  readonly transactions: unknown[] = [];
 
-  async record(entry: AuditRecord): Promise<void> {
+  async record(entry: AuditRecord, tx?: unknown): Promise<void> {
+    this.transactions.push(tx);
     this.records.push(entry);
   }
 }

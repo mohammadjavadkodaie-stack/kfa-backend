@@ -5,7 +5,7 @@ import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 import { PrismaService } from '../database/prisma.service';
 import { computeAuditHash, isAuditHash, nextAuditTimestamp } from './audit-canonical';
-import { redactMetadata } from './audit-redaction';
+import { redactMetadata, type RedactedJson } from './audit-redaction';
 
 /**
  * Advisory-lock coordinates for the hash chain (`pg_advisory_xact_lock`).
@@ -42,6 +42,18 @@ export interface AuditRecordInput {
   readonly ip?: string | null;
   /** Free-form details; sensitive keys are redacted recursively. */
   readonly metadata?: unknown;
+}
+
+/** One validated, already hashed row. Everything left is a plain column value. */
+interface AuditEntry {
+  readonly action: string;
+  readonly actorId: string | null;
+  readonly actorRole: string | null;
+  readonly targetType: string | null;
+  readonly targetId: string | null;
+  readonly requestId: string | null;
+  readonly ipHash: string | null;
+  readonly metadata: RedactedJson;
 }
 
 function invalidField(field: string, requirement: string): never {
@@ -111,8 +123,14 @@ export class AuditService {
    * READ COMMITTED is correct here: every statement after the lock acquisition
    * takes a fresh snapshot, so the chain head is always current. The lock is
    * released automatically at commit/rollback.
+   *
+   * A caller that already owns a transaction passes it as `tx`. The append then
+   * joins that transaction - the lock, the head read and the insert run on the
+   * caller's client - so the audit row commits or rolls back with the change it
+   * describes. Opening a nested `$transaction` there would take a second
+   * connection and write the row outside the caller's atomic unit.
    */
-  async record(input: AuditRecordInput): Promise<AuditLog> {
+  async record(input: AuditRecordInput, tx?: Prisma.TransactionClient): Promise<AuditLog> {
     const action = requireText('action', input.action, MAX_ACTION_LENGTH);
     const actorId = optionalUuid('actorId', input.actorId);
     const actorRole = optionalText('actorRole', input.actorRole, MAX_ACTOR_ROLE_LENGTH);
@@ -121,59 +139,79 @@ export class AuditService {
     const requestId = optionalText('requestId', input.requestId, MAX_REQUEST_ID_LENGTH);
     const ipHash = hashClientIp(this.env.AUDIT_HMAC_KEY, input.ip);
     const metadata = redactMetadata(input.metadata ?? {});
+    const entry: AuditEntry = {
+      action,
+      actorId,
+      actorRole,
+      targetType,
+      targetId,
+      requestId,
+      ipHash,
+      metadata,
+    };
 
-    return this.prisma.$transaction(
-      async (tx) => {
-        // `pg_advisory_xact_lock` returns `void`; $executeRaw is the correct
-        // entry point because $queryRaw tries to deserialize the returned column
-        // ("Failed to deserialize column of type 'void'"). The lock itself is the
-        // same and is still held until this transaction ends.
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_NAMESPACE}::int, ${AUDIT_CHAIN_LOCK_ID}::int)`;
+    if (tx !== undefined) {
+      return this.#append(tx, entry);
+    }
 
-        const last = await tx.auditLog.findFirst({
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-          select: { hash: true, createdAt: true },
-        });
+    return this.prisma.$transaction((client) => this.#append(client, entry), {
+      maxWait: 5_000,
+      timeout: 10_000,
+    });
+  }
 
-        if (last !== null && !isAuditHash(last.hash)) {
-          // Fail closed rather than extend a chain we cannot verify.
-          throw new Error('Audit hash chain is corrupt: last row has an invalid hash');
-        }
+  /**
+   * The body both paths share: on the client it is given, take the chain lock,
+   * read the head, then insert. It never opens a transaction of its own.
+   */
+  async #append(tx: Prisma.TransactionClient, entry: AuditEntry): Promise<AuditLog> {
+    // `pg_advisory_xact_lock` returns `void`; $executeRaw is the correct entry
+    // point because $queryRaw tries to deserialize the returned column ("Failed
+    // to deserialize column of type 'void'"). The lock itself is the same and is
+    // still held until this transaction ends.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_NAMESPACE}::int, ${AUDIT_CHAIN_LOCK_ID}::int)`;
 
-        const id = randomUUID();
-        const createdAt = nextAuditTimestamp(last?.createdAt ?? null);
-        const prevHash = last?.hash ?? null;
-        const hash = computeAuditHash(prevHash, {
-          id,
-          createdAt,
-          actorId,
-          actorRole,
-          action,
-          targetType,
-          targetId,
-          requestId,
-          ipHash,
-          metadata,
-        });
+    const last = await tx.auditLog.findFirst({
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { hash: true, createdAt: true },
+    });
 
-        return tx.auditLog.create({
-          data: {
-            id,
-            createdAt,
-            actorId,
-            actorRole,
-            action,
-            targetType,
-            targetId,
-            requestId,
-            ipHash,
-            metadata: metadata as unknown as Prisma.InputJsonValue,
-            prevHash,
-            hash,
-          },
-        });
+    if (last !== null && !isAuditHash(last.hash)) {
+      // Fail closed rather than extend a chain we cannot verify.
+      throw new Error('Audit hash chain is corrupt: last row has an invalid hash');
+    }
+
+    const id = randomUUID();
+    const createdAt = nextAuditTimestamp(last?.createdAt ?? null);
+    const prevHash = last?.hash ?? null;
+    const hash = computeAuditHash(prevHash, {
+      id,
+      createdAt,
+      actorId: entry.actorId,
+      actorRole: entry.actorRole,
+      action: entry.action,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      requestId: entry.requestId,
+      ipHash: entry.ipHash,
+      metadata: entry.metadata,
+    });
+
+    return tx.auditLog.create({
+      data: {
+        id,
+        createdAt,
+        actorId: entry.actorId,
+        actorRole: entry.actorRole,
+        action: entry.action,
+        targetType: entry.targetType,
+        targetId: entry.targetId,
+        requestId: entry.requestId,
+        ipHash: entry.ipHash,
+        metadata: entry.metadata as unknown as Prisma.InputJsonValue,
+        prevHash,
+        hash,
       },
-      { maxWait: 5_000, timeout: 10_000 },
-    );
+    });
   }
 }

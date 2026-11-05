@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import type {
   AthleteProfileInput,
   AthleteProfileRecord,
@@ -20,7 +21,12 @@ export class InMemoryAthleteProfileRepository implements AthleteProfileRepositor
     return this.rows.get(userId) ?? null;
   }
 
-  async upsertForUser(userId: string, data: AthleteProfileInput): Promise<AthleteProfileRecord> {
+  async upsertForUser(
+    userId: string,
+    data: AthleteProfileInput,
+    // The map is the whole store, so there is no client to write through here.
+    _tx?: Prisma.TransactionClient,
+  ): Promise<AthleteProfileRecord> {
     this.writes.push({ userId, data });
 
     const previous = this.rows.get(userId);

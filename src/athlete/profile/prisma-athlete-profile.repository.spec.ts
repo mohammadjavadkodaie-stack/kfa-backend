@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import type { AthleteProfileInput } from './athlete-profile.repository';
 import { PrismaAthleteProfileRepository } from './prisma-athlete-profile.repository';
 import type { PrismaService } from '../../database/prisma.service';
@@ -63,6 +64,23 @@ describe('PrismaAthleteProfileRepository', () => {
     expect(upsertArgs(prisma)?.create).toMatchObject({ userId: 'user-a', city: 'Karachi' });
     // The user id is the predicate, never a column the replace branch may rewrite.
     expect(upsertArgs(prisma)?.update).not.toHaveProperty('userId');
+  });
+
+  it('runs the upsert on the transaction it is given', async () => {
+    const prisma = createPrisma();
+    const tx = { athleteProfile: { upsert: jest.fn(async () => storedRow) } };
+    const repository = new PrismaAthleteProfileRepository(prisma as unknown as PrismaService);
+
+    const record = await repository.upsertForUser(
+      'user-a',
+      input,
+      tx as unknown as Prisma.TransactionClient,
+    );
+
+    // The caller's transaction owns the write; the pool client is not touched.
+    expect(tx.athleteProfile.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.athleteProfile.upsert).not.toHaveBeenCalled();
+    expect(record).toMatchObject({ userId: 'user-a', dateOfBirth: '2001-02-03' });
   });
 
   it('stores the birth date at UTC midnight and reads it back date-only', async () => {

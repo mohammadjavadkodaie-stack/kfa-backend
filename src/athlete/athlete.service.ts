@@ -1,9 +1,11 @@
 import { Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
 import type { PolicySubject } from '../auth/policy/access-policy';
 import type { AccessPolicyContext } from '../auth/policy/access-policy.service';
 import { ResourceOwnershipService } from '../auth/policy/resource-ownership.service';
+import { PrismaService } from '../database/prisma.service';
 import { CLOCK, isMinor, type Clock } from './profile/athlete-age';
 import {
   ATHLETE_PROFILE_REPOSITORY,
@@ -80,6 +82,7 @@ export function changedFields(
 @Injectable()
 export class AthleteService {
   constructor(
+    private readonly prisma: PrismaService,
     @Inject(ATHLETE_PROFILE_REPOSITORY) private readonly profiles: AthleteProfileRepository,
     private readonly ownership: ResourceOwnershipService,
     private readonly audit: AuditService,
@@ -105,15 +108,27 @@ export class AthleteService {
     context: AccessPolicyContext,
   ): Promise<AthleteProfileView> {
     const previous = await this.loadOwn(actor, context);
-    const record = await this.profiles.upsertForUser(actor.id, input);
 
-    await this.record(
-      previous === null
-        ? ATHLETE_AUDIT_ACTIONS.PROFILE_CREATE
-        : ATHLETE_AUDIT_ACTIONS.PROFILE_UPDATE,
-      actor,
-      changedFields(previous, input),
-      context,
+    // One transaction for the row and its trail: the upsert goes first so the
+    // chain lock is held for the shortest possible time, and the audit row joins
+    // the same client. If the trail cannot be written, nothing is written at all.
+    const record = await this.prisma.$transaction(
+      async (tx) => {
+        const saved = await this.profiles.upsertForUser(actor.id, input, tx);
+
+        await this.record(
+          previous === null
+            ? ATHLETE_AUDIT_ACTIONS.PROFILE_CREATE
+            : ATHLETE_AUDIT_ACTIONS.PROFILE_UPDATE,
+          actor,
+          changedFields(previous, input),
+          context,
+          tx,
+        );
+
+        return saved;
+      },
+      { maxWait: 5_000, timeout: 10_000 },
     );
 
     return this.toView(record);
@@ -138,28 +153,32 @@ export class AthleteService {
   }
 
   /**
-   * Fail closed, like the admin endpoints: the row is already written, so a
-   * trail that cannot be written makes the request fail rather than report a
-   * change nobody can account for.
+   * Fail closed, like the admin endpoints: the row is written in the same
+   * transaction, so a trail that cannot be written rolls the row back and the
+   * request fails rather than report a change nobody can account for.
    */
   private async record(
     action: AthleteAuditAction,
     actor: PolicySubject,
     fields: readonly string[],
     context: AccessPolicyContext,
+    tx: Prisma.TransactionClient,
   ): Promise<void> {
     try {
-      await this.audit.record({
-        action,
-        actorId: actor.id,
-        actorRole: String(actor.role),
-        targetType: AUDIT_TARGET_TYPE,
-        // The caller's own id, never anybody else's.
-        targetId: actor.id,
-        requestId: context.requestId,
-        ip: context.ip,
-        metadata: { fields },
-      });
+      await this.audit.record(
+        {
+          action,
+          actorId: actor.id,
+          actorRole: String(actor.role),
+          targetType: AUDIT_TARGET_TYPE,
+          // The caller's own id, never anybody else's.
+          targetId: actor.id,
+          requestId: context.requestId,
+          ip: context.ip,
+          metadata: { fields },
+        },
+        tx,
+      );
     } catch {
       this.logger.warn({ requestId: context.requestId, action }, 'athlete audit failed');
 

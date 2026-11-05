@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import type { AuditLog } from '@prisma/client';
+import type { AuditLog, Prisma } from '@prisma/client';
 import { createHmac } from 'node:crypto';
 import type { Env } from '../config/env';
 import type { PrismaService } from '../database/prisma.service';
@@ -206,6 +206,51 @@ describe('AuditService.record (database call shape)', () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(calls[0]).toHaveLength(2);
     expect(calls[0]?.[1]).toEqual({ maxWait: 5_000, timeout: 10_000 });
+  });
+
+  it('joins the transaction it is given instead of opening its own', async () => {
+    const { service, prisma, tx } = createHarness();
+    const client = tx as unknown as Prisma.TransactionClient;
+
+    const row = (await service.record({ action: 'user.login' }, client)) as unknown as AuditLog;
+
+    // No nesting: a second transaction would write outside the caller's unit.
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(row.action).toBe('user.login');
+  });
+
+  it('takes the chain lock before reading the head on the given client', async () => {
+    const head = new Date(Date.now() + 60_000);
+    const { service, tx } = createHarness({ hash: HEADS_HASH, createdAt: head });
+    const client = tx as unknown as Prisma.TransactionClient;
+
+    await service.record({ action: 'user.login' }, client);
+
+    const [strings, ...args] = tx.$executeRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+
+    expect(strings.join('?')).toContain('pg_advisory_xact_lock');
+    expect(args).toEqual([AUDIT_CHAIN_LOCK_NAMESPACE, AUDIT_CHAIN_LOCK_ID]);
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+
+    const lockOrder = tx.$executeRaw.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER;
+    const readOrder = tx.auditLog.findFirst.mock.invocationCallOrder[0] ?? -1;
+
+    expect(lockOrder).toBeLessThan(readOrder);
+    // The chain is extended from the head the given client read.
+    expect(createdData(tx).prevHash).toBe(HEADS_HASH);
+  });
+
+  it('fails closed on a corrupt head through the given client too', async () => {
+    const { service, prisma, tx } = createHarness({ hash: 'corrupted', createdAt: new Date() });
+    const client = tx as unknown as Prisma.TransactionClient;
+
+    await expect(service.record({ action: 'user.login' }, client)).rejects.toThrow(
+      /chain is corrupt/,
+    );
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 });
 

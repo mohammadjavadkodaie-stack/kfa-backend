@@ -6,6 +6,8 @@
  * rules) is a later step; only the two primitives below exist today.
  */
 
+import type { Prisma } from '@prisma/client';
+
 /** DI token so the Prisma implementation can be swapped in tests. */
 export const ATHLETE_PROFILE_REPOSITORY = Symbol('ATHLETE_PROFILE_REPOSITORY');
 
@@ -45,6 +47,13 @@ export interface AthleteProfileRepository {
   /**
    * Inserts the profile or replaces it wholesale in one statement. The unique
    * `user_id` decides, so two concurrent first saves cannot both insert.
+   *
+   * A caller that already owns a transaction passes it as `tx`, so the row joins
+   * the same unit of work as the audit row that describes it.
    */
-  upsertForUser(userId: string, data: AthleteProfileInput): Promise<AthleteProfileRecord>;
+  upsertForUser(
+    userId: string,
+    data: AthleteProfileInput,
+    tx?: Prisma.TransactionClient,
+  ): Promise<AthleteProfileRecord>;
 }

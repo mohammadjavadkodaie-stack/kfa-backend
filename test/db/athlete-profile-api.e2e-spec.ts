@@ -1,7 +1,8 @@
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import type { PinoLogger } from 'nestjs-pino';
 import { randomBytes } from 'node:crypto';
+import type { AuditService } from '../../src/audit/audit.service';
 import { AthleteService, ATHLETE_AUDIT_ACTIONS } from '../../src/athlete/athlete.service';
 import type { AthleteProfileInput } from '../../src/athlete/profile/athlete-profile.repository';
 import { PrismaAthleteProfileRepository } from '../../src/athlete/profile/prisma-athlete-profile.repository';
@@ -85,6 +86,7 @@ describeWithDatabase('athlete profile service (PostgreSQL)', () => {
     const audit = createTestAuditService(prisma);
 
     service = new AthleteService(
+      prisma as unknown as PrismaService,
       new PrismaAthleteProfileRepository(prisma as unknown as PrismaService),
       new ResourceOwnershipService(audit, logger),
       audit,
@@ -207,5 +209,30 @@ describeWithDatabase('athlete profile service (PostgreSQL)', () => {
     expect(text).not.toContain('Lahore');
     expect(text).not.toContain('2001-02-03');
     expect(text).not.toContain('KFA Academy');
+  });
+
+  it('leaves no row behind when the trail cannot be written', async () => {
+    const actor = await newAthlete();
+    // The ownership check still audits normally; only the append fails.
+    const trail = createTestAuditService(prisma);
+    const broken = {
+      record: (): Promise<never> => Promise.reject(new Error('audit chain is unavailable')),
+    } as unknown as AuditService;
+    const failClosed = new AthleteService(
+      prisma as unknown as PrismaService,
+      new PrismaAthleteProfileRepository(prisma as unknown as PrismaService),
+      new ResourceOwnershipService(trail, logger),
+      broken,
+      logger,
+      () => new Date(),
+    );
+
+    await refusalOf(
+      failClosed.saveProfile(actor, profile(), ctx('db-athlete-11')),
+      ServiceUnavailableException,
+    );
+
+    // One transaction: the audit failure took the profile row down with it.
+    await expect(prisma.athleteProfile.count({ where: { userId: actor.id } })).resolves.toBe(0);
   });
 });
