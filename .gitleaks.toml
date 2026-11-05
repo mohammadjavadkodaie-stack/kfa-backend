@@ -22,19 +22,26 @@ stopwords = [
   "ci-only-",
 ]
 
-# Fake TOTP_ENC_KEY / PROD_TOTP_ENC_KEY values in three test files only. The
-# values are base64url blobs, so the plain-text stopwords above cannot catch
-# them. Requiring path AND assignment name means a real key in any other file,
-# or a real TOTP key in any other file, is still reported.
+# Fake TOTP / document master keys and fake document object keys in five test
+# files only. The values are base64url blobs and UUIDs, so the plain-text
+# stopwords above cannot catch them. Requiring path AND assignment name means a
+# real key in any other file, or a real key of another name in these files, is
+# still reported.
 [[allowlists]]
-description = 'Fake test-only TOTP keys: base64 form escapes the plain-text stopwords'
+description = 'Fake test-only TOTP and document keys: base64/UUID form escapes the plain-text stopwords'
 condition = "AND"
 paths = [
   '''^src/config/env\.spec\.ts$''',
   '''^src/rate-limit/throttler\.config\.spec\.ts$''',
   '''^test/helpers/test-env\.ts$''',
+  '''^src/documents/env-key-wrapper\.spec\.ts$''',
+  '''^src/documents/document-crypto\.service\.spec\.ts$''',
 ]
 regexTarget = "match"
 regexes = [
-  '''(?i)\b(?:PROD_)?TOTP_ENC_KEY\b["'`]?\s*(?:=>|=|:)\s*["'`]?[A-Za-z0-9_\-+/=]{8,}''',
+  # TOTP and document master keys (the document specs name the fixed, fake
+  # 32-byte fixtures MASTER_KEY / OTHER_MASTER_KEY, hence the extra alternatives).
+  '''(?i)\b(?:PROD_)?(?:TOTP_ENC_KEY|(?:OTHER_)?MASTER_KEY|DOCUMENT_MASTER_KEY|DOCUMENT_MASTER_KEY_PREVIOUS)\b["'`]?\s*(?:=>|=|:)\s*["'`]?[A-Za-z0-9_\-+/=]{8,}''',
+  # Document object ids: fixed, fake UUIDs in the two document specs only.
+  '''(?i)\b(?:OTHER_)?OBJECT_KEY\b["'`]?\s*(?:=>|=|:)\s*["'`]?[0-9a-f-]{36}''',
 ]
