@@ -596,3 +596,69 @@ describe('loadEnv', () => {
     expect(env.REDIS_URL).toBe(PROD_REDIS_URL);
   });
 });
+
+describe('the ClamAV settings', () => {
+  const DAEMON: NodeJS.ProcessEnv = { CLAMAV_HOST: '127.0.0.1', CLAMAV_PORT: '3310' };
+
+  it('stays optional outside production', () => {
+    const env = loadEnv({ ...BASE_ENV });
+
+    expect(env.CLAMAV_HOST).toBeUndefined();
+    expect(env.CLAMAV_PORT).toBeUndefined();
+  });
+
+  it('stays optional in production for now', () => {
+    const env = loadEnv({ ...PROD_ENV });
+
+    expect(env.CLAMAV_HOST).toBeUndefined();
+    expect(env.CLAMAV_PORT).toBeUndefined();
+  });
+
+  it('accepts a complete daemon configuration', () => {
+    const env = loadEnv({ ...BASE_ENV, ...DAEMON });
+
+    expect(env.CLAMAV_HOST).toBe('127.0.0.1');
+    expect(env.CLAMAV_PORT).toBe(3310);
+  });
+
+  it('trims the host', () => {
+    const env = loadEnv({ ...BASE_ENV, ...DAEMON, CLAMAV_HOST: '  clamd.internal  ' });
+
+    expect(env.CLAMAV_HOST).toBe('clamd.internal');
+  });
+
+  it('requires the host and the port together', () => {
+    expect(() => loadEnv({ ...BASE_ENV, CLAMAV_HOST: '127.0.0.1' })).toThrow(/CLAMAV_PORT/);
+    expect(() => loadEnv({ ...BASE_ENV, CLAMAV_PORT: '3310' })).toThrow(/CLAMAV_HOST/);
+  });
+
+  it('rejects a port outside 1-65535 or not a number', () => {
+    for (const port of ['0', '65536', 'abc', '-1', '3310.5']) {
+      expect(() => loadEnv({ ...BASE_ENV, ...DAEMON, CLAMAV_PORT: port })).toThrow(/CLAMAV_PORT/);
+    }
+  });
+
+  it('rejects an empty host', () => {
+    expect(() => loadEnv({ ...BASE_ENV, ...DAEMON, CLAMAV_HOST: '   ' })).toThrow(/CLAMAV_HOST/);
+  });
+
+  it('never echoes the configured host or port', () => {
+    const sentinel = 'do-not-log-me-1234';
+
+    try {
+      loadEnv({ ...BASE_ENV, ...DAEMON, CLAMAV_PORT: sentinel });
+      throw new Error('expected loadEnv to reject a non numeric ClamAV port');
+    } catch (error) {
+      expect((error as Error).message).toContain('CLAMAV_PORT');
+      expect((error as Error).message).not.toContain(sentinel);
+    }
+
+    try {
+      loadEnv({ ...BASE_ENV, ...DAEMON, CLAMAV_HOST: `${sentinel}${'x'.repeat(300)}` });
+      throw new Error('expected loadEnv to reject an over-long ClamAV host');
+    } catch (error) {
+      expect((error as Error).message).toContain('CLAMAV_HOST');
+      expect((error as Error).message).not.toContain(sentinel);
+    }
+  });
+});

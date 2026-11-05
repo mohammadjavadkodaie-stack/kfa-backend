@@ -446,6 +446,22 @@ export const envSchema = z
       .optional()
       .transform((value) => (value === undefined ? undefined : value === 'true')),
 
+    /**
+     * clamd daemon that streams uploads through INSTREAM (Stage 4.3a). The host
+     * and the port are all-or-nothing: one without the other is a boot error,
+     * not a surprise at the first upload. Neither is required yet, not even in
+     * production, because no daemon is deployed.
+     */
+    CLAMAV_HOST: z
+      .string()
+      .trim()
+      .min(1, 'must name a clamd host')
+      .max(255, 'must be at most 255 characters')
+      .optional(),
+
+    /** INSTREAM port of that daemon; 3310 is the clamd default. */
+    CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).optional(),
+
     /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
     OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
 
@@ -550,6 +566,24 @@ export const envSchema = z
             code: 'custom',
             path: [name],
             message: 'must be set together with the other S3 settings',
+          });
+        }
+      }
+    }
+
+    // The virus scanner is all-or-nothing for the same reason: a host without a
+    // port would pass boot and then fail on the first upload, and because the
+    // ingest pipeline fails closed that would refuse every document.
+    const clamavRequired = ['CLAMAV_HOST', 'CLAMAV_PORT'] as const;
+    const clamavSetCount = clamavRequired.filter((name) => env[name] !== undefined).length;
+
+    if (clamavSetCount > 0 && clamavSetCount < clamavRequired.length) {
+      for (const name of clamavRequired) {
+        if (env[name] === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message: 'must be set together with the other ClamAV settings',
           });
         }
       }
