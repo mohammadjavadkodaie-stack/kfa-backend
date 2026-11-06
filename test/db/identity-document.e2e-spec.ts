@@ -173,12 +173,14 @@ describeWithDatabase('identity document persistence (PostgreSQL)', () => {
   it('rejects an empty document and a digest that is not lowercase hex', async () => {
     const userId = await newUser();
 
+    // A digest padded with blanks is deliberately absent: char(64) drops the
+    // trailing spaces before the CHECK sees them, so that row is accepted and
+    // stored as the plain 64 hex characters (proved by the next test).
     for (const bad of [
       { sizeBytes: 0 },
       { sizeBytes: -1 },
       { sha256: 'A1'.repeat(32) },
       { sha256: 'a1'.repeat(31) },
-      { sha256: `${'a1'.repeat(32)} ` },
     ]) {
       await expect(
         prisma.identityDocument.create({ data: columns(document(userId, bad)) }),
@@ -186,6 +188,18 @@ describeWithDatabase('identity document persistence (PostgreSQL)', () => {
     }
 
     await expect(repository.countActiveByOwner(userId)).resolves.toBe(0);
+  });
+
+  it('stores a digest with trailing spaces as the plain 64-character hex', async () => {
+    const userId = await newUser();
+    const digest = 'a1'.repeat(32);
+
+    const saved = await prisma.identityDocument.create({
+      data: columns(document(userId, { sha256: `${digest} ` })),
+    });
+
+    // char(64) truncates the trailing blank, so nothing but hex reaches the CHECK.
+    expect(saved.sha256.trimEnd()).toBe(digest);
   });
 
   it('refuses a second row under the same object key', async () => {

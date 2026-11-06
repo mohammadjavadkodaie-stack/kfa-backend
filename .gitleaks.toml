@@ -22,7 +22,7 @@ stopwords = [
   "ci-only-",
 ]
 
-# Fake TOTP / document master keys and fake document object keys in five test
+# Fake TOTP / document master keys and fake document object keys in six test
 # files only. The values are base64url blobs and UUIDs, so the plain-text
 # stopwords above cannot catch them. Requiring path AND assignment name means a
 # real key in any other file, or a real key of another name in these files, is
@@ -36,12 +36,15 @@ paths = [
   '''^test/helpers/test-env\.ts$''',
   '''^src/documents/env-key-wrapper\.spec\.ts$''',
   '''^src/documents/document-crypto\.service\.spec\.ts$''',
+  '''^src/documents/records/document-upload\.service\.spec\.ts$''',
 ]
 regexTarget = "match"
 regexes = [
   # TOTP and document master keys (the document specs name the fixed, fake
   # 32-byte fixtures MASTER_KEY / OTHER_MASTER_KEY, hence the extra alternatives).
   '''(?i)\b(?:PROD_)?(?:TOTP_ENC_KEY|(?:OTHER_)?MASTER_KEY|DOCUMENT_MASTER_KEY|DOCUMENT_MASTER_KEY_PREVIOUS)\b["'`]?\s*(?:=>|=|:)\s*["'`]?[A-Za-z0-9_\-+/=]{8,}''',
-  # Document object ids: fixed, fake UUIDs in the two document specs only.
+  # Document object ids: fixed, fake UUIDs in the document specs only.
   '''(?i)\b(?:OTHER_)?OBJECT_KEY\b["'`]?\s*(?:=>|=|:)\s*["'`]?[0-9a-f-]{36}''',
+  # The upload spec's second fixture is the fixed, fake UUID it names OTHER_KEY.
+  '''(?i)\bOTHER_KEY\b["'`]?\s*(?:=>|=|:)\s*["'`]?[0-9a-f-]{36}''',
 ]
