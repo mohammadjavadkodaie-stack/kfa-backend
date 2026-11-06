@@ -91,6 +91,21 @@ describe('AllExceptionsFilter', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it('logs a document view path as the route pattern, never the token', () => {
+    const token = 'eyJwYXlsb2FkIjoiYSJ9.signature';
+    const { host } = createHost({ originalUrl: `/documents/view/${token}` });
+    const { logger, warn } = createLogger();
+
+    new AllExceptionsFilter(logger).catch(new NotFoundException(), host);
+
+    const payload = warn.mock.calls[0]?.[0] as Record<string, unknown>;
+
+    // A view link is a single-use credential in the path, so the redacted route
+    // pattern is logged instead of it - the nonce cannot be replayed from a log.
+    expect(payload.path).toBe('/documents/view/:token');
+    expect(JSON.stringify(payload)).not.toContain(token);
+  });
+
   it('falls back to "unknown" when the request has no id', () => {
     const { host, bodies } = createHost({ id: undefined });
     const { logger } = createLogger();

@@ -100,6 +100,30 @@ describe('createBodyParserErrorHandler', () => {
     });
   });
 
+  it('logs the view token as the route pattern, never as the secret in the path', () => {
+    const { logger, warn } = createLogger();
+    const token = 'eyJwYXlsb2FkIjoiYSJ9.signature';
+    const request = {
+      id: REQUEST_ID,
+      method: 'GET',
+      originalUrl: `/documents/view/${token}`,
+      url: `/documents/view/${token}`,
+    } as unknown as Request;
+
+    createBodyParserErrorHandler(logger)(
+      bodyParserError('entity.too.large'),
+      request,
+      createResponse().response,
+      jest.fn() as unknown as NextFunction,
+    );
+
+    const payload = warn.mock.calls[0]?.[0] as Record<string, unknown>;
+
+    expect(payload.path).toBe('/documents/view/:token');
+    // The real link never reaches a log file, not even inside the error object.
+    expect(JSON.stringify(payload)).not.toContain(token);
+  });
+
   it('logs the path without the query string', () => {
     const { logger, warn } = createLogger();
 

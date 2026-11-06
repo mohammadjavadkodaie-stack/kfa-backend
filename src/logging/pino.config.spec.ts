@@ -196,4 +196,32 @@ describe('buildPinoParams', () => {
     });
     expect(serializers.res({ statusCode: 401 })).toEqual({ statusCode: 401 });
   });
+
+  it('replaces a view token in the request path with the route pattern', () => {
+    const params = buildPinoParams({ LOG_LEVEL: 'info' } as Env);
+    const serializers = (
+      params.pinoHttp as {
+        serializers: { req: (value: unknown) => unknown };
+      }
+    ).serializers;
+    // A path is logged for every request, so a token in one would outlive the
+    // single use that makes it safe.
+    const token = 'eyJwYXlsb2FkIjoiYSJ9.signature';
+
+    const request = serializers.req({
+      id: 'request-id-1234',
+      method: 'GET',
+      url: `/documents/view/${token}`,
+      ip: '203.0.113.9',
+      socket: { remoteAddress: '203.0.113.9' },
+    });
+
+    expect(request).toEqual({
+      id: 'request-id-1234',
+      method: 'GET',
+      url: '/documents/view/:token',
+      remoteAddress: '203.0.113.9',
+    });
+    expect(JSON.stringify(request)).not.toContain(token);
+  });
 });

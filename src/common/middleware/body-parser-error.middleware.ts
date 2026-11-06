@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { redactRequestPath } from '../../logging/request-path';
 import { toErrorResponseBody } from '../errors/error-response';
 import { getRequestId } from './request-id.middleware';
 
@@ -61,7 +62,9 @@ export function createBodyParserErrorHandler(logger: RequestLogger): BodyParserE
     }
 
     const requestId = getRequestId(request);
-    const path = (request.originalUrl || request.url || '').split('?')[0];
+    // Same rule as the exception filter: a path may carry a view token, so only
+    // the route pattern is logged.
+    const path = redactRequestPath((request.originalUrl || request.url || '').split('?')[0] ?? '');
 
     logger.warn({
       err: error,

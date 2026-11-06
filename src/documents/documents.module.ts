@@ -27,6 +27,7 @@ import { IDENTITY_DOCUMENT_REPOSITORY } from './records/identity-document.reposi
 import { PrismaIdentityDocumentRepository } from './records/prisma-identity-document.repository';
 import { S3DocumentStorage } from './s3-document-storage';
 import { DocumentViewLinkController } from './view/document-view-link.controller';
+import { DocumentViewFileController } from './view/document-view-file.controller';
 import { DocumentViewService } from './view/document-view.service';
 import { StaffDocumentViewLinkController } from './view/staff-document-view-link.controller';
 
@@ -199,6 +200,8 @@ export function buildProofNonceStore(client: unknown): ProofNonceStore | null {
     DocumentUploadController,
     DocumentViewLinkController,
     StaffDocumentViewLinkController,
+    // The bytes behind a link: the only route whose credential is the path.
+    DocumentViewFileController,
   ],
   providers: [
     DocumentUploadService,
@@ -263,6 +266,7 @@ export class DocumentsModule implements NestModule {
         DocumentUploadController,
         DocumentViewLinkController,
         StaffDocumentViewLinkController,
+        DocumentViewFileController,
       );
   }
 }

@@ -10,6 +10,7 @@ import type { Request, Response } from 'express';
 import { PinoLogger } from 'nestjs-pino';
 import { toErrorResponseBody, readPublicErrorCode } from '../errors/error-response';
 import { getRequestId } from '../middleware/request-id.middleware';
+import { redactRequestPath } from '../../logging/request-path';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -59,7 +60,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const requestId = getRequestId(request);
     const statusCode = resolveStatusCode(exception);
-    const path = (request.originalUrl || request.url || '').split('?')[0];
+    // The path can carry a credential (a document view link); it is logged as
+    // the route pattern, never as the real segment.
+    const path = redactRequestPath((request.originalUrl || request.url || '').split('?')[0] ?? '');
 
     const logPayload = {
       err: exception,

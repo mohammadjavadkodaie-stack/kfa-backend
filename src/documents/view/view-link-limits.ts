@@ -37,12 +37,77 @@ export async function refuseViewLinkWhenOverLimit(
   request: AuthenticatedRequest,
   response: Response,
 ): Promise<ErrorResponseBody | null> {
-  for (const limit of DOCUMENT_VIEW_LINK_LIMITS) {
-    const decision = await rateLimit.consume({
-      scope: DOCUMENT_VIEW_LINK_RATE_LIMIT_SCOPE,
-      identifier: userId,
-      ...limit,
-    });
+  return consumeOrRefuse(
+    rateLimit,
+    DOCUMENT_VIEW_LINK_RATE_LIMIT_SCOPE,
+    DOCUMENT_VIEW_LINK_LIMITS,
+    userId,
+    request,
+    response,
+  );
+}
+
+/**
+ * The budget of the route that serves the bytes: `GET /documents/view/:token`.
+ *
+ * A separate scope from the issuing one, and per address rather than per user:
+ * the caller of that route may have no session at all (the token is the
+ * credential), so there is no user id to count against. Twenty a minute is more
+ * than a page of thumbnails needs and far less than an id-guessing script, and
+ * the hourly budget caps a long attempt. Redemption is single use, so every one
+ * of those twenty is a real link - a refused attempt costs a nonce, which is
+ * why the numbers are this tight.
+ */
+export const DOCUMENT_VIEW_FILE_RATE_LIMIT_SCOPE = 'document-view-file';
+
+/** Per-address limits for the bytes route, checked before `redeem()` runs. */
+export const DOCUMENT_VIEW_FILE_LIMITS = [
+  { limit: 20, windowSeconds: 60 },
+  { limit: 100, windowSeconds: 3_600 },
+] as const;
+
+/**
+ * Consumes both windows for one address and reports the refusal, if any.
+ *
+ * Failed attempts count too: the counters are spent before the token is even
+ * looked at, so a caller cannot buy extra guesses with malformed links.
+ */
+export async function refuseViewFileWhenOverLimit(
+  rateLimit: RateLimitService,
+  address: string,
+  request: RequestIdSource,
+  response: Response,
+): Promise<ErrorResponseBody | null> {
+  return consumeOrRefuse(
+    rateLimit,
+    DOCUMENT_VIEW_FILE_RATE_LIMIT_SCOPE,
+    DOCUMENT_VIEW_FILE_LIMITS,
+    address,
+    request,
+    response,
+  );
+}
+
+/** The one fact a refusal needs from the request: the id the envelope echoes. */
+interface RequestIdSource {
+  readonly id?: unknown;
+}
+
+/**
+ * The shared loop: the windows are checked in order and the first refusal wins,
+ * so a caller that is out of budget never reaches the service or the second
+ * counter.
+ */
+async function consumeOrRefuse(
+  rateLimit: RateLimitService,
+  scope: string,
+  limits: readonly { readonly limit: number; readonly windowSeconds: number }[],
+  identifier: string,
+  request: RequestIdSource,
+  response: Response,
+): Promise<ErrorResponseBody | null> {
+  for (const limit of limits) {
+    const decision = await rateLimit.consume({ scope, identifier, ...limit });
 
     if (!decision.allowed) {
       return writeTooManyRequests(response, request, decision.retryAfterSeconds);

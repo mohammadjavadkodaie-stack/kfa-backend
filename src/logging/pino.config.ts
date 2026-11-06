@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import type { Params } from 'nestjs-pino';
 import { stdSerializers } from 'pino';
 import type { Env } from '../config/env';
+import { redactRequestPath } from './request-path';
 
 const REDACTED = '[REDACTED]';
 
@@ -97,8 +98,9 @@ function stripQuery(url: string): string {
  * Structured logging configuration.
  *
  * No request bodies are logged: the request serializer only keeps the method,
- * path (without query string), remote address and the request id. Redaction is
- * still enabled as defence in depth for explicit log calls.
+ * path (without query string, and with any view token replaced by the route
+ * pattern), remote address and the request id. Redaction is still enabled as
+ * defence in depth for explicit log calls.
  */
 export function buildPinoParams(env: Env): Params<Request, Response> {
   return {
@@ -115,7 +117,7 @@ export function buildPinoParams(env: Env): Params<Request, Response> {
         req: (request: Request) => ({
           id: request.id,
           method: request.method,
-          url: stripQuery(request.url),
+          url: redactRequestPath(stripQuery(request.url)),
           remoteAddress: request.ip ?? request.socket?.remoteAddress,
         }),
         res: (response: Response) => ({ statusCode: response.statusCode }),
