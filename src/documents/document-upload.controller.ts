@@ -10,6 +10,7 @@ import {
   UnprocessableEntityException,
   UnsupportedMediaTypeException,
 } from '@nestjs/common';
+import { DocumentKind as PrismaDocumentKind } from '@prisma/client';
 import { IsIn } from 'class-validator';
 import type { Response } from 'express';
 import { Authenticated } from '../auth/decorators/authenticated.decorator';
@@ -43,8 +44,16 @@ export const DOCUMENT_UPLOAD_LIMITS = [
   { limit: 10, windowSeconds: 3_600 },
 ] as const;
 
-/** The closed set of kinds, typed against the column so the two cannot drift apart. */
-const DOCUMENT_KINDS: readonly DocumentKind[] = ['NATIONAL_ID', 'MEDAL', 'CERTIFICATE'];
+/**
+ * The closed set of kinds, read from the generated Prisma enum rather than listed.
+ *
+ * The column is the only source of truth: a value `DocumentKind` gains or loses
+ * is accepted or refused here in the same commit, with no second list to keep in
+ * step. The copy is frozen so a caller cannot add a kind at runtime.
+ */
+export const DOCUMENT_KINDS: readonly DocumentKind[] = Object.freeze(
+  Object.values(PrismaDocumentKind),
+);
 
 /**
  * The only thing a caller may say about the document besides its bytes.

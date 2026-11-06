@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { DocumentKind } from '@prisma/client';
 import { Role } from '../src/auth/roles';
 import type { DocumentStorage } from '../src/documents/document-storage';
 import { InMemoryDocumentStorage } from '../src/documents/in-memory-document-storage';
@@ -327,6 +328,40 @@ describe('Document upload route (e2e)', () => {
       expect(response.body).toEqual({ ...BAD_REQUEST, requestId: expect.any(String) });
     }
 
+    expect(storage.puts).toHaveLength(puts);
+    expect(rowsOf(account)).toEqual([]);
+  });
+
+  it('accepts every kind the DocumentKind enum declares, and refuses any other', async () => {
+    // Exactly the enum the column is created from, value by value.
+    for (const kind of Object.values(DocumentKind)) {
+      const account = await newAthlete();
+
+      const response = await harness.upload({
+        token: account.token,
+        query: `kind=${kind}`,
+        body: PNG,
+        contentType: 'image/png',
+      });
+
+      expect(response.status).toBe(201);
+      expect((response.body as { kind: string }).kind).toBe(kind);
+      expect(rowsOf(account)).toHaveLength(1);
+      expect(rowsOf(account)[0]?.kind).toBe(kind);
+    }
+
+    // A kind the enum does not have stops at the pipe, before a byte is read.
+    const account = await newAthlete();
+    const puts = storage.puts.length;
+    const refused = await harness.upload({
+      token: account.token,
+      query: 'kind=PASSPORT',
+      body: PNG,
+      contentType: 'image/png',
+    });
+
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual({ ...BAD_REQUEST, requestId: expect.any(String) });
     expect(storage.puts).toHaveLength(puts);
     expect(rowsOf(account)).toEqual([]);
   });

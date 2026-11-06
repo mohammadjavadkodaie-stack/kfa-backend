@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus, ServiceUnavailableException } from '@nestjs/common';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { DocumentKind } from '@prisma/client';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { Response } from 'express';
@@ -14,6 +15,7 @@ import type {
   RateLimitService,
 } from '../rate-limit/rate-limit.service';
 import {
+  DOCUMENT_KINDS,
   DOCUMENT_UPLOAD_LIMITS,
   DOCUMENT_UPLOAD_PATH,
   DOCUMENT_UPLOAD_RATE_LIMIT_SCOPE,
@@ -178,6 +180,22 @@ describe('DocumentUploadController', () => {
       for (const kind of ['NATIONAL_ID', 'MEDAL', 'CERTIFICATE']) {
         expect(await errorsFor({ kind })).toBe(0);
       }
+    });
+
+    it('accepts exactly the values of the generated DocumentKind enum', async () => {
+      // One source of truth: the list the route publishes is the generated enum,
+      // so a value the column gains or loses cannot leave the two disagreeing.
+      expect([...DOCUMENT_KINDS]).toEqual(Object.values(DocumentKind));
+
+      for (const kind of Object.values(DocumentKind)) {
+        expect(await errorsFor({ kind })).toBe(0);
+      }
+
+      // The DTO enforces the same set, not merely the constant above.
+      expect(Object.values(DocumentKind)).toContain('NATIONAL_ID');
+      expect(Object.values(DocumentKind)).toContain('MEDAL');
+      expect(Object.values(DocumentKind)).toContain('CERTIFICATE');
+      expect(Object.values(DocumentKind)).not.toContain('PASSPORT');
     });
 
     it('refuses an unknown or a differently cased kind', async () => {
