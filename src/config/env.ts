@@ -32,6 +32,9 @@ export const TOTP_ENC_KEY_BYTES = 32;
 /** Exact decoded length of the document master key that wraps data keys (AES-256). */
 export const DOCUMENT_MASTER_KEY_BYTES = 32;
 
+/** Minimum accepted length of the signed document view-token HMAC secret. */
+export const DOCUMENT_VIEW_TOKEN_SECRET_MIN_LENGTH = 32;
+
 /** Label assumed for the current master key when DOCUMENT_MASTER_KEY_ID is unset. */
 export const DOCUMENT_MASTER_KEY_DEFAULT_ID = 'v1';
 
@@ -399,6 +402,22 @@ export const envSchema = z
       .optional(),
 
     /**
+     * HMAC-SHA256 secret that signs the single-use document view link
+     * (Stage 4.4a). Optional outside production, where the whole view path is
+     * off without it: the service answers 503 rather than issue a link it
+     * cannot sign. Required in production and independent from every other
+     * secret, so one leak cannot mint another kind of token.
+     */
+    DOCUMENT_VIEW_TOKEN_SECRET: z
+      .string()
+      .min(
+        DOCUMENT_VIEW_TOKEN_SECRET_MIN_LENGTH,
+        `must be at least ${DOCUMENT_VIEW_TOKEN_SECRET_MIN_LENGTH} characters`,
+      )
+      .max(1024, 'must be at most 1024 characters')
+      .optional(),
+
+    /**
      * S3-compatible object store for encrypted documents (Stage 4.2b). The four
      * settings S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY
      * are all-or-nothing: a half-configured store is a boot error, not a surprise
@@ -533,6 +552,25 @@ export const envSchema = z
         code: 'custom',
         path: ['TOTP_ENC_KEY'],
         message: 'must differ from the audit, rate-limit and proof secrets',
+      });
+    }
+
+    // The view-token secret signs a link that opens identity documents, so it is
+    // never allowed to be a secret that already signs something else: one leaked
+    // value would then forge two kinds of token.
+    if (
+      env.DOCUMENT_VIEW_TOKEN_SECRET !== undefined &&
+      [
+        env.AUDIT_HMAC_KEY,
+        env.RATE_LIMIT_HMAC_KEY,
+        env.OTP_PROOF_SECRET,
+        env.ACCESS_TOKEN_SECRET,
+      ].includes(env.DOCUMENT_VIEW_TOKEN_SECRET)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DOCUMENT_VIEW_TOKEN_SECRET'],
+        message: 'must differ from the audit, rate-limit, proof and access-token secrets',
       });
     }
 
@@ -701,6 +739,14 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['DOCUMENT_MASTER_KEY'],
+        message: 'is required in production',
+      });
+    }
+
+    if (env.DOCUMENT_VIEW_TOKEN_SECRET === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DOCUMENT_VIEW_TOKEN_SECRET'],
         message: 'is required in production',
       });
     }

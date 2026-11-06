@@ -61,4 +61,14 @@ export interface IdentityDocumentRepository {
 
   /** The per-owner quota: how many ACTIVE documents the account already holds. */
   countActiveByOwner(ownerUserId: string, tx?: Prisma.TransactionClient): Promise<number>;
+
+  /**
+   * One ACTIVE row by id, or null.
+   *
+   * The view path needs this rather than a lookup by owner: a staff reader is not
+   * the owner, so the row has to be read first and the decision made afterwards
+   * by the authorization policy - never by the query. A soft-deleted row is not
+   * viewable, so it answers null exactly like a missing one.
+   */
+  findActiveById(id: string, tx?: Prisma.TransactionClient): Promise<IdentityDocumentRecord | null>;
 }

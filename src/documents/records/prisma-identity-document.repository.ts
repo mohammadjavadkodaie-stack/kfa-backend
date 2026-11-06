@@ -88,4 +88,20 @@ export class PrismaIdentityDocumentRepository implements IdentityDocumentReposit
 
     return client.identityDocument.count({ where: { ownerUserId, status: 'ACTIVE' } });
   }
+
+  async findActiveById(
+    id: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<IdentityDocumentRecord | null> {
+    const client: Prisma.TransactionClient = tx ?? this.prisma;
+    // `status` is part of the filter, not a column the caller checks afterwards:
+    // a deleted row can never be handed out by accident. The explicit `select`
+    // also keeps the read to the envelope the decryption needs.
+    const row = await client.identityDocument.findFirst({
+      where: { id, status: 'ACTIVE' },
+      select: RECORD_FIELDS,
+    });
+
+    return row === null ? null : toRecord(row);
+  }
 }

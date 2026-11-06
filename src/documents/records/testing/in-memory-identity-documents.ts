@@ -20,6 +20,8 @@ export class InMemoryIdentityDocuments implements IdentityDocumentRepository {
   readonly inserts: IdentityDocumentRecord[] = [];
   /** The owner of every quota read, in order. */
   readonly counts: string[] = [];
+  /** Every id the view path asked for, in order. */
+  readonly reads: string[] = [];
   /** The client each insert went through; `undefined` when the call had none. */
   readonly transactions: (Prisma.TransactionClient | undefined)[] = [];
 
@@ -54,6 +56,18 @@ export class InMemoryIdentityDocuments implements IdentityDocumentRepository {
       .length;
   }
 
+  async findActiveById(
+    id: string,
+    _tx?: Prisma.TransactionClient,
+  ): Promise<IdentityDocumentRecord | null> {
+    this.reads.push(id);
+
+    const row = this.rowsById.get(id);
+
+    // Same rule as the query: a soft-deleted row is not found.
+    return row === undefined || row.status !== 'ACTIVE' ? null : row;
+  }
+
   /** The committed state a rollback has to bring back. */
   snapshot(): Map<string, IdentityDocumentRecord> {
     return new Map(this.rowsById);
@@ -62,6 +76,15 @@ export class InMemoryIdentityDocuments implements IdentityDocumentRepository {
   restore(snapshot: Map<string, IdentityDocumentRecord>): void {
     this.rowsById.clear();
     snapshot.forEach((row, id) => this.rowsById.set(id, row));
+  }
+
+  /** Marks one row DELETED, as the retention step will. */
+  softDelete(id: string): void {
+    const row = this.rowsById.get(id);
+
+    if (row === undefined) return;
+
+    this.rowsById.set(id, { ...row, status: 'DELETED', deletedAt: new Date() });
   }
 
   /** Puts `count` ACTIVE rows on the owner, for the quota checks. */

@@ -28,6 +28,7 @@ describe('buildRedactPaths', () => {
       'REDIS_URL',
       'AUDIT_HMAC_KEY',
       'RATE_LIMIT_HMAC_KEY',
+      'DOCUMENT_VIEW_TOKEN_SECRET',
       'S3_ACCESS_KEY_ID',
       'S3_SECRET_ACCESS_KEY',
     ]) {
@@ -81,6 +82,25 @@ describe('pino redaction', () => {
     expect(output).not.toContain('rate-limit-hmac-secret');
     expect(output).toContain(REDACTED);
     expect(output).toContain('boot');
+  });
+
+  it('never emits the view-token secret', () => {
+    const { logger, lines } = createCapturingLogger();
+
+    logger.warn(
+      {
+        DOCUMENT_VIEW_TOKEN_SECRET: 'test-only-view-token-secret-0123456789',
+        env: { DOCUMENT_VIEW_TOKEN_SECRET: 'test-only-view-token-secret-0123456789' },
+        action: 'document.viewed',
+      },
+      'configuration loaded',
+    );
+
+    const output = lines.join('');
+
+    expect(output).not.toContain('test-only-view-token-secret');
+    expect(output).toContain(REDACTED);
+    expect(output).toContain('configuration loaded');
   });
 
   it('never emits the object store credentials', () => {

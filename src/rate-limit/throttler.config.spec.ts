@@ -23,6 +23,8 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   TOTP_ENC_KEY: 'a2ZhLXVuaXQtdGVzdC10b3RwLWVuYy1rZXktMTIzNDU',
   // Fake base64 of 32 bytes; required from stage 4.2a on (document encryption).
   DOCUMENT_MASTER_KEY: 'a2ZhLXRlc3Qtb25seS1kb2N1bWVudC1tYXN0ZXIta2U=',
+  // Required from stage 4.4a on; it signs the single-use document view links.
+  DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
 };

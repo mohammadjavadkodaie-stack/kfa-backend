@@ -7,6 +7,7 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
   OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
   ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
+  DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
   OTP_PROVIDER: 'fake',
   CAPTCHA_PROVIDER: 'fake',
 };
@@ -97,6 +98,19 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
     { ...BASE_ENV, OTP_PROOF_SECRET: 'unit-test-rate-limit-hmac-key-0123456789' },
   ],
   ['a missing OTP_PROOF_SECRET in production', { ...PROD_ENV, OTP_PROOF_SECRET: undefined }],
+  ['a short DOCUMENT_VIEW_TOKEN_SECRET', { ...BASE_ENV, DOCUMENT_VIEW_TOKEN_SECRET: 'too-short' }],
+  [
+    'a DOCUMENT_VIEW_TOKEN_SECRET equal to the access-token secret',
+    { ...BASE_ENV, DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef' },
+  ],
+  [
+    'a DOCUMENT_VIEW_TOKEN_SECRET equal to the proof secret',
+    { ...BASE_ENV, DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef' },
+  ],
+  [
+    'a missing DOCUMENT_VIEW_TOKEN_SECRET in production',
+    { ...PROD_ENV, DOCUMENT_VIEW_TOKEN_SECRET: undefined },
+  ],
   [
     'a TOTP_ENC_KEY that is not base64url',
     { ...BASE_ENV, TOTP_ENC_KEY: 'not+a+valid+base64url+value+here' },
@@ -210,6 +224,7 @@ describe('loadEnv', () => {
       OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
       OTP_GLOBAL_SENDS_PER_HOUR: 500,
       ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
+      DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
       ACCESS_TOKEN_TTL_SECONDS: 600,
       REFRESH_TTL_DAYS: 14,
       SESSION_ABSOLUTE_DAYS: 30,
@@ -542,6 +557,24 @@ describe('loadEnv', () => {
       loadEnv({ ...PROD_ENV, ACCESS_TOKEN_SECRET: PROD_ENV.AUDIT_HMAC_KEY as string }),
     ).toThrow(/ACCESS_TOKEN_SECRET.*must differ/);
     expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
+  });
+
+  it('treats the view-token secret as optional outside production', () => {
+    const env = loadEnv({ ...BASE_ENV, DOCUMENT_VIEW_TOKEN_SECRET: undefined });
+
+    expect(env.DOCUMENT_VIEW_TOKEN_SECRET).toBeUndefined();
+  });
+
+  it('requires an independent view-token secret in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, DOCUMENT_VIEW_TOKEN_SECRET: undefined })).toThrow(
+      /DOCUMENT_VIEW_TOKEN_SECRET.*required in production/,
+    );
+    expect(() =>
+      loadEnv({ ...PROD_ENV, DOCUMENT_VIEW_TOKEN_SECRET: PROD_ENV.ACCESS_TOKEN_SECRET as string }),
+    ).toThrow(/DOCUMENT_VIEW_TOKEN_SECRET.*must differ/);
+    expect(loadEnv({ ...PROD_ENV }).DOCUMENT_VIEW_TOKEN_SECRET).toBe(
+      'unit-test-view-token-secret-0123456789abcdef',
+    );
   });
 
   it('returns a frozen object', () => {
