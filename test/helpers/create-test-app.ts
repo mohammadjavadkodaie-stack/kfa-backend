@@ -14,6 +14,13 @@ import { TOTP_REPOSITORY, type TotpRepository } from '../../src/auth/totp/totp.r
 import { ENV } from '../../src/config/config.module';
 import type { Env } from '../../src/config/env';
 import { PrismaService } from '../../src/database/prisma.service';
+import { DOCUMENT_STORAGE, type DocumentStorage } from '../../src/documents/document-storage';
+import { VIRUS_SCANNER } from '../../src/documents/documents.module';
+import type { VirusScanner } from '../../src/documents/ingest/virus-scanner';
+import {
+  IDENTITY_DOCUMENT_REPOSITORY,
+  type IdentityDocumentRepository,
+} from '../../src/documents/records/identity-document.repository';
 import { RateLimitService } from '../../src/rate-limit/rate-limit.service';
 import { TestController } from './test.controller';
 import { applyTestEnv, type TestEnvOverrides } from './test-env';
@@ -44,6 +51,12 @@ export interface CreateTestAppOptions {
   readonly rateLimit?: RateLimitService;
   /** In-memory profiles, so the athlete endpoints run without PostgreSQL. */
   readonly athleteProfileRepository?: AthleteProfileRepository;
+  /** In-memory document rows, so the upload route runs without PostgreSQL. */
+  readonly identityDocumentRepository?: IdentityDocumentRepository;
+  /** In-memory object store, so no suite reaches a bucket. */
+  readonly documentStorage?: DocumentStorage;
+  /** A fake daemon verdict for the ingest pipeline, instead of the refusing default. */
+  readonly virusScanner?: VirusScanner;
 }
 
 /**
@@ -91,6 +104,20 @@ export async function createTestApp(
     builder = builder
       .overrideProvider(ATHLETE_PROFILE_REPOSITORY)
       .useValue(options.athleteProfileRepository);
+  }
+
+  if (options.identityDocumentRepository !== undefined) {
+    builder = builder
+      .overrideProvider(IDENTITY_DOCUMENT_REPOSITORY)
+      .useValue(options.identityDocumentRepository);
+  }
+
+  if (options.documentStorage !== undefined) {
+    builder = builder.overrideProvider(DOCUMENT_STORAGE).useValue(options.documentStorage);
+  }
+
+  if (options.virusScanner !== undefined) {
+    builder = builder.overrideProvider(VIRUS_SCANNER).useValue(options.virusScanner);
   }
 
   const moduleRef = await builder.compile();

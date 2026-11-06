@@ -7,6 +7,7 @@ import { InMemoryTotpRepository } from '../../src/auth/totp/in-memory-totp.repos
 import type { RateLimitDecision, RateLimitService } from '../../src/rate-limit/rate-limit.service';
 import type { CreateTestAppOptions } from './create-test-app';
 import { createTestApp } from './create-test-app';
+import type { TestEnvOverrides } from './test-env';
 
 /**
  * The fixture the admin e2e suites share: the real application over an
@@ -99,23 +100,24 @@ export interface AdminAccount {
  * readable in a failure report; every suite owns its own store, so the counters
  * never collide between suites.
  */
-export async function createAdminHarness(prefix = 'admin', extra: CreateTestAppOptions = {}) {
+export async function createAdminHarness(
+  prefix = 'admin',
+  extra: CreateTestAppOptions = {},
+  env: TestEnvOverrides = {},
+) {
   const sessions = new InMemorySessionRepository();
   const auditPrisma = createAuditPrisma();
   let sequence = 0;
 
-  const app: NestExpressApplication = await createTestApp(
-    {},
-    {
-      prisma: auditPrisma.prisma,
-      sessionRepository: sessions,
-      totpRepository: new InMemoryTotpRepository(),
-      proofNonceStore: new InMemoryNonceStore(),
-      rateLimit: new PermissiveRateLimit() as unknown as RateLimitService,
-      // One more in-memory store for a suite that needs it; omitted everywhere else.
-      ...extra,
-    },
-  );
+  const app: NestExpressApplication = await createTestApp(env, {
+    prisma: auditPrisma.prisma,
+    sessionRepository: sessions,
+    totpRepository: new InMemoryTotpRepository(),
+    proofNonceStore: new InMemoryNonceStore(),
+    rateLimit: new PermissiveRateLimit() as unknown as RateLimitService,
+    // One more in-memory store for a suite that needs it; omitted everywhere else.
+    ...extra,
+  });
   const proofs = app.get(ProofTokenService);
 
   const server = () => request(app.getHttpServer());

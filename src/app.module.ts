@@ -15,6 +15,7 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppConfigModule, ENV } from './config/config.module';
 import type { Env } from './config/env';
 import { PrismaModule } from './database/prisma.module';
+import { DocumentsModule } from './documents/documents.module';
 import { HealthModule } from './health/health.module';
 import { buildPinoParams } from './logging/pino.config';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
@@ -32,6 +33,7 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
     AuthModule,
     AdminUsersModule,
     AthleteModule,
+    DocumentsModule,
     HealthModule,
   ],
   providers: [

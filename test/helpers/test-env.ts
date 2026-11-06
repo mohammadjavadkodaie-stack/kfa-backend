@@ -58,6 +58,19 @@ export const TEST_ENV = {
   S3_BUCKET: undefined,
   S3_ACCESS_KEY_ID: undefined,
   S3_SECRET_ACCESS_KEY: undefined,
+  /**
+   * Fixed, fake AES-256 key for document envelopes: base64 of exactly 32 bytes.
+   * Present so a suite can decrypt what the upload route stored; production
+   * requires it, and a suite that tests the missing-key path overrides it.
+   */
+  DOCUMENT_MASTER_KEY: 'a2ZhLXRlc3Qtb25seS1kb2N1bWVudC1tYXN0ZXIta2U=',
+  /**
+   * No clamd in tests either: the scanner is unset (the upload route then refuses
+   * every file) and the suites that exercise a real verdict inject a fake one.
+   * Listed so `applyTestEnv()` also removes a leaked daemon between suites.
+   */
+  CLAMAV_HOST: undefined,
+  CLAMAV_PORT: undefined,
 } as const;
 
 export type TestEnvOverrides = Partial<Record<keyof typeof TEST_ENV, string | undefined>>;
