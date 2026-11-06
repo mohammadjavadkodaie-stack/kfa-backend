@@ -65,6 +65,13 @@ export const TEST_ENV = {
    */
   DOCUMENT_MASTER_KEY: 'a2ZhLXRlc3Qtb25seS1kb2N1bWVudC1tYXN0ZXIta2U=',
   /**
+   * Fixed, fake HMAC secret for the single-use document view links: long enough
+   * for the production rule (32 characters) and distinct from every other secret
+   * here, so a suite can sign and redeem a link without a real value. Production
+   * requires it; a suite that tests the missing-secret path overrides it.
+   */
+  DOCUMENT_VIEW_TOKEN_SECRET: 'test-only-view-token-secret-0123456789abcdef',
+  /**
    * No clamd in tests either: the scanner is unset (the upload route then refuses
    * every file) and the suites that exercise a real verdict inject a fake one.
    * Listed so `applyTestEnv()` also removes a leaked daemon between suites.
