@@ -67,6 +67,17 @@ enum Gender {
   UNDISCLOSED
 }
 
+enum DocumentKind {
+  NATIONAL_ID
+  MEDAL
+  CERTIFICATE
+}
+
+enum DocumentStatus {
+  ACTIVE
+  DELETED
+}
+
 /// At most one row may hold the OWNER role. Prisma cannot express a partial
 /// index, so the guarantee lives in raw SQL only:
 /// `users_single_owner_key` is a unique index on a constant expression with
@@ -88,6 +99,7 @@ model User {
   totpCredential   TotpCredential?
   recoveryCodes    RecoveryCode[]
   athleteProfile   AthleteProfile?
+  documents        IdentityDocument[]
   @@map("users")
 }
 
@@ -113,6 +125,33 @@ model AthleteProfile {
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("athlete_profiles")
+}
+
+/// One uploaded identity document. The row only points at a blob: it holds the
+/// opaque object key, the encryption envelope and the digest of the scanned
+/// bytes, never the bytes, a file name or a URL. The format CHECKs and the
+/// withheld DELETE privilege live in the migration.
+model IdentityDocument {
+  id           String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerUserId  String         @map("owner_user_id") @db.Uuid
+  kind         DocumentKind
+  /// Random UUID from createObjectKey(); never a user id, name or extension.
+  objectKey    String         @unique @map("object_key")
+  contentType  String         @map("content_type")
+  sizeBytes    Int            @map("size_bytes")
+  /// Hex SHA-256 of the sanitized bytes that were encrypted.
+  sha256       String         @db.Char(64)
+  keyId        String         @map("key_id")
+  wrappedDek   Bytes          @map("wrapped_dek")
+  iv           Bytes
+  authTag      Bytes          @map("auth_tag")
+  status       DocumentStatus @default(ACTIVE)
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt    DateTime?      @map("deleted_at") @db.Timestamptz(6)
+  owner        User           @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+
+  @@index([ownerUserId, status])
+  @@map("identity_document")
 }
 
 model Device {
