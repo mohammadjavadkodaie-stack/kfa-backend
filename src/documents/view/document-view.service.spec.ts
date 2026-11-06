@@ -594,7 +594,10 @@ describe('DocumentViewService', () => {
         { documentId: harness.document.id },
         NOW_MS,
       );
-      const tampered = `${link.token.slice(0, -1)}${link.token.endsWith('A') ? 'B' : 'A'}`;
+      // One character of the payload segment: the last character of a base64url
+      // signature carries two padding bits, so flipping it can decode to the very
+      // same 32 bytes and the "tampered" token would still verify.
+      const tampered = `${link.token.startsWith('A') ? 'B' : 'A'}${link.token.slice(1)}`;
 
       const error = await rejection(harness.service.redeem(tampered, NOW_MS));
 
