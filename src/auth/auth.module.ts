@@ -11,6 +11,7 @@ import { AuthService } from './auth.service';
 import { MeController } from './me.controller';
 import { CaptchaProvider, CAPTCHA_PROVIDER, FakeCaptchaProvider } from './captcha/captcha.provider';
 import { AuthGuard } from './guards/auth.guard';
+import { EmailProofService } from './email/email-proof';
 import { OriginCheckGuard } from './guards/origin.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { OtpController } from './otp/otp.controller';
@@ -70,6 +71,7 @@ import { TotpModule } from './totp/totp.module';
       useClass: PrismaSessionRepository,
     },
     ProofTokenService,
+    EmailProofService,
     OtpService,
     AuthService,
     PhoneChangeService,
