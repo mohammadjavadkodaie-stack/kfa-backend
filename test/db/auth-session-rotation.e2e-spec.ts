@@ -195,12 +195,15 @@ describeWithDatabase('auth session rotation (PostgreSQL)', () => {
       refreshExpiresAt: new Date(now.getTime() + seconds(3_600)),
     };
     const existing = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    // The seeded fixture owns a number; `phone` is nullable since E2-a.
+    const existingPhone = existing.phone;
+    if (existingPhone === null) throw new Error('the seeded user must own a phone number');
 
     await expect(
       sessions.createAccount({
         ...shared,
         userId: randomUUID(),
-        phone: existing.phone,
+        phone: existingPhone,
         username: username(),
       }),
     ).resolves.toBeNull();

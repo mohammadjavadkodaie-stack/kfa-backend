@@ -85,7 +85,12 @@ enum DocumentStatus {
 /// prisma/migrations/20261107120000_single_owner_partial_index/migration.sql.
 model User {
   id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  phone            String       @unique
+  /// Optional since E2-a: an email-only account has no number. Still unique.
+  phone            String?      @unique
+  /// Stored normalized (lowercase, ASCII/punycode domain); NULL until linked.
+  email            String?      @unique
+  passwordHash     String?      @map("password_hash")
+  emailVerifiedAt  DateTime?    @map("email_verified_at") @db.Timestamptz(6)
   username         String       @unique
   role             Role         @default(USER)
   /// Permission to verify identities, granted independently of `role`.
