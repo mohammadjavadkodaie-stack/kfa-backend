@@ -29,6 +29,7 @@ describe('buildRedactPaths', () => {
       'AUDIT_HMAC_KEY',
       'RATE_LIMIT_HMAC_KEY',
       'DOCUMENT_VIEW_TOKEN_SECRET',
+      'EMAIL_CODE_HMAC_KEY',
       'S3_ACCESS_KEY_ID',
       'S3_SECRET_ACCESS_KEY',
     ]) {
@@ -47,6 +48,27 @@ describe('buildRedactPaths', () => {
     expect(paths).toContain('password');
     expect(paths).toContain('*.otp');
     expect(paths).toContain('*.*.*.refreshToken');
+  });
+
+  it('covers the email identity fields at three nesting levels', () => {
+    const paths = buildRedactPaths();
+
+    for (const field of [
+      'email',
+      'emailCode',
+      'password',
+      'newPassword',
+      'currentPassword',
+      'passwordHash',
+      'password_hash',
+    ]) {
+      expect(paths).toContain(`req.body.${field}`);
+      expect(paths).toContain(`res.body.${field}`);
+
+      for (const prefix of ['', '*.', '*.*.', '*.*.*.']) {
+        expect(paths).toContain(`${prefix}${field}`);
+      }
+    }
   });
 
   it('returns no duplicates', () => {
@@ -151,6 +173,65 @@ describe('pino redaction', () => {
     expect(output).not.toContain('p@ssw0rd');
     expect(output).not.toContain('123456');
     expect(output).toContain('request-id-1234');
+  });
+
+  it('redacts email and every password variant at any depth', () => {
+    const { logger, lines } = createCapturingLogger();
+
+    logger.info(
+      {
+        email: 'user@example.com',
+        emailCode: '654321',
+        newPassword: 'new-p@ssw0rd',
+        nested: { currentPassword: 'current-p@ssw0rd', passwordHash: 'bcrypt-hash-value' },
+        deeper: { inner: { password_hash: 'another-hash-value' } },
+      },
+      'account updated',
+    );
+
+    const output = lines.join('');
+
+    for (const value of [
+      'user@example.com',
+      '654321',
+      'new-p@ssw0rd',
+      'current-p@ssw0rd',
+      'bcrypt-hash-value',
+      'another-hash-value',
+    ]) {
+      expect(output).not.toContain(value);
+    }
+
+    expect(output).toContain(REDACTED);
+    expect(output).toContain('account updated');
+  });
+
+  it('never emits the email code HMAC key', () => {
+    const { logger, lines } = createCapturingLogger();
+    const secret = 'test-only-email-code-hmac-key-0123456789';
+
+    logger.info(
+      { EMAIL_CODE_HMAC_KEY: secret, env: { EMAIL_CODE_HMAC_KEY: secret } },
+      'configuration loaded',
+    );
+
+    const output = lines.join('');
+
+    expect(output).not.toContain(secret);
+    expect(output).toContain(REDACTED);
+  });
+
+  it('keeps non-sensitive identity fields such as username and role', () => {
+    const { logger, lines } = createCapturingLogger();
+
+    logger.info({ username: 'ada', role: 'ADMIN', userId: 'user-1' }, 'identity resolved');
+
+    const output = lines.join('');
+
+    expect(output).toContain('"username":"ada"');
+    expect(output).toContain('"role":"ADMIN"');
+    expect(output).toContain('"userId":"user-1"');
+    expect(output).not.toContain(REDACTED);
   });
 });
 

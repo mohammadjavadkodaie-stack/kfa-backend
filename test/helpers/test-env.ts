@@ -18,6 +18,8 @@ export const TEST_ENV = {
   RATE_LIMIT_HMAC_KEY: 'test-only-rate-limit-hmac-key-0123456789',
   /** Fixed, fake key for OTP proof tokens; tests must never depend on a real secret. */
   OTP_PROOF_SECRET: 'test-only-otp-proof-secret-0123456789abcdef',
+  /** Fake email-code HMAC key: long enough for the production rule, distinct from every other secret. */
+  EMAIL_CODE_HMAC_KEY: 'test-only-email-code-hmac-key-0123456789',
   /** Fake access-token secret; production-only validation is covered by env.spec. */
   ACCESS_TOKEN_SECRET: 'test-only-access-token-secret-0123456789abcdef',
   /**
@@ -35,6 +37,12 @@ export const TEST_ENV = {
   SESSIONS_MAX_PER_USER: '10',
   /** Small enough to hit the deployment cap in a test, large enough to be realistic. */
   OTP_GLOBAL_SENDS_PER_HOUR: '500',
+  /** Email code lifetime and attempt budget; tests override these to hit the limits. */
+  EMAIL_CODE_TTL_SECONDS: '600',
+  EMAIL_CODE_MAX_ATTEMPTS: '5',
+  EMAIL_GLOBAL_SENDS_PER_HOUR: '500',
+  /** Email transport: only the fake adapter exists so far, and tests never send mail. */
+  EMAIL_PROVIDER: 'fake',
   /**
    * The fake providers are the only ones wired up so far, and production
    * additionally requires non-fake values. Keeping both keys here means

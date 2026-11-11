@@ -11,6 +11,12 @@ export const REDACTED_VALUE = '[REDACTED]';
 
 export const SENSITIVE_METADATA_KEYS = [
   'password',
+  'newPassword',
+  'currentPassword',
+  'passwordHash',
+  'password_hash',
+  'email',
+  'emailCode',
   'code',
   'otp',
   'token',

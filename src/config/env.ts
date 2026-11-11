@@ -23,6 +23,9 @@ export const RATE_LIMIT_HMAC_KEY_MIN_LENGTH = 32;
 /** Minimum accepted length of the OTP proof-token HMAC secret. */
 export const OTP_PROOF_SECRET_MIN_LENGTH = 32;
 
+/** Minimum accepted length of the email code HMAC key. */
+export const EMAIL_CODE_HMAC_KEY_MIN_LENGTH = 32;
+
 /** Minimum accepted length of the access-token signing secret. */
 export const ACCESS_TOKEN_SECRET_MIN_LENGTH = 32;
 
@@ -278,6 +281,8 @@ export const envSchema = z
       .default(100 * 1024),
     OTP_PROVIDER: z.string().min(1).default('fake'),
     CAPTCHA_PROVIDER: z.string().min(1).default('fake'),
+    /** Email transport for the email identity flow. Fake is development only. */
+    EMAIL_PROVIDER: z.string().min(1).default('fake'),
 
     /**
      * Runtime connection string (role `kfa_app`, no DDL privileges).
@@ -328,6 +333,21 @@ export const envSchema = z
       .min(
         OTP_PROOF_SECRET_MIN_LENGTH,
         `must be at least ${OTP_PROOF_SECRET_MIN_LENGTH} characters`,
+      )
+      .max(1024, 'must be at most 1024 characters')
+      .optional(),
+
+    /**
+     * HMAC key for hashed email codes (the email identity flow). Optional
+     * outside production, exactly like OTP_PROOF_SECRET, so a local checkout can
+     * boot without one; production requires it. It must be independent from
+     * every other secret so one leak cannot forge another value.
+     */
+    EMAIL_CODE_HMAC_KEY: z
+      .string()
+      .min(
+        EMAIL_CODE_HMAC_KEY_MIN_LENGTH,
+        `must be at least ${EMAIL_CODE_HMAC_KEY_MIN_LENGTH} characters`,
       )
       .max(1024, 'must be at most 1024 characters')
       .optional(),
@@ -484,6 +504,15 @@ export const envSchema = z
     /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
     OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
 
+    /** Lifetime of one email code. Short by design, with room for slow delivery. */
+    EMAIL_CODE_TTL_SECONDS: z.coerce.number().int().min(300).max(900).default(600),
+
+    /** Wrong-code attempts allowed per email code before it is burnt. */
+    EMAIL_CODE_MAX_ATTEMPTS: z.coerce.number().int().min(3).max(10).default(5),
+
+    /** Hard cap on email sends per hour across all addresses (protects the bill). */
+    EMAIL_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
+
     /**
      * HS256 secret for access tokens (Stage 2.3a). Required in production and
      * independent from every other secret, so one leak cannot mint another token.
@@ -541,6 +570,24 @@ export const envSchema = z
         code: 'custom',
         path: ['OTP_PROOF_SECRET'],
         message: 'must differ from the audit and rate-limit HMAC keys',
+      });
+    }
+
+    // Same rule as every other secret: the email code key may not be a value
+    // that already signs (or encrypts) something else.
+    if (
+      env.EMAIL_CODE_HMAC_KEY !== undefined &&
+      [
+        env.AUDIT_HMAC_KEY,
+        env.RATE_LIMIT_HMAC_KEY,
+        env.OTP_PROOF_SECRET,
+        env.ACCESS_TOKEN_SECRET,
+      ].includes(env.EMAIL_CODE_HMAC_KEY)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['EMAIL_CODE_HMAC_KEY'],
+        message: 'must differ from the audit, rate-limit, proof and access-token secrets',
       });
     }
 
@@ -719,6 +766,14 @@ export const envSchema = z
       });
     }
 
+    if (env.EMAIL_CODE_HMAC_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['EMAIL_CODE_HMAC_KEY'],
+        message: 'is required in production',
+      });
+    }
+
     if (env.TOTP_ENC_KEY === undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -773,6 +828,13 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['CAPTCHA_PROVIDER'],
+        message: 'must be non-fake in production',
+      });
+    }
+    if (env.EMAIL_PROVIDER === 'fake' || env.EMAIL_PROVIDER === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['EMAIL_PROVIDER'],
         message: 'must be non-fake in production',
       });
     }

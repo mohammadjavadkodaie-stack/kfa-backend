@@ -8,8 +8,10 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
   ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
   DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
+  EMAIL_CODE_HMAC_KEY: 'unit-test-email-code-hmac-key-0123456789',
   OTP_PROVIDER: 'fake',
   CAPTCHA_PROVIDER: 'fake',
+  EMAIL_PROVIDER: 'fake',
 };
 
 const VALID_ENV: NodeJS.ProcessEnv = {
@@ -42,6 +44,7 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   DOCUMENT_MASTER_KEY: PROD_DOCUMENT_MASTER_KEY,
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
+  EMAIL_PROVIDER: 'ses',
 };
 
 /** A complete object store configuration: MinIO in development, S3 elsewhere. */
@@ -98,6 +101,34 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
     { ...BASE_ENV, OTP_PROOF_SECRET: 'unit-test-rate-limit-hmac-key-0123456789' },
   ],
   ['a missing OTP_PROOF_SECRET in production', { ...PROD_ENV, OTP_PROOF_SECRET: undefined }],
+  ['a short EMAIL_CODE_HMAC_KEY', { ...BASE_ENV, EMAIL_CODE_HMAC_KEY: 'too-short' }],
+  [
+    'an EMAIL_CODE_HMAC_KEY equal to the audit key',
+    { ...BASE_ENV, EMAIL_CODE_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789' },
+  ],
+  [
+    'an EMAIL_CODE_HMAC_KEY equal to the rate-limit key',
+    { ...BASE_ENV, EMAIL_CODE_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789' },
+  ],
+  [
+    'an EMAIL_CODE_HMAC_KEY equal to the proof secret',
+    { ...BASE_ENV, EMAIL_CODE_HMAC_KEY: 'unit-test-otp-proof-secret-0123456789abcdef' },
+  ],
+  [
+    'an EMAIL_CODE_HMAC_KEY equal to the access-token secret',
+    { ...BASE_ENV, EMAIL_CODE_HMAC_KEY: 'unit-test-access-token-secret-0123456789abcdef' },
+  ],
+  ['a missing EMAIL_CODE_HMAC_KEY in production', { ...PROD_ENV, EMAIL_CODE_HMAC_KEY: undefined }],
+  ['a fake EMAIL_PROVIDER in production', { ...PROD_ENV, EMAIL_PROVIDER: 'fake' }],
+  ['an EMAIL_CODE_TTL_SECONDS below the minimum', { ...BASE_ENV, EMAIL_CODE_TTL_SECONDS: '299' }],
+  ['an EMAIL_CODE_TTL_SECONDS above the maximum', { ...BASE_ENV, EMAIL_CODE_TTL_SECONDS: '901' }],
+  ['an EMAIL_CODE_MAX_ATTEMPTS below the minimum', { ...BASE_ENV, EMAIL_CODE_MAX_ATTEMPTS: '2' }],
+  ['an EMAIL_CODE_MAX_ATTEMPTS above the maximum', { ...BASE_ENV, EMAIL_CODE_MAX_ATTEMPTS: '11' }],
+  ['a non positive EMAIL_GLOBAL_SENDS_PER_HOUR', { ...BASE_ENV, EMAIL_GLOBAL_SENDS_PER_HOUR: '0' }],
+  [
+    'an EMAIL_GLOBAL_SENDS_PER_HOUR above the cap',
+    { ...BASE_ENV, EMAIL_GLOBAL_SENDS_PER_HOUR: '100001' },
+  ],
   ['a short DOCUMENT_VIEW_TOKEN_SECRET', { ...BASE_ENV, DOCUMENT_VIEW_TOKEN_SECRET: 'too-short' }],
   [
     'a DOCUMENT_VIEW_TOKEN_SECRET equal to the access-token secret',
@@ -217,12 +248,17 @@ describe('loadEnv', () => {
       BODY_LIMIT_BYTES: 2048,
       OTP_PROVIDER: 'fake',
       CAPTCHA_PROVIDER: 'fake',
+      EMAIL_PROVIDER: 'fake',
       DATABASE_URL: 'postgresql://kfa_app:app-secret@127.0.0.1:5432/kfa?schema=public',
       AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
       REDIS_URL: 'redis://:dev-only-change-me@127.0.0.1:6380/0',
       RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
       OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
+      EMAIL_CODE_HMAC_KEY: 'unit-test-email-code-hmac-key-0123456789',
       OTP_GLOBAL_SENDS_PER_HOUR: 500,
+      EMAIL_CODE_TTL_SECONDS: 600,
+      EMAIL_CODE_MAX_ATTEMPTS: 5,
+      EMAIL_GLOBAL_SENDS_PER_HOUR: 500,
       ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
       DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
       ACCESS_TOKEN_TTL_SECONDS: 600,
@@ -243,6 +279,11 @@ describe('loadEnv', () => {
     expect(env.TRUSTED_PROXY_COUNT).toBe(0);
     expect(env.BODY_LIMIT_BYTES).toBe(102_400);
     expect(env.MIGRATION_DATABASE_URL).toBeUndefined();
+    expect(env.OTP_GLOBAL_SENDS_PER_HOUR).toBe(500);
+    expect(env.EMAIL_PROVIDER).toBe('fake');
+    expect(env.EMAIL_CODE_TTL_SECONDS).toBe(600);
+    expect(env.EMAIL_CODE_MAX_ATTEMPTS).toBe(5);
+    expect(env.EMAIL_GLOBAL_SENDS_PER_HOUR).toBe(500);
   });
 
   it('treats the shared Redis store and its HMAC key as optional outside production', () => {
@@ -336,6 +377,70 @@ describe('loadEnv', () => {
       loadEnv({ ...PROD_ENV, OTP_PROOF_SECRET: PROD_ENV.RATE_LIMIT_HMAC_KEY as string }),
     ).toThrow(/OTP_PROOF_SECRET.*must differ/);
     expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
+  });
+
+  it('keeps the email code key optional outside production', () => {
+    expect(
+      loadEnv({ ...BASE_ENV, EMAIL_CODE_HMAC_KEY: undefined }).EMAIL_CODE_HMAC_KEY,
+    ).toBeUndefined();
+    expect(loadEnv({ ...BASE_ENV }).EMAIL_CODE_HMAC_KEY).toBe(
+      'unit-test-email-code-hmac-key-0123456789',
+    );
+  });
+
+  it('requires the email code key in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, EMAIL_CODE_HMAC_KEY: undefined })).toThrow(
+      /EMAIL_CODE_HMAC_KEY.*required in production/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
+  });
+
+  it('never allows the email code key to double as another secret', () => {
+    const otherSecrets = [
+      'AUDIT_HMAC_KEY',
+      'RATE_LIMIT_HMAC_KEY',
+      'OTP_PROOF_SECRET',
+      'ACCESS_TOKEN_SECRET',
+    ] as const;
+
+    for (const name of otherSecrets) {
+      expect(() => loadEnv({ ...PROD_ENV, EMAIL_CODE_HMAC_KEY: PROD_ENV[name] as string })).toThrow(
+        /EMAIL_CODE_HMAC_KEY.*must differ/,
+      );
+    }
+
+    expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
+  });
+
+  it('accepts the email settings at their boundaries', () => {
+    const lowest = loadEnv({
+      ...BASE_ENV,
+      EMAIL_CODE_TTL_SECONDS: '300',
+      EMAIL_CODE_MAX_ATTEMPTS: '3',
+      EMAIL_GLOBAL_SENDS_PER_HOUR: '1',
+    });
+
+    expect(lowest.EMAIL_CODE_TTL_SECONDS).toBe(300);
+    expect(lowest.EMAIL_CODE_MAX_ATTEMPTS).toBe(3);
+    expect(lowest.EMAIL_GLOBAL_SENDS_PER_HOUR).toBe(1);
+
+    const highest = loadEnv({
+      ...BASE_ENV,
+      EMAIL_CODE_TTL_SECONDS: '900',
+      EMAIL_CODE_MAX_ATTEMPTS: '10',
+      EMAIL_GLOBAL_SENDS_PER_HOUR: '100000',
+    });
+
+    expect(highest.EMAIL_CODE_TTL_SECONDS).toBe(900);
+    expect(highest.EMAIL_CODE_MAX_ATTEMPTS).toBe(10);
+    expect(highest.EMAIL_GLOBAL_SENDS_PER_HOUR).toBe(100_000);
+  });
+
+  it('rejects a fake email provider in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, EMAIL_PROVIDER: 'fake' })).toThrow(
+      /EMAIL_PROVIDER.*non-fake/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV, EMAIL_PROVIDER: 'ses' })).not.toThrow();
   });
 
   it('keeps the TOTP encryption key optional outside production', () => {

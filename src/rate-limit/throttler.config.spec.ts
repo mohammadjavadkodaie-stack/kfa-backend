@@ -27,6 +27,9 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
+  // Required from E2-b1 on; production refuses the fake email transport.
+  EMAIL_PROVIDER: 'ses',
+  EMAIL_CODE_HMAC_KEY: 'unit-test-email-code-hmac-key-0123456789',
 };
 
 /** The function only needs the abstract storage contract, so a stub is enough. */

@@ -17,7 +17,7 @@ describe('redactMetadata', () => {
     });
 
     expect(result).toEqual({
-      email: 'user@example.com',
+      email: REDACTED_VALUE,
       password: REDACTED_VALUE,
       PASSWORD_HASH: REDACTED_VALUE,
       profile: {
@@ -28,6 +28,30 @@ describe('redactMetadata', () => {
         idNumber: REDACTED_VALUE,
         cardNumber: REDACTED_VALUE,
       },
+    });
+  });
+
+  it('redacts email and every password variant at any depth', () => {
+    const result = redactMetadata({
+      email: 'user@example.com',
+      emailCode: '123456',
+      newPassword: 'new-p@ssw0rd',
+      currentPassword: 'current-p@ssw0rd',
+      passwordHash: 'bcrypt-hash',
+      password_hash: 'bcrypt-hash',
+      nested: { deeper: { EMAIL: 'other@example.com', email_code: '654321' } },
+      attempts: [{ email: 'third@example.com' }],
+    });
+
+    expect(result).toEqual({
+      email: REDACTED_VALUE,
+      emailCode: REDACTED_VALUE,
+      newPassword: REDACTED_VALUE,
+      currentPassword: REDACTED_VALUE,
+      passwordHash: REDACTED_VALUE,
+      password_hash: REDACTED_VALUE,
+      nested: { deeper: { EMAIL: REDACTED_VALUE, email_code: REDACTED_VALUE } },
+      attempts: [{ email: REDACTED_VALUE }],
     });
   });
 
@@ -99,8 +123,18 @@ describe('redactMetadata', () => {
   });
 
   it('keeps non-sensitive values intact', () => {
-    expect(redactMetadata({ userId: 'abc', ok: true, count: 3 })).toEqual({
+    expect(
+      redactMetadata({
+        userId: 'abc',
+        username: 'ada',
+        role: 'ADMIN',
+        ok: true,
+        count: 3,
+      }),
+    ).toEqual({
       userId: 'abc',
+      username: 'ada',
+      role: 'ADMIN',
       ok: true,
       count: 3,
     });
@@ -123,7 +157,11 @@ describe('isSensitiveMetadataKey', () => {
     ['cardNumber', true],
     ['idNumber', true],
     ['clientSecret', true],
-    ['email', false],
+    ['email', true],
+    ['Email', true],
+    ['email_code', true],
+    ['username', false],
+    ['role', false],
     ['requestId', false],
   ])('%s -> %s', (key, expected) => {
     expect(isSensitiveMetadataKey(key)).toBe(expected);

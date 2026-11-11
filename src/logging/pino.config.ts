@@ -19,6 +19,12 @@ const SENSITIVE_HEADER_PATHS = [
 /** Body/context fields (any nesting level up to 3) that must be redacted. */
 const SENSITIVE_FIELDS = [
   'password',
+  'newPassword',
+  'currentPassword',
+  'passwordHash',
+  'password_hash',
+  'email',
+  'emailCode',
   'code',
   'otp',
   'token',
@@ -53,6 +59,7 @@ const SENSITIVE_CONFIG_PATHS = [
   'AUDIT_HMAC_KEY',
   'RATE_LIMIT_HMAC_KEY',
   'OTP_PROOF_SECRET',
+  'EMAIL_CODE_HMAC_KEY',
   'ACCESS_TOKEN_SECRET',
   'TOTP_ENC_KEY',
   'DOCUMENT_MASTER_KEY',

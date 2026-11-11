@@ -121,7 +121,7 @@ describe('AuditService.record', () => {
     });
 
     expect(createdData(tx).metadata).toEqual({
-      email: 'user@example.com',
+      email: REDACTED_VALUE,
       password: REDACTED_VALUE,
       nested: { otp: REDACTED_VALUE },
     });
