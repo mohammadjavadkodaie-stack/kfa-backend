@@ -49,8 +49,11 @@ export const REFRESH_IP_LIMIT = { limit: 60, windowSeconds: 300 } as const;
 export const LOGOUT_IP_LIMIT = { limit: 30, windowSeconds: 300 } as const;
 /** Shared per-user budget for listing and revoking sessions. */
 export const SESSIONS_USER_LIMIT = { limit: 30, windowSeconds: 60 } as const;
+/** Per-user budget for the read-only bootstrap route. */
+export const ME_USER_LIMIT = { limit: 60, windowSeconds: 60 } as const;
 
 const SESSIONS_USER_SCOPE = 'sessions-user';
+const ME_USER_SCOPE = 'me-user';
 const SECONDS_PER_DAY = 86_400;
 const MAX_DEVICE_LABEL_LENGTH = 100;
 
@@ -115,6 +118,20 @@ export type RevokeSessionResult =
 
 export type LogoutAllResult =
   | { readonly outcome: 'ok' }
+  | { readonly outcome: 'throttled'; readonly retryAfterSeconds: number };
+
+/** The four values the UI needs to render itself; nothing else is read out. */
+export interface SelfProfile {
+  readonly username: string;
+  readonly role: Role;
+  readonly status: 'ACTIVE' | 'BLOCKED';
+  readonly hasAthleteProfile: boolean;
+}
+
+export type GetMeResult =
+  | { readonly outcome: 'ok'; readonly profile: SelfProfile }
+  /** The account vanished or was blocked between the guard and this read. */
+  | { readonly outcome: 'unauthorized' }
   | { readonly outcome: 'throttled'; readonly retryAfterSeconds: number };
 
 @Injectable()
@@ -525,6 +542,40 @@ export class AuthService {
     );
 
     return { outcome: 'ok' };
+  }
+
+  /**
+   * The caller's own account, as four fields.
+   *
+   * Read-only and side-effect free: no audit row and no log line, because the
+   * answer is a description of the caller and carries nothing an operator would
+   * need to trace. The id comes from the verified access token's session, so a
+   * query string cannot select another account.
+   */
+  async getMe(principal: SessionPrincipal): Promise<GetMeResult> {
+    const throttle = await this.enforceLimit(ME_USER_SCOPE, principal.userId, ME_USER_LIMIT);
+
+    if (throttle !== null) {
+      return { outcome: 'throttled', retryAfterSeconds: throttle };
+    }
+
+    const record = await this.sessions.findSelfProfile(principal.userId);
+
+    // Same answer as the guard: a vanished or blocked account is simply no
+    // longer authenticated, and the client learns nothing else.
+    if (record === null || record.status !== 'ACTIVE') {
+      return { outcome: 'unauthorized' };
+    }
+
+    return {
+      outcome: 'ok',
+      profile: {
+        username: record.username,
+        role: record.role,
+        status: record.status,
+        hasAthleteProfile: record.hasAthleteProfile,
+      },
+    };
   }
 
   /** Returns the retry hint when the budget is exhausted, or null when allowed. */

@@ -41,6 +41,19 @@ export interface ActiveSessionRecord {
   readonly status: 'ACTIVE' | 'BLOCKED';
 }
 
+/**
+ * What the caller may learn about its own account at boot.
+ *
+ * Deliberately four fields: no phone, no id, no timestamps and no flags beyond
+ * the one the UI needs to decide whether to send the user to the profile form.
+ */
+export interface SelfProfileRecord {
+  readonly username: string;
+  readonly role: Role;
+  readonly status: 'ACTIVE' | 'BLOCKED';
+  readonly hasAthleteProfile: boolean;
+}
+
 /** Everything a client needs after a session was created or rotated. */
 export interface IssuedSessionRecord {
   readonly userId: string;
@@ -144,6 +157,12 @@ export interface SessionRepository {
   findUsernameByUserId(userId: string): Promise<string | null>;
   /** Administrative view of one account, or null when the id owns no row. */
   findUserById(userId: string): Promise<AdminUserRecord | null>;
+  /**
+   * Self-description behind `GET /auth/me`, or null when the account is gone.
+   * One query: the profile flag is decided by the database, not by a second
+   * round trip the caller could race.
+   */
+  findSelfProfile(userId: string): Promise<SelfProfileRecord | null>;
   /**
    * Compare-and-set on the status: one statement with the expected value in the
    * predicate, so two callers holding the same expectation cannot both win.

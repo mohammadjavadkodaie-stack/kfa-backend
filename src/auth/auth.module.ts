@@ -8,6 +8,7 @@ import { RateLimitModule } from '../rate-limit/rate-limit.module';
 import { REDIS_CLIENT } from '../rate-limit/redis-throttler.storage';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { MeController } from './me.controller';
 import { CaptchaProvider, CAPTCHA_PROVIDER, FakeCaptchaProvider } from './captcha/captcha.provider';
 import { AuthGuard } from './guards/auth.guard';
 import { OriginCheckGuard } from './guards/origin.guard';
@@ -35,7 +36,7 @@ import { TotpModule } from './totp/totp.module';
 
 @Module({
   imports: [RateLimitModule, AuditModule, PrismaModule, TotpModule],
-  controllers: [OtpController, AuthController, PhoneChangeController, TotpController],
+  controllers: [OtpController, AuthController, MeController, PhoneChangeController, TotpController],
   providers: [
     {
       provide: OTP_PROVIDER,
@@ -100,8 +101,12 @@ import { TotpModule } from './totp/totp.module';
   ],
 })
 export class AuthModule implements NestModule {
-  /** Second-factor bodies must never be cached, guard refusals included. */
+  /**
+   * Second-factor bodies must never be cached, guard refusals included; the
+   * self-description is per-account and must not be stored by a shared cache
+   * either.
+   */
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(noStoreMiddleware).forRoutes(TotpController);
+    consumer.apply(noStoreMiddleware).forRoutes(TotpController, MeController);
   }
 }

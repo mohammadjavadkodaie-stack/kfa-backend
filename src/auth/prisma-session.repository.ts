@@ -12,6 +12,7 @@ import type {
   IssuedSessionRecord,
   RotateRefreshTokenInput,
   RotateRefreshTokenResult,
+  SelfProfileRecord,
   SessionRepository,
   SessionSummaryRecord,
 } from './session.repository';
@@ -100,6 +101,36 @@ export class PrismaSessionRepository implements SessionRepository {
     const role = parseRole(user.role);
 
     return role === null ? null : { id: user.id, role, status: user.status };
+  }
+
+  /**
+   * One row, four columns. The relation is selected as a bare primary key, so
+   * the flag costs no second query and no profile field ever leaves the store.
+   */
+  async findSelfProfile(userId: string): Promise<SelfProfileRecord | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        username: true,
+        role: true,
+        status: true,
+        athleteProfile: { select: { id: true } },
+      },
+    });
+
+    if (user === null) return null;
+
+    // Same fail-closed rule as the guard: an unknown role describes nobody.
+    const role = parseRole(user.role);
+
+    if (role === null) return null;
+
+    return {
+      username: user.username,
+      role,
+      status: user.status,
+      hasAthleteProfile: user.athleteProfile !== null,
+    };
   }
 
   /**

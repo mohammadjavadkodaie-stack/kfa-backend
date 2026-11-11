@@ -11,6 +11,7 @@ import type {
   IssuedSessionRecord,
   RotateRefreshTokenInput,
   RotateRefreshTokenResult,
+  SelfProfileRecord,
   SessionRepository,
   SessionSummaryRecord,
 } from './session.repository';
@@ -58,6 +59,8 @@ export class InMemorySessionRepository implements SessionRepository {
   readonly users = new Map<string, FakeUser>();
   readonly sessions = new Map<string, FakeSession>();
   readonly refreshTokens = new Map<string, FakeRefreshToken>();
+  /** User ids that own an athlete profile; a set, because only its presence counts. */
+  readonly athleteProfiles = new Set<string>();
   readonly revokedSessions: { sessionId: string; reason: string }[] = [];
 
   /** Set to throw from `createSession`, to test error paths. */
@@ -87,6 +90,19 @@ export class InMemorySessionRepository implements SessionRepository {
     const user = this.users.get(userId);
 
     return user === undefined ? null : { id: user.id, role: user.role, status: user.status };
+  }
+
+  async findSelfProfile(userId: string): Promise<SelfProfileRecord | null> {
+    const user = this.users.get(userId);
+
+    if (user === undefined) return null;
+
+    return {
+      username: user.username,
+      role: user.role,
+      status: user.status,
+      hasAthleteProfile: this.athleteProfiles.has(userId),
+    };
   }
 
   /** Check and write without an await in between: the in-process row lock. */
@@ -441,6 +457,14 @@ export class InMemorySessionRepository implements SessionRepository {
 
     if (access.role !== undefined) user.role = access.role;
     if (access.identityVerifier !== undefined) user.identityVerifier = access.identityVerifier;
+  }
+
+  /**
+   * Test helper: gives one account an athlete profile, the way completing the
+   * profile form would. Only the presence of the row is ever read back.
+   */
+  seedAthleteProfile(userId: string): void {
+    this.athleteProfiles.add(userId);
   }
 
   private insertSession(input: {
