@@ -1,3 +1,5 @@
+export const EMAIL_CODE_STORE = Symbol('EMAIL_CODE_STORE');
+
 export type EmailCodeVerifyResult = 'ok' | 'wrong' | 'locked_now' | 'locked' | 'missing';
 
 export interface EmailCodeStore {

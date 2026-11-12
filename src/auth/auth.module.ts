@@ -11,7 +11,15 @@ import { AuthService } from './auth.service';
 import { MeController } from './me.controller';
 import { CaptchaProvider, CAPTCHA_PROVIDER, FakeCaptchaProvider } from './captcha/captcha.provider';
 import { AuthGuard } from './guards/auth.guard';
+import { createEmailProvider, EMAIL_PROVIDER, type EmailProvider } from './email/email.provider';
+import { EmailCodeService } from './email/email-code.service';
 import { EmailProofService } from './email/email-proof';
+import {
+  EMAIL_CODE_STORE,
+  RedisEmailCodeStore,
+  type EmailCodeRedisClient,
+  type EmailCodeStore,
+} from './email/email-code.store';
 import { OriginCheckGuard } from './guards/origin.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { OtpController } from './otp/otp.controller';
@@ -47,6 +55,12 @@ import { TotpModule } from './totp/totp.module';
         createOtpProvider(env),
     },
     {
+      provide: EMAIL_PROVIDER,
+      inject: [ENV],
+      useFactory: (env: Pick<Env, 'NODE_ENV' | 'EMAIL_PROVIDER'>): EmailProvider =>
+        createEmailProvider(env),
+    },
+    {
       provide: CAPTCHA_PROVIDER,
       inject: [ENV],
       useFactory: (env: { CAPTCHA_PROVIDER: string }): CaptchaProvider => {
@@ -65,6 +79,14 @@ import { TotpModule } from './totp/totp.module';
           : new RedisProofNonceStore(client as ProofRedisClient),
     },
     {
+      provide: EMAIL_CODE_STORE,
+      inject: [REDIS_CLIENT],
+      useFactory: (client: unknown): EmailCodeStore | null =>
+        client === null || client === undefined
+          ? null
+          : new RedisEmailCodeStore(client as EmailCodeRedisClient),
+    },
+    {
       // Swapped for the in-memory fake in the service tests; the singleton keeps
       // a single Prisma-backed instance for the whole process.
       provide: SESSION_REPOSITORY,
@@ -72,6 +94,7 @@ import { TotpModule } from './totp/totp.module';
     },
     ProofTokenService,
     EmailProofService,
+    EmailCodeService,
     OtpService,
     AuthService,
     PhoneChangeService,
