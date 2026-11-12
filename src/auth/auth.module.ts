@@ -1,3 +1,5 @@
+import { PasswordService } from './password/password.service';
+
 import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { noStoreMiddleware } from '../common/middleware/no-store.middleware';
@@ -105,6 +107,7 @@ import { TotpModule } from './totp/totp.module';
     OriginCheckGuard,
     AccessPolicyService,
     ResourceOwnershipService,
+    PasswordService,
   ],
   exports: [
     OTP_PROVIDER,
