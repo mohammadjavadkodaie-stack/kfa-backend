@@ -8,6 +8,8 @@ import {
   type AthleteProfileRepository,
 } from '../../src/athlete/profile/athlete-profile.repository';
 import { AuthModule } from '../../src/auth/auth.module';
+import { EMAIL_CODE_STORE, type EmailCodeStore } from '../../src/auth/email/email-code.store';
+import { EMAIL_PROVIDER, type EmailProvider } from '../../src/auth/email/email.provider';
 import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/otp/proof-token';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
 import { TOTP_REPOSITORY, type TotpRepository } from '../../src/auth/totp/totp.repository';
@@ -47,6 +49,10 @@ export interface CreateTestAppOptions {
   readonly totpRepository?: TotpRepository;
   /** Lets `ProofTokenService` keep nonces without Redis. */
   readonly proofNonceStore?: ProofNonceStore;
+  /** In-memory one-time codes, so the email flow runs without Redis. */
+  readonly emailCodeStore?: EmailCodeStore;
+  /** Transport fake: no message leaves the process, the code stays readable. */
+  readonly emailProvider?: EmailProvider;
   /** Allows the explicit auth limits without a Redis store. */
   readonly rateLimit?: RateLimitService;
   /** In-memory profiles, so the athlete endpoints run without PostgreSQL. */
@@ -94,6 +100,14 @@ export async function createTestApp(
 
   if (options.proofNonceStore !== undefined) {
     builder = builder.overrideProvider(PROOF_NONCE_STORE).useValue(options.proofNonceStore);
+  }
+
+  if (options.emailCodeStore !== undefined) {
+    builder = builder.overrideProvider(EMAIL_CODE_STORE).useValue(options.emailCodeStore);
+  }
+
+  if (options.emailProvider !== undefined) {
+    builder = builder.overrideProvider(EMAIL_PROVIDER).useValue(options.emailProvider);
   }
 
   if (options.rateLimit !== undefined) {

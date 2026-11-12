@@ -11,6 +11,7 @@ import { REDIS_CLIENT } from '../rate-limit/redis-throttler.storage';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { EmailAuthService } from './email-auth/email-auth.service';
+import { EmailAuthController } from './email-auth/email-auth.controller';
 import { MeController } from './me.controller';
 import { CaptchaProvider, CAPTCHA_PROVIDER, FakeCaptchaProvider } from './captcha/captcha.provider';
 import { AuthGuard } from './guards/auth.guard';
@@ -48,7 +49,14 @@ import { TotpModule } from './totp/totp.module';
 
 @Module({
   imports: [RateLimitModule, AuditModule, PrismaModule, TotpModule],
-  controllers: [OtpController, AuthController, MeController, PhoneChangeController, TotpController],
+  controllers: [
+    OtpController,
+    AuthController,
+    EmailAuthController,
+    MeController,
+    PhoneChangeController,
+    TotpController,
+  ],
   providers: [
     {
       provide: OTP_PROVIDER,
@@ -137,6 +145,6 @@ export class AuthModule implements NestModule {
    * either.
    */
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(noStoreMiddleware).forRoutes(TotpController, MeController);
+    consumer.apply(noStoreMiddleware).forRoutes(TotpController, MeController, EmailAuthController);
   }
 }

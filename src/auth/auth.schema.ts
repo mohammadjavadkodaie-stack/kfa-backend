@@ -24,7 +24,12 @@ export const usernameSchema = z
 const proofSchema = z.string().min(1).max(AUTH_PROOF_MAX_LENGTH);
 
 /** Optional label for the device list; the `User-Agent` is only the fallback. */
-const deviceNameSchema = z.string().trim().min(1).max(AUTH_DEVICE_NAME_MAX_LENGTH).optional();
+export const deviceNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(AUTH_DEVICE_NAME_MAX_LENGTH)
+  .optional();
 
 export const registerSchema = z.strictObject({
   proof: proofSchema,

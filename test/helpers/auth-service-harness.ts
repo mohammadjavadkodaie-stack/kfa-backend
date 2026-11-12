@@ -54,6 +54,13 @@ export interface ConsumeInput {
   readonly windowSeconds: number;
 }
 
+/** The read-only variant: it never adds a hit, so it needs no window. */
+export interface PeekInput {
+  readonly scope: string;
+  readonly identifier: string;
+  readonly limit: number;
+}
+
 interface Counter {
   hits: number;
   expiresAt: number;
@@ -64,9 +71,20 @@ export class FakeRateLimit {
   private readonly counters = new Map<string, Counter>();
   readonly calls: ConsumeInput[] = [];
   private now = 0;
+  /** When set, every `consume` denies with this retry hint, as an empty budget would. */
+  private denied: number | null = null;
+
+  /** Simulates an exhausted budget without filling any counter. */
+  deny(retryAfterSeconds: number): void {
+    this.denied = retryAfterSeconds;
+  }
 
   async consume(input: ConsumeInput): Promise<RateLimitDecision> {
     this.calls.push({ ...input });
+
+    if (this.denied !== null) {
+      return { allowed: false, remaining: 0, retryAfterSeconds: this.denied };
+    }
 
     const key = `${input.scope}:${input.identifier}`;
     const current = this.counters.get(key);
@@ -87,10 +105,30 @@ export class FakeRateLimit {
     };
   }
 
+  /** Reads a budget without billing a hit, like `RateLimitService.peek`. */
+  async peek(input: PeekInput): Promise<RateLimitDecision> {
+    const counter = this.counters.get(`${input.scope}:${input.identifier}`);
+    const hits = counter !== undefined && counter.expiresAt > this.now ? counter.hits : 0;
+
+    if (hits < input.limit) {
+      return { allowed: true, remaining: input.limit - hits, retryAfterSeconds: 0 };
+    }
+
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: Math.max(
+        1,
+        Math.ceil(((counter?.expiresAt ?? this.now) - this.now) / 1_000),
+      ),
+    };
+  }
+
   /** Forgets every window, for specs that need a second budget from scratch. */
   reset(): void {
     this.counters.clear();
     this.calls.length = 0;
+    this.denied = null;
   }
 
   seed(scope: string, identifier: string, hits: number, windowSeconds: number): void {
