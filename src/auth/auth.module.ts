@@ -10,6 +10,7 @@ import { RateLimitModule } from '../rate-limit/rate-limit.module';
 import { REDIS_CLIENT } from '../rate-limit/redis-throttler.storage';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { EmailAuthService } from './email-auth/email-auth.service';
 import { MeController } from './me.controller';
 import { CaptchaProvider, CAPTCHA_PROVIDER, FakeCaptchaProvider } from './captcha/captcha.provider';
 import { AuthGuard } from './guards/auth.guard';
@@ -99,6 +100,7 @@ import { TotpModule } from './totp/totp.module';
     EmailCodeService,
     OtpService,
     AuthService,
+    EmailAuthService,
     PhoneChangeService,
     AuthGuard,
     RolesGuard,

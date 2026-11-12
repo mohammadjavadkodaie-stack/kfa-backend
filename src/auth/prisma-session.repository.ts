@@ -3,11 +3,14 @@ import { PrismaService } from '../database/prisma.service';
 import { parseRole, Role } from './roles';
 import type {
   AccountRecord,
+  EmailAccountRecord,
   ActiveSessionRecord,
   AdminUserRecord,
   ChangePhoneInput,
   ChangePhoneResult,
   CreateAccountInput,
+  CreateEmailAccountInput,
+  CreateEmailAccountResult,
   CreateSessionInput,
   IssuedSessionRecord,
   RotateRefreshTokenInput,
@@ -68,6 +71,35 @@ export class PrismaSessionRepository implements SessionRepository {
     const role = parseRole(user.role);
 
     return role === null ? null : { id: user.id, status: user.status, role };
+  }
+
+  async findUserByEmail(email: string): Promise<EmailAccountRecord | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        username: true,
+        role: true,
+        status: true,
+        passwordHash: true,
+        emailVerifiedAt: true,
+      },
+    });
+    if (user === null) return null;
+    const role = parseRole(user.role);
+    return role === null ? null : { ...user, role };
+  }
+
+  async updatePasswordHash(userId: string, hash: string): Promise<void> {
+    await this.prisma.user.update({ where: { id: userId }, data: { passwordHash: hash } });
+  }
+
+  async isKnownDevice(userId: string, deviceKeyHash: string): Promise<boolean> {
+    const device = await this.prisma.device.findFirst({
+      where: { userId, deviceKeyHash, revokedAt: null },
+      select: { id: true },
+    });
+    return device !== null;
   }
 
   async findPhoneByUserId(userId: string): Promise<string | null> {
@@ -168,9 +200,12 @@ export class PrismaSessionRepository implements SessionRepository {
           data: {
             id: input.userId,
             phone: input.phone,
+            email: input.email,
+            passwordHash: input.passwordHash,
+            emailVerifiedAt: input.emailVerifiedAt,
             username: input.username,
             // The OTP proof is what proves the number, so it is verified now.
-            phoneVerifiedAt: input.now,
+            phoneVerifiedAt: input.phone === null ? null : input.now,
           },
         });
 
@@ -212,6 +247,11 @@ export class PrismaSessionRepository implements SessionRepository {
       if (isUniqueViolation(error)) return null;
       throw error;
     }
+  }
+
+  async createAccountWithEmail(input: CreateEmailAccountInput): Promise<CreateEmailAccountResult> {
+    const created = await this.createAccount(input);
+    return created === null ? { outcome: 'conflict' } : created;
   }
 
   async createSession(input: CreateSessionInput): Promise<IssuedSessionRecord> {

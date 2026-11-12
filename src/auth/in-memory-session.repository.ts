@@ -2,11 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { Role } from './roles';
 import type {
   AccountRecord,
+  EmailAccountRecord,
   ActiveSessionRecord,
   AdminUserRecord,
   ChangePhoneInput,
   ChangePhoneResult,
   CreateAccountInput,
+  CreateEmailAccountInput,
+  CreateEmailAccountResult,
   CreateSessionInput,
   IssuedSessionRecord,
   RotateRefreshTokenInput,
@@ -26,7 +29,10 @@ import type {
 
 interface FakeUser {
   readonly id: string;
-  phone: string;
+  phone: string | null;
+  email: string | null;
+  passwordHash: string | null;
+  emailVerifiedAt: Date | null;
   readonly username: string;
   role: Role;
   identityVerifier: boolean;
@@ -76,6 +82,35 @@ export class InMemorySessionRepository implements SessionRepository {
     const user = [...this.users.values()].find((candidate) => candidate.phone === phoneE164);
 
     return user === undefined ? null : { id: user.id, status: user.status, role: user.role };
+  }
+
+  async findUserByEmail(email: string): Promise<EmailAccountRecord | null> {
+    const user = [...this.users.values()].find((candidate) => candidate.email === email);
+
+    return user === undefined
+      ? null
+      : {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          status: user.status,
+          passwordHash: user.passwordHash,
+          emailVerifiedAt: user.emailVerifiedAt,
+        };
+  }
+
+  async updatePasswordHash(userId: string, hash: string): Promise<void> {
+    const user = this.users.get(userId);
+    if (user !== undefined) user.passwordHash = hash;
+  }
+
+  async isKnownDevice(userId: string, deviceKeyHash: string): Promise<boolean> {
+    return [...this.sessions.values()].some(
+      (session) =>
+        session.userId === userId &&
+        session.deviceKeyHash === deviceKeyHash &&
+        session.revokedAt === null,
+    );
   }
 
   async findPhoneByUserId(userId: string): Promise<string | null> {
@@ -131,14 +166,24 @@ export class InMemorySessionRepository implements SessionRepository {
   }
 
   async createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null> {
-    const phoneTaken = [...this.users.values()].some((user) => user.phone === input.phone);
+    const phoneTaken =
+      input.phone !== null && [...this.users.values()].some((user) => user.phone === input.phone);
     const usernameTaken = await this.isUsernameTaken(input.username);
 
     if (phoneTaken || usernameTaken) return null;
 
+    const emailTaken =
+      input.email !== undefined &&
+      [...this.users.values()].some((user) => user.email === input.email);
+
+    if (emailTaken) return null;
+
     this.users.set(input.userId, {
       id: input.userId,
       phone: input.phone,
+      email: input.email ?? null,
+      passwordHash: input.passwordHash ?? null,
+      emailVerifiedAt: input.emailVerifiedAt ?? null,
       username: input.username,
       role: Role.USER,
       identityVerifier: false,
@@ -164,6 +209,11 @@ export class InMemorySessionRepository implements SessionRepository {
       sessionExpiresAt: input.sessionExpiresAt,
       refreshExpiresAt: input.refreshExpiresAt,
     };
+  }
+
+  async createAccountWithEmail(input: CreateEmailAccountInput): Promise<CreateEmailAccountResult> {
+    const created = await this.createAccount(input);
+    return created === null ? { outcome: 'conflict' } : created;
   }
 
   async createSession(input: CreateSessionInput): Promise<IssuedSessionRecord> {
@@ -421,7 +471,10 @@ export class InMemorySessionRepository implements SessionRepository {
   /** Test helper: seeds a user without creating a session. */
   seedUser(user: {
     id?: string;
-    phone: string;
+    phone: string | null;
+    email?: string;
+    passwordHash?: string;
+    emailVerifiedAt?: Date;
     username: string;
     role?: Role;
     identityVerifier?: boolean;
@@ -434,6 +487,9 @@ export class InMemorySessionRepository implements SessionRepository {
     this.users.set(id, {
       id,
       phone: user.phone,
+      email: user.email ?? null,
+      passwordHash: user.passwordHash ?? null,
+      emailVerifiedAt: user.emailVerifiedAt ?? null,
       username: user.username,
       role: user.role ?? Role.USER,
       identityVerifier: user.identityVerifier ?? false,

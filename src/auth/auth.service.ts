@@ -17,6 +17,7 @@ import { RateLimitService } from '../rate-limit/rate-limit.service';
 import { loginSchema, parseAuthBody, registerSchema } from './auth.schema';
 import { ephemeralDeviceKey, hashDeviceKey } from './device-key';
 import { maskPhone } from './phone';
+import { maskEmail } from './email/email';
 import { ProofTokenService, type ProofPurpose } from './otp/proof-token';
 import { isStaffRole, Role } from './roles';
 import {
@@ -242,6 +243,50 @@ export class AuthService {
       outcome: 'issued',
       credentials: this.issueCredentials(created, refreshToken, now),
     };
+  }
+
+  /** Shared first-session issuance for email registration. */
+  async issueEmailAccountSession(input: {
+    readonly email: string;
+    readonly username: string;
+    readonly passwordHash: string;
+    readonly deviceName?: string;
+    readonly context: AuthRequestContext;
+  }): Promise<AuthResult> {
+    const now = this.now();
+    const userId = randomUUID();
+    const refreshToken = generateRefreshToken();
+    const sessionExpiresAt = this.sessionExpiry(now, Role.USER);
+    const created = await this.sessions.createAccountWithEmail({
+      userId,
+      phone: null,
+      email: input.email,
+      passwordHash: input.passwordHash,
+      emailVerifiedAt: now,
+      username: input.username,
+      deviceKeyHash: this.deviceBinding(userId, input.context),
+      deviceBound: input.context.deviceKey !== null,
+      deviceLabel: input.deviceName ?? this.deviceLabel(input.context.userAgent),
+      now,
+      sessionExpiresAt,
+      refreshTokenHash: hashRefreshToken(refreshToken),
+      refreshExpiresAt: this.refreshExpiry(now, sessionExpiresAt),
+    });
+
+    if ('outcome' in created) {
+      throw new ConflictException({ error: 'unavailable' });
+    }
+
+    await this.writeAudit('auth.registered', created.userId, null, input.context, {
+      email: maskEmail(input.email),
+      username: input.username,
+    });
+    this.logger.info(
+      { requestId: input.context.requestId, userId: created.userId, email: maskEmail(input.email) },
+      'account registered',
+    );
+
+    return { outcome: 'issued', credentials: this.issueCredentials(created, refreshToken, now) };
   }
 
   /**

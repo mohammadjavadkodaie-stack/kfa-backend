@@ -18,6 +18,12 @@ export interface AccountRecord {
   readonly role: Role;
 }
 
+export interface EmailAccountRecord extends AccountRecord {
+  readonly username: string;
+  readonly passwordHash: string | null;
+  readonly emailVerifiedAt: Date | null;
+}
+
 /** What the admin module may read about a target; it carries no contact data. */
 export interface AdminUserRecord {
   readonly id: string;
@@ -77,7 +83,10 @@ export interface SessionSummaryRecord {
 export interface CreateAccountInput {
   /** Pre-generated so the device hash can be bound to it up front. */
   readonly userId: string;
-  readonly phone: string;
+  readonly phone: string | null;
+  readonly email?: string;
+  readonly passwordHash?: string;
+  readonly emailVerifiedAt?: Date;
   readonly username: string;
   readonly deviceKeyHash: string;
   readonly deviceBound: boolean;
@@ -87,6 +96,14 @@ export interface CreateAccountInput {
   readonly refreshTokenHash: string;
   readonly refreshExpiresAt: Date;
 }
+
+export type CreateEmailAccountInput = CreateAccountInput & {
+  readonly email: string;
+  readonly passwordHash: string;
+  readonly emailVerifiedAt: Date;
+};
+
+export type CreateEmailAccountResult = IssuedSessionRecord | { readonly outcome: 'conflict' };
 
 export interface CreateSessionInput {
   readonly userId: string;
@@ -151,6 +168,9 @@ export interface SessionRepository {
   /** Case-insensitive, so `Ivan` cannot shadow `ivan`. */
   isUsernameTaken(username: string): Promise<boolean>;
   findUserByPhone(phoneE164: string): Promise<AccountRecord | null>;
+  findUserByEmail(email: string): Promise<EmailAccountRecord | null>;
+  updatePasswordHash(userId: string, hash: string): Promise<void>;
+  isKnownDevice(userId: string, deviceKeyHash: string): Promise<boolean>;
   /** Current phone of one account, or null when the user is gone. */
   findPhoneByUserId(userId: string): Promise<string | null>;
   /** Username of one account. Used as the TOTP label, never the phone. */
@@ -176,6 +196,7 @@ export interface SessionRepository {
   setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean>;
   /** User, device, session and first refresh token in one transaction. */
   createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null>;
+  createAccountWithEmail(input: CreateEmailAccountInput): Promise<CreateEmailAccountResult>;
   createSession(input: CreateSessionInput): Promise<IssuedSessionRecord>;
   /** Single-statement consume + issue; only one caller can win a race. */
   rotateRefreshToken(input: RotateRefreshTokenInput): Promise<RotateRefreshTokenResult>;
