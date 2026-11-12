@@ -112,7 +112,34 @@ export class EmailCodeService {
     });
     if (!ip.allowed) throw this.throttled(ip.retryAfterSeconds);
     if (!(await this.verifyCaptcha(input.captchaToken, input.ip))) throw new BadRequestException();
+    await this.sendAfterLimits(email, input.purpose, input.ip, input.deviceKey, input.eligible);
+  }
 
+  async startForVerifiedUser(input: {
+    readonly email: string;
+    readonly purpose: 'login_device';
+    readonly ip: string;
+    readonly deviceKey?: string | null;
+  }): Promise<void> {
+    const email = normalizeEmail(input.email);
+    if (email === null || input.purpose !== 'login_device') throw new BadRequestException();
+    this.requireKey();
+    const ip = await this.rateLimit.consume({
+      scope: 'email-start-ip',
+      identifier: input.ip,
+      ...EMAIL_START_IP_LIMIT,
+    });
+    if (!ip.allowed) throw this.throttled(ip.retryAfterSeconds);
+    await this.sendAfterLimits(email, input.purpose, input.ip, input.deviceKey, true);
+  }
+
+  private async sendAfterLimits(
+    email: string,
+    purpose: EmailCodePurpose,
+    ip: string,
+    deviceKey: string | null | undefined,
+    eligible: boolean,
+  ): Promise<void> {
     const global = await this.rateLimit.consume({
       scope: 'email-start-global',
       identifier: GLOBAL_SEND_TRACKER,
@@ -122,7 +149,7 @@ export class EmailCodeService {
     if (!global.allowed) return;
     const cooldown = await this.rateLimit.consume({
       scope: 'email-start-cooldown',
-      identifier: `${email}:${input.purpose}`,
+      identifier: `${email}:${purpose}`,
       limit: 1,
       windowSeconds: EMAIL_RESEND_COOLDOWN_SECONDS,
     });
@@ -133,27 +160,22 @@ export class EmailCodeService {
       ...EMAIL_START_EMAIL_LIMIT,
     });
     if (!perEmail.allowed) return;
-    if (input.deviceKey !== undefined && input.deviceKey !== null) {
+    if (deviceKey !== undefined && deviceKey !== null) {
       const device = await this.rateLimit.consume({
         scope: 'email-start-device',
-        identifier: hashDeviceKey(input.deviceKey),
+        identifier: hashDeviceKey(deviceKey),
         ...EMAIL_START_DEVICE_LIMIT,
       });
       if (!device.allowed) return;
     }
-    if (!input.eligible) return;
+    if (!eligible) return;
     const code = this.emailProvider.fixedCode ?? String(randomInt(0, 1_000_000)).padStart(6, '0');
     const store = this.requireStore();
-    const key = emailCodeKey(this.codeKey(), input.purpose, email);
+    const key = emailCodeKey(this.codeKey(), purpose, email);
     try {
-      await store.put(
-        key,
-        hashEmailCode(this.codeKey(), input.purpose, email, code),
-        this.ttlSeconds,
-      );
-      await this.emailProvider.sendCode({ to: email, purpose: input.purpose, code });
-    } catch (error) {
-      if (error instanceof EmailCodeStoreUnavailableError) throw new ServiceUnavailableException();
+      await store.put(key, hashEmailCode(this.codeKey(), purpose, email, code), this.ttlSeconds);
+      await this.emailProvider.sendCode({ to: email, purpose, code });
+    } catch {
       throw new ServiceUnavailableException();
     }
   }

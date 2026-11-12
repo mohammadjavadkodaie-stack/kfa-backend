@@ -38,6 +38,12 @@ export interface ResetRateLimitInput {
   readonly identifier: string;
 }
 
+export interface PeekRateLimitInput {
+  readonly scope: string;
+  readonly identifier: string;
+  readonly limit: number;
+}
+
 const MAX_SCOPE_LENGTH = 64;
 const MAX_IDENTIFIER_LENGTH = 256;
 
@@ -113,6 +119,42 @@ export class RateLimitService {
       };
     } catch {
       // Fail closed: an unreachable store must deny, never allow.
+      throw rateLimitUnavailable();
+    }
+  }
+
+  async peek(input: PeekRateLimitInput): Promise<RateLimitDecision> {
+    const { scope, identifier, limit } = input;
+    if (
+      typeof scope !== 'string' ||
+      scope.length === 0 ||
+      scope.length > MAX_SCOPE_LENGTH ||
+      typeof identifier !== 'string' ||
+      identifier.length === 0 ||
+      identifier.length > MAX_IDENTIFIER_LENGTH ||
+      !Number.isInteger(limit) ||
+      limit < 1
+    )
+      throw new BadRequestException();
+    const client = this.client;
+    const hmacKey = this.hmacKey;
+    if (client === null || hmacKey === undefined) throw rateLimitUnavailable();
+    const key = buildRateLimitKey(
+      'consume',
+      `${scope}:${this.hashIdentifier(identifier, hmacKey)}`,
+    );
+    try {
+      const totalHits = Number((await client.get(key)) ?? 0);
+      const ttl = await client.pttl(key);
+      if (!Number.isFinite(totalHits) || totalHits < 0 || !Number.isFinite(ttl))
+        throw new Error('invalid rate limit');
+      const blocked = totalHits >= limit;
+      return {
+        allowed: !blocked,
+        remaining: Math.max(0, limit - totalHits),
+        retryAfterSeconds: blocked ? Math.max(0, Math.ceil(ttl / 1000)) : 0,
+      };
+    } catch {
       throw rateLimitUnavailable();
     }
   }

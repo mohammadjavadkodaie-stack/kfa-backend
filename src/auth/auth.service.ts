@@ -289,6 +289,51 @@ export class AuthService {
     return { outcome: 'issued', credentials: this.issueCredentials(created, refreshToken, now) };
   }
 
+  hashEmailDeviceKey(userId: string, deviceKey: string): string {
+    return hashDeviceKey(this.secretOrFail(), userId, deviceKey);
+  }
+
+  async auditEmailLoginBlocked(
+    email: string,
+    userId: string,
+    context: AuthRequestContext,
+  ): Promise<void> {
+    await this.writeAudit('auth.login.blocked', userId, null, context, { email: maskEmail(email) });
+  }
+
+  async issueEmailLoginSession(input: {
+    readonly email: string;
+    readonly account: { readonly id: string; readonly role: Role };
+    readonly context: AuthRequestContext;
+  }): Promise<AuthResult> {
+    const now = this.now();
+    const refreshToken = generateRefreshToken();
+    const sessionExpiresAt = this.sessionExpiry(now, input.account.role);
+    const session = await this.sessions.createSession({
+      userId: input.account.id,
+      deviceKeyHash: this.deviceBinding(input.account.id, input.context),
+      deviceBound: input.context.deviceKey !== null,
+      deviceLabel: this.deviceLabel(input.context.userAgent),
+      now,
+      sessionExpiresAt,
+      refreshTokenHash: hashRefreshToken(refreshToken),
+      refreshExpiresAt: this.refreshExpiry(now, sessionExpiresAt),
+      maxActiveSessions: this.maxSessionsPerUser,
+    });
+    await this.writeAudit('auth.login', input.account.id, null, input.context, {
+      email: maskEmail(input.email),
+    });
+    this.logger.info(
+      {
+        requestId: input.context.requestId,
+        userId: input.account.id,
+        email: maskEmail(input.email),
+      },
+      'login succeeded',
+    );
+    return { outcome: 'issued', credentials: this.issueCredentials(session, refreshToken, now) };
+  }
+
   /**
    * Issues a new session for an existing, active account.
    *
