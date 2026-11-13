@@ -32,7 +32,10 @@ import {
   emailStartSchema,
   emailVerifySchema,
   parseEmailBody,
+  passwordResetSchema,
+  passwordResetStartSchema,
 } from './email-auth.schema';
+import { PasswordResetService } from './password-reset.service';
 
 interface SessionResponseBody {
   readonly accessToken: string;
@@ -88,6 +91,7 @@ export class EmailAuthController {
   constructor(
     private readonly emailCode: EmailCodeService,
     private readonly emailAuth: EmailAuthService,
+    private readonly passwordResetService: PasswordResetService,
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
   ) {}
 
@@ -139,6 +143,69 @@ export class EmailAuthController {
       if (error instanceof BadRequestException) {
         response.status(HttpStatus.BAD_REQUEST);
         return { error: 'invalid_code' };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Step 1 of "I forgot my password".
+   *
+   * Answers 202 with the same body whether or not the address has an account
+   * (and whether or not it has a password), so this cannot be used to probe
+   * who is registered.
+   */
+  @Public()
+  @Post('password/reset/start')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async passwordResetStart(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ ok: true } | ErrorResponseBody> {
+    const input = parseEmailBody(passwordResetStartSchema, body);
+    if (input === null) throw new BadRequestException();
+    try {
+      await this.passwordResetService.start({ ...input, ...requestContext(request) });
+      return { ok: true };
+    } catch (error) {
+      const throttled = mapThrottle(error, request, response);
+      if (throttled !== null) return throttled;
+      throw error;
+    }
+  }
+
+  /**
+   * Step 2: spends the emailed proof on a new password.
+   *
+   * 204 with no credentials on purpose - every session is revoked, so the user
+   * proves the new password at the sign-in endpoint. A weak password is a 400
+   * that names the reason and leaves the proof unspent; a spent, expired or
+   * wrong-purpose proof is one generic 401.
+   */
+  @Public()
+  @Post('password/reset')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async passwordReset(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void | ErrorResponseBody | Record<string, unknown>> {
+    const input = parseEmailBody(passwordResetSchema, body);
+    if (input === null) throw new BadRequestException();
+    try {
+      await this.passwordResetService.reset({ ...input, ...requestContext(request) });
+    } catch (error) {
+      const throttled = mapThrottle(error, request, response);
+      if (throttled !== null) return throttled;
+      const payload = serviceResponse(error);
+      if (payload.error === 'weak_password') {
+        response.status(HttpStatus.BAD_REQUEST);
+        return payload;
+      }
+      if (error instanceof UnauthorizedException) {
+        response.status(HttpStatus.UNAUTHORIZED);
+        return { error: 'invalid_proof' };
       }
       throw error;
     }

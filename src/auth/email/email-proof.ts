@@ -107,11 +107,12 @@ export class EmailProofService {
     return `${payloadSegment}.${sign(key, payloadSegment).toString('base64url')}`;
   }
 
-  async consumeEmailProof(input: {
+  /** Everything the two read paths need once the token itself checks out. */
+  private readProof(input: {
     readonly proof: unknown;
     readonly purpose: EmailCodePurpose;
     readonly nowMs?: number;
-  }): Promise<string | null> {
+  }): { readonly key: Buffer; readonly payload: EmailProofPayload } | null {
     if (
       typeof input.proof !== 'string' ||
       input.proof.length === 0 ||
@@ -149,17 +150,68 @@ export class EmailProofService {
     if (decoded.exp <= Math.floor((input.nowMs ?? Date.now()) / 1_000)) return null;
     if (!equal(decoded.purpose, input.purpose)) return null;
 
+    return { key, payload: decoded };
+  }
+
+  /** Binds the stored nonce back to the token's email hash. */
+  private emailFor(
+    verified: { readonly key: Buffer; readonly payload: EmailProofPayload },
+    stored: string | null,
+  ): string | null {
+    if (stored === null || normalizeEmail(stored) !== stored) return null;
+
+    return equal(sign(verified.key, `email-proof:${stored}`).toString('hex'), verified.payload.sh)
+      ? stored
+      : null;
+  }
+
+  async consumeEmailProof(input: {
+    readonly proof: unknown;
+    readonly purpose: EmailCodePurpose;
+    readonly nowMs?: number;
+  }): Promise<string | null> {
+    const verified = this.readProof(input);
+    if (verified === null) return null;
+
     if (this.store === null) throw unavailable();
 
-    let normalized: string | null;
+    let stored: string | null;
     try {
-      normalized = await this.store.take(decoded.jti);
+      stored = await this.store.take(verified.payload.jti);
     } catch {
       throw unavailable();
     }
-    if (normalized === null || normalizeEmail(normalized) !== normalized) return null;
-    return equal(sign(key, `email-proof:${normalized}`).toString('hex'), decoded.sh)
-      ? normalized
-      : null;
+
+    return this.emailFor(verified, stored);
+  }
+
+  /**
+   * Verifies the token and returns the email WITHOUT spending the nonce.
+   *
+   * For callers that must validate input before committing the single use (a
+   * password reset refuses to burn a proof on a weak password). Fails closed:
+   * a store that cannot peek makes the flow unavailable rather than returning
+   * an email that a later `consume` could not confirm.
+   */
+  async peekEmailProof(input: {
+    readonly proof: unknown;
+    readonly purpose: EmailCodePurpose;
+    readonly nowMs?: number;
+  }): Promise<string | null> {
+    const verified = this.readProof(input);
+    if (verified === null) return null;
+
+    const store = this.store;
+    const peek = store === null ? undefined : store.get;
+    if (peek === undefined) throw unavailable();
+
+    let stored: string | null;
+    try {
+      stored = await peek.call(store, verified.payload.jti);
+    } catch {
+      throw unavailable();
+    }
+
+    return this.emailFor(verified, stored);
   }
 }

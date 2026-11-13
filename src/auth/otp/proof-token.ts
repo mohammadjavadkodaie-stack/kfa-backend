@@ -52,12 +52,22 @@ export interface ProofNonceStore {
   put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean>;
   /** Removes and returns the stored phone in one step (single use). */
   take(jti: string): Promise<string | null>;
+  /**
+   * Reads the stored phone WITHOUT spending the nonce.
+   *
+   * Optional: a store may support single use only. A flow that must validate
+   * before committing (a password reset that refuses to burn the proof on a
+   * weak password) checks for this method and fails closed when it is absent.
+   */
+  get?(jti: string): Promise<string | null>;
 }
 
 /** The ioredis subset the nonce store needs. */
 export interface ProofRedisClient {
   set(key: string, value: string, mode: 'EX', ttlSeconds: number, nx: 'NX'): Promise<'OK' | null>;
   getdel(key: string): Promise<string | null>;
+  /** Plain read, used only by the non-consuming `get` below. */
+  get?(key: string): Promise<string | null>;
 }
 
 export class RedisProofNonceStore implements ProofNonceStore {
@@ -78,6 +88,14 @@ export class RedisProofNonceStore implements ProofNonceStore {
   async take(jti: string): Promise<string | null> {
     // GETDEL keeps "read" and "delete" atomic, so a replay cannot win a race.
     return this.client.getdel(`${PROOF_NONCE_KEY_PREFIX}${jti}`);
+  }
+
+  /** A plain read: the caller must still `take` before treating the proof as spent. */
+  async get(jti: string): Promise<string | null> {
+    const read = this.client.get?.bind(this.client);
+    if (read === undefined) throw new Error('nonce store cannot peek');
+
+    return read(`${PROOF_NONCE_KEY_PREFIX}${jti}`);
   }
 }
 

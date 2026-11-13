@@ -12,6 +12,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { EmailAuthService } from './email-auth/email-auth.service';
 import { EmailAuthController } from './email-auth/email-auth.controller';
+import { PasswordResetService } from './email-auth/password-reset.service';
 import { MeController } from './me.controller';
 import {
   CaptchaProvider,
@@ -111,6 +112,7 @@ import { TotpModule } from './totp/totp.module';
     OtpService,
     AuthService,
     EmailAuthService,
+    PasswordResetService,
     PhoneChangeService,
     AuthGuard,
     RolesGuard,
