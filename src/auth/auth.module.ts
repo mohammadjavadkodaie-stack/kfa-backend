@@ -13,7 +13,11 @@ import { AuthService } from './auth.service';
 import { EmailAuthService } from './email-auth/email-auth.service';
 import { EmailAuthController } from './email-auth/email-auth.controller';
 import { MeController } from './me.controller';
-import { CaptchaProvider, CAPTCHA_PROVIDER, FakeCaptchaProvider } from './captcha/captcha.provider';
+import {
+  CaptchaProvider,
+  CAPTCHA_PROVIDER,
+  createCaptchaProvider,
+} from './captcha/captcha.provider';
 import { AuthGuard } from './guards/auth.guard';
 import { createEmailProvider, EMAIL_PROVIDER, type EmailProvider } from './email/email.provider';
 import { EmailCodeService } from './email/email-code.service';
@@ -74,10 +78,8 @@ import { TotpModule } from './totp/totp.module';
     {
       provide: CAPTCHA_PROVIDER,
       inject: [ENV],
-      useFactory: (env: { CAPTCHA_PROVIDER: string }): CaptchaProvider => {
-        if (env.CAPTCHA_PROVIDER !== 'fake') throw new Error('Unsupported CAPTCHA_PROVIDER');
-        return new FakeCaptchaProvider();
-      },
+      useFactory: (env: Pick<Env, 'NODE_ENV' | 'CAPTCHA_PROVIDER'>): CaptchaProvider =>
+        createCaptchaProvider(env),
     },
     {
       provide: PROOF_NONCE_STORE,

@@ -1,9 +1,9 @@
-import { HttpException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, HttpException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { PinoLogger } from 'nestjs-pino';
 import type { AuditService } from '../../audit/audit.service';
 import type { RateLimitDecision, RateLimitService } from '../../rate-limit/rate-limit.service';
-import { FakeCaptchaProvider } from '../captcha/captcha.provider';
+import { FakeCaptchaProvider, type CaptchaProvider } from '../captcha/captcha.provider';
 import { EMAIL_CODE_STORE } from './email-code.store';
 import { InMemoryEmailCodeStore } from './email-code.store';
 import { FakeEmailProvider, type EmailProvider } from './email.provider';
@@ -45,7 +45,12 @@ class Limits {
   async reset(): Promise<void> {}
 }
 function harness(
-  options: { key?: string; provider?: EmailProvider; store?: InMemoryEmailCodeStore | null } = {},
+  options: {
+    key?: string;
+    provider?: EmailProvider;
+    store?: InMemoryEmailCodeStore | null;
+    captcha?: CaptchaProvider;
+  } = {},
 ) {
   const limits = new Limits();
   const provider = options.provider ?? new FakeEmailProvider();
@@ -58,7 +63,7 @@ function harness(
     store,
     { issueEmailProof: jest.fn().mockResolvedValue('proof-1') } as never,
     provider,
-    new FakeCaptchaProvider(),
+    options.captcha ?? new FakeCaptchaProvider(),
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
   );
@@ -87,6 +92,33 @@ describe('EmailCodeService', () => {
     expect(h.audit.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'email_code.verified' }),
     );
+  });
+
+  it('accepts the dev captcha token outside production and sends one code', async () => {
+    const h = harness({ captcha: new FakeCaptchaProvider('development') });
+    const sendCode = jest.spyOn(h.provider, 'sendCode');
+
+    await h.service.start({ ...INPUT, captchaToken: 'fake-captcha-token' });
+
+    expect(sendCode).toHaveBeenCalledTimes(1);
+    expect(sendCode).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'user@example.com', purpose: 'register' }),
+    );
+  });
+
+  it('rejects a wrong captcha token outside production with the generic 400 body', async () => {
+    const h = harness({ captcha: new FakeCaptchaProvider('development') });
+    const sendCode = jest.spyOn(h.provider, 'sendCode');
+
+    const error: unknown = await h.service
+      .start({ ...INPUT, captchaToken: 'fake-captcha-token-wrong' })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).getResponse()).toEqual(
+      new BadRequestException().getResponse(),
+    );
+    expect(sendCode).not.toHaveBeenCalled();
   });
 
   it('runs all limiter steps for ineligible input but does not store or send', async () => {
