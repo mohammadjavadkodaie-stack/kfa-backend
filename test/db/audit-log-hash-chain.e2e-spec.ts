@@ -65,17 +65,18 @@ describeWithDatabase('audit_log hash chain (PostgreSQL)', () => {
     expect(rows[rows.length - 2]?.hash).toBe(first.hash);
   });
 
-  it('never stores redacted audit secrets', async () => {
+  it('redacts emails and secrets so raw identifiers never reach the trail', async () => {
     const row = await audit.record({
       action: 'db.test.redaction',
       metadata: { email: 'user@example.com', password: 'p@ssw0rd', nested: { otp: '123456' } },
     });
 
     expect(row.metadata).toEqual({
-      email: 'user@example.com',
+      email: '[REDACTED]',
       password: '[REDACTED]',
       nested: { otp: '[REDACTED]' },
     });
+    expect(JSON.stringify(row.metadata)).not.toContain('user@example.com');
   });
 
   it('serialises concurrent appends into a single unbroken chain', async () => {
