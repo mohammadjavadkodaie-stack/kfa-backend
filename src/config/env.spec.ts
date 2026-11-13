@@ -44,7 +44,9 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   DOCUMENT_MASTER_KEY: PROD_DOCUMENT_MASTER_KEY,
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
-  EMAIL_PROVIDER: 'ses',
+  EMAIL_PROVIDER: 'resend',
+  RESEND_API_KEY: 'test-resend-api-key',
+  EMAIL_FROM: 'KFA <no-reply@example.com>',
 };
 
 /** A complete object store configuration: MinIO in development, S3 elsewhere. */
@@ -436,11 +438,13 @@ describe('loadEnv', () => {
     expect(highest.EMAIL_GLOBAL_SENDS_PER_HOUR).toBe(100_000);
   });
 
-  it('rejects a fake email provider in production', () => {
+  it('requires Resend with credentials in production', () => {
     expect(() => loadEnv({ ...PROD_ENV, EMAIL_PROVIDER: 'fake' })).toThrow(
-      /EMAIL_PROVIDER.*non-fake/,
+      /EMAIL_PROVIDER.*resend/,
     );
-    expect(() => loadEnv({ ...PROD_ENV, EMAIL_PROVIDER: 'ses' })).not.toThrow();
+    expect(() => loadEnv({ ...PROD_ENV, RESEND_API_KEY: undefined })).toThrow(/RESEND_API_KEY/);
+    expect(() => loadEnv({ ...PROD_ENV, EMAIL_FROM: undefined })).toThrow(/EMAIL_FROM/);
+    expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
   });
 
   it('keeps the TOTP encryption key optional outside production', () => {

@@ -28,7 +28,9 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'recaptcha',
   // Required from E2-b1 on; production refuses the fake email transport.
-  EMAIL_PROVIDER: 'ses',
+  EMAIL_PROVIDER: 'resend',
+  RESEND_API_KEY: 'test-resend-api-key',
+  EMAIL_FROM: 'no-reply@example.com',
   EMAIL_CODE_HMAC_KEY: 'unit-test-email-code-hmac-key-0123456789',
 };
 

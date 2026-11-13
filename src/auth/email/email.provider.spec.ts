@@ -16,13 +16,16 @@ describe('createEmailProvider', () => {
     );
   });
 
-  it('refuses a provider that is not implemented yet', () => {
-    expect(() => createEmailProvider({ NODE_ENV: 'test', EMAIL_PROVIDER: 'ses' })).toThrow(
-      /not implemented/u,
-    );
-    expect(() => createEmailProvider({ NODE_ENV: 'production', EMAIL_PROVIDER: 'ses' })).toThrow(
-      /not implemented/u,
-    );
+  it('builds Resend outside production when configured', () => {
+    expect(
+      createEmailProvider({
+        NODE_ENV: 'test',
+        EMAIL_PROVIDER: 'resend',
+        RESEND_API_KEY: 'key',
+        EMAIL_FROM: 'KFA <no-reply@example.com>',
+        EMAIL_CODE_TTL_SECONDS: 600,
+      }),
+    ).toBeDefined();
   });
 
   it('exposes the fixed code only on the fake adapter', () => {
@@ -31,9 +34,15 @@ describe('createEmailProvider', () => {
     );
     // Anything that is not the fake is refused, so no other adapter can carry a
     // static code that would shortcut verification.
-    expect(() =>
-      createEmailProvider({ NODE_ENV: 'development', EMAIL_PROVIDER: 'resend' }),
-    ).toThrow(/not implemented/u);
+    expect(
+      createEmailProvider({
+        NODE_ENV: 'development',
+        EMAIL_PROVIDER: 'resend',
+        RESEND_API_KEY: 'key',
+        EMAIL_FROM: 'no-reply@example.com',
+        EMAIL_CODE_TTL_SECONDS: 600,
+      }).fixedCode,
+    ).toBeUndefined();
   });
 
   it('exposes a stable Nest injection token', () => {

@@ -41,8 +41,10 @@ export const TEST_ENV = {
   EMAIL_CODE_TTL_SECONDS: '600',
   EMAIL_CODE_MAX_ATTEMPTS: '5',
   EMAIL_GLOBAL_SENDS_PER_HOUR: '500',
-  /** Email transport: only the fake adapter exists so far, and tests never send mail. */
+  /** Email transport: tests use the silent fake adapter. */
   EMAIL_PROVIDER: 'fake',
+  RESEND_API_KEY: undefined,
+  EMAIL_FROM: undefined,
   /**
    * The fake providers are the only ones wired up so far, and production
    * additionally requires non-fake values. Keeping both keys here means

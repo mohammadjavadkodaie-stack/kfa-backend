@@ -282,7 +282,22 @@ export const envSchema = z
     OTP_PROVIDER: z.string().min(1).default('fake'),
     CAPTCHA_PROVIDER: z.string().min(1).default('fake'),
     /** Email transport for the email identity flow. Fake is development only. */
-    EMAIL_PROVIDER: z.string().min(1).default('fake'),
+    EMAIL_PROVIDER: z.enum(['fake', 'resend']).default('fake'),
+    /** Resend API credential; required when the real adapter is selected. */
+    RESEND_API_KEY: z.string().min(1).max(1024).optional(),
+    /** RFC-like display-name/mailbox sender accepted by Resend. */
+    EMAIL_FROM: z
+      .string()
+      .trim()
+      .min(3)
+      .max(320)
+      .refine(
+        (value) => /<[^<>@\s]+@[^<>@\s]+>$/u.test(value) || /^[^<>@\s]+@[^<>@\s]+$/u.test(value),
+        {
+          message: 'must be a mailbox string',
+        },
+      )
+      .optional(),
 
     /**
      * Runtime connection string (role `kfa_app`, no DDL privileges).
@@ -831,12 +846,22 @@ export const envSchema = z
         message: 'must be non-fake in production',
       });
     }
-    if (env.EMAIL_PROVIDER === 'fake' || env.EMAIL_PROVIDER === undefined) {
+    if (env.EMAIL_PROVIDER !== 'resend') {
       ctx.addIssue({
         code: 'custom',
         path: ['EMAIL_PROVIDER'],
-        message: 'must be non-fake in production',
+        message: 'must be resend in production',
       });
+    }
+    if (env.RESEND_API_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RESEND_API_KEY'],
+        message: 'is required in production',
+      });
+    }
+    if (env.EMAIL_FROM === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['EMAIL_FROM'], message: 'is required in production' });
     }
   });
 

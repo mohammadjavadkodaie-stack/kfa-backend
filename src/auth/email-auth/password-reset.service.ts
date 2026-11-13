@@ -71,6 +71,7 @@ export class PasswordResetService {
     readonly captchaToken: string;
     readonly ip: string;
     readonly deviceKey?: string | null;
+    readonly locale?: 'en' | 'fa' | 'tr' | 'ar';
   }): Promise<void> {
     const email = normalizeEmail(input.email);
     if (email === null) throw new BadRequestException();
@@ -83,6 +84,7 @@ export class PasswordResetService {
       captchaToken: input.captchaToken,
       ip: input.ip,
       deviceKey: input.deviceKey,
+      locale: input.locale,
       // Nothing to reset when there is no account or no password on it.
       eligible: account !== null && account.passwordHash !== null,
     });

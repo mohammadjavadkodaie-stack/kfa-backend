@@ -30,6 +30,7 @@ describe('buildRedactPaths', () => {
       'RATE_LIMIT_HMAC_KEY',
       'DOCUMENT_VIEW_TOKEN_SECRET',
       'EMAIL_CODE_HMAC_KEY',
+      'RESEND_API_KEY',
       'S3_ACCESS_KEY_ID',
       'S3_SECRET_ACCESS_KEY',
     ]) {

@@ -49,6 +49,7 @@ export interface EmailStartInput {
   readonly ip: string;
   readonly deviceKey?: string | null;
   readonly eligible: boolean;
+  readonly locale?: 'en' | 'fa' | 'tr' | 'ar';
 }
 export interface EmailVerifyInput {
   readonly email: string;
@@ -112,7 +113,14 @@ export class EmailCodeService {
     });
     if (!ip.allowed) throw this.throttled(ip.retryAfterSeconds);
     if (!(await this.verifyCaptcha(input.captchaToken, input.ip))) throw new BadRequestException();
-    await this.sendAfterLimits(email, input.purpose, input.ip, input.deviceKey, input.eligible);
+    await this.sendAfterLimits(
+      email,
+      input.purpose,
+      input.ip,
+      input.deviceKey,
+      input.eligible,
+      input.locale,
+    );
   }
 
   async startForVerifiedUser(input: {
@@ -120,6 +128,7 @@ export class EmailCodeService {
     readonly purpose: 'login_device';
     readonly ip: string;
     readonly deviceKey?: string | null;
+    readonly locale?: 'en' | 'fa' | 'tr' | 'ar';
   }): Promise<void> {
     const email = normalizeEmail(input.email);
     if (email === null || input.purpose !== 'login_device') throw new BadRequestException();
@@ -130,7 +139,7 @@ export class EmailCodeService {
       ...EMAIL_START_IP_LIMIT,
     });
     if (!ip.allowed) throw this.throttled(ip.retryAfterSeconds);
-    await this.sendAfterLimits(email, input.purpose, input.ip, input.deviceKey, true);
+    await this.sendAfterLimits(email, input.purpose, input.ip, input.deviceKey, true, input.locale);
   }
 
   private async sendAfterLimits(
@@ -139,6 +148,7 @@ export class EmailCodeService {
     ip: string,
     deviceKey: string | null | undefined,
     eligible: boolean,
+    locale?: 'en' | 'fa' | 'tr' | 'ar',
   ): Promise<void> {
     const global = await this.rateLimit.consume({
       scope: 'email-start-global',
@@ -174,7 +184,7 @@ export class EmailCodeService {
     const key = emailCodeKey(this.codeKey(), purpose, email);
     try {
       await store.put(key, hashEmailCode(this.codeKey(), purpose, email, code), this.ttlSeconds);
-      await this.emailProvider.sendCode({ to: email, purpose, code });
+      await this.emailProvider.sendCode({ to: email, purpose, code, locale });
     } catch {
       throw new ServiceUnavailableException();
     }

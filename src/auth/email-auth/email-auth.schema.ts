@@ -12,11 +12,13 @@ export const EMAIL_CAPTCHA_MAX_LENGTH = 2048;
 const emailSchema = z.string().min(3).max(EMAIL_MAX_LENGTH);
 const passwordSchema = z.string().min(1).max(512);
 const proofSchema = z.string().min(1).max(AUTH_PROOF_MAX_LENGTH);
+const localeSchema = z.enum(['en', 'fa', 'tr', 'ar']).optional();
 
 export const emailStartSchema = z.strictObject({
   email: emailSchema,
   purpose: z.literal('register'),
   captchaToken: z.string().min(1).max(EMAIL_CAPTCHA_MAX_LENGTH),
+  locale: localeSchema,
 });
 
 export const emailVerifySchema = z.strictObject({
@@ -35,6 +37,7 @@ export const emailVerifySchema = z.strictObject({
 export const passwordResetStartSchema = z.strictObject({
   email: emailSchema,
   captchaToken: z.string().min(1).max(EMAIL_CAPTCHA_MAX_LENGTH),
+  locale: localeSchema,
 });
 
 /** Step 2: spend the emailed proof on a new password. */

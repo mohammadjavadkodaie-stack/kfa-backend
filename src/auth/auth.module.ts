@@ -73,8 +73,10 @@ import { TotpModule } from './totp/totp.module';
     {
       provide: EMAIL_PROVIDER,
       inject: [ENV],
-      useFactory: (env: Pick<Env, 'NODE_ENV' | 'EMAIL_PROVIDER'>): EmailProvider =>
-        createEmailProvider(env),
+      useFactory: (
+        env: Pick<Env, 'NODE_ENV' | 'EMAIL_PROVIDER' | 'RESEND_API_KEY' | 'EMAIL_FROM'> &
+          Partial<Pick<Env, 'EMAIL_CODE_TTL_SECONDS'>>,
+      ): EmailProvider => createEmailProvider(env),
     },
     {
       provide: CAPTCHA_PROVIDER,
