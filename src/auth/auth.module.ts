@@ -1,6 +1,7 @@
 import { PasswordService } from './password/password.service';
 
 import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
+import { PinoLogger } from 'nestjs-pino';
 import { AuditModule } from '../audit/audit.module';
 import { noStoreMiddleware } from '../common/middleware/no-store.middleware';
 import { ENV } from '../config/config.module';
@@ -80,9 +81,14 @@ import { TotpModule } from './totp/totp.module';
     },
     {
       provide: CAPTCHA_PROVIDER,
-      inject: [ENV],
-      useFactory: (env: Pick<Env, 'NODE_ENV' | 'CAPTCHA_PROVIDER'>): CaptchaProvider =>
-        createCaptchaProvider(env),
+      inject: [ENV, PinoLogger],
+      useFactory: (
+        env: Pick<
+          Env,
+          'NODE_ENV' | 'CAPTCHA_PROVIDER' | 'TURNSTILE_SECRET_KEY' | 'TURNSTILE_EXPECTED_HOSTNAME'
+        >,
+        logger: PinoLogger,
+      ): CaptchaProvider => createCaptchaProvider(env, logger),
     },
     {
       provide: PROOF_NONCE_STORE,

@@ -5,10 +5,13 @@ import { applyTestEnv } from './helpers/test-env';
 /**
  * Production refuses fake providers, so every production boot-guard case sets
  * non-fake ones. That keeps each case failing for exactly the reason it asserts.
+ * Turnstile additionally requires its secret and expected hostname in production.
  */
 const PROD_PROVIDER_ENV = {
   OTP_PROVIDER: 'twilio',
-  CAPTCHA_PROVIDER: 'recaptcha',
+  CAPTCHA_PROVIDER: 'turnstile',
+  TURNSTILE_SECRET_KEY: 'test-only-turnstile-secret-key',
+  TURNSTILE_EXPECTED_HOSTNAME: 'app.example',
 } as const;
 
 async function compileApp(): Promise<unknown> {

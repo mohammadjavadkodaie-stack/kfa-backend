@@ -31,6 +31,7 @@ describe('buildRedactPaths', () => {
       'DOCUMENT_VIEW_TOKEN_SECRET',
       'EMAIL_CODE_HMAC_KEY',
       'RESEND_API_KEY',
+      'TURNSTILE_SECRET_KEY',
       'S3_ACCESS_KEY_ID',
       'S3_SECRET_ACCESS_KEY',
     ]) {

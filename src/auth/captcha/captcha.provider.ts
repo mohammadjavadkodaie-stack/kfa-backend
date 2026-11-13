@@ -1,5 +1,13 @@
 import type { Env } from '../../config/env';
+import { TurnstileCaptchaProvider, type TurnstileLogLike } from './turnstile.provider';
 
+/**
+ * Captcha verifier used by every "start" flow (OTP, email code, password reset).
+ *
+ * Frontend contract: the widget's response token is sent in the existing
+ * `captchaToken` field; the API shape does not change when the real verifier is
+ * enabled.
+ */
 export interface CaptchaProvider {
   verify(token: string, remoteIp?: string): Promise<boolean>;
 }
@@ -28,14 +36,39 @@ export class FakeCaptchaProvider implements CaptchaProvider {
 /**
  * Builds the configured captcha provider, or refuses to boot.
  *
- * The fake accepts a static token without asking anybody, so it must never
- * serve production traffic. The environment validator already rejects that
- * combination; repeating the check here keeps the factory honest for any wiring
- * that does not go through `loadEnv`.
+ * `turnstile` is the real Cloudflare adapter and refuses to build without its
+ * secret. The fake accepts a static token without asking anybody, so it must
+ * never serve production traffic. The environment validator already rejects
+ * that combination; repeating the check here keeps the factory honest for any
+ * wiring that does not go through `loadEnv`.
+ *
+ * `CAPTCHA_PROVIDER` is widened to `string` here so an unknown value fails at
+ * boot instead of silently falling back to a verifier nobody chose.
  */
+export type CaptchaProviderEnv = Pick<
+  Env,
+  'NODE_ENV' | 'TURNSTILE_SECRET_KEY' | 'TURNSTILE_EXPECTED_HOSTNAME'
+> & {
+  readonly CAPTCHA_PROVIDER: string;
+};
+
 export function createCaptchaProvider(
-  env: Pick<Env, 'NODE_ENV' | 'CAPTCHA_PROVIDER'>,
+  env: CaptchaProviderEnv,
+  logger?: TurnstileLogLike,
 ): CaptchaProvider {
+  if (env.CAPTCHA_PROVIDER === 'turnstile') {
+    if (env.TURNSTILE_SECRET_KEY === undefined || env.TURNSTILE_SECRET_KEY.length === 0) {
+      throw new Error('TURNSTILE_SECRET_KEY is required for CAPTCHA_PROVIDER=turnstile');
+    }
+
+    return new TurnstileCaptchaProvider(
+      env.TURNSTILE_SECRET_KEY,
+      { expectedHostname: env.TURNSTILE_EXPECTED_HOSTNAME },
+      fetch,
+      logger,
+    );
+  }
+
   if (env.CAPTCHA_PROVIDER !== 'fake') {
     throw new Error(`CAPTCHA_PROVIDER=${env.CAPTCHA_PROVIDER} is not implemented`);
   }

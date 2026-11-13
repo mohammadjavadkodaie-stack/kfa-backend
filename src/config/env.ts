@@ -26,6 +26,9 @@ export const OTP_PROOF_SECRET_MIN_LENGTH = 32;
 /** Minimum accepted length of the email code HMAC key. */
 export const EMAIL_CODE_HMAC_KEY_MIN_LENGTH = 32;
 
+/** Minimum accepted length of the Cloudflare Turnstile secret key. */
+export const TURNSTILE_SECRET_KEY_MIN_LENGTH = 16;
+
 /** Minimum accepted length of the access-token signing secret. */
 export const ACCESS_TOKEN_SECRET_MIN_LENGTH = 32;
 
@@ -280,7 +283,12 @@ export const envSchema = z
       .max(BODY_LIMIT_BYTES_MAX)
       .default(100 * 1024),
     OTP_PROVIDER: z.string().min(1).default('fake'),
-    CAPTCHA_PROVIDER: z.string().min(1).default('fake'),
+    /** Captcha verifier: fake is development/test only, production needs turnstile. */
+    CAPTCHA_PROVIDER: z.enum(['fake', 'turnstile']).default('fake'),
+    /** Cloudflare Turnstile secret; required when the real verifier is selected. */
+    TURNSTILE_SECRET_KEY: z.string().min(TURNSTILE_SECRET_KEY_MIN_LENGTH).max(1024).optional(),
+    /** Hostname the widget must have been solved on; required in production. */
+    TURNSTILE_EXPECTED_HOSTNAME: z.string().trim().min(1).max(253).optional(),
     /** Email transport for the email identity flow. Fake is development only. */
     EMAIL_PROVIDER: z.enum(['fake', 'resend']).default('fake'),
     /** Resend API credential; required when the real adapter is selected. */
@@ -839,11 +847,25 @@ export const envSchema = z
         message: 'must be non-fake in production',
       });
     }
-    if (env.CAPTCHA_PROVIDER === 'fake' || env.CAPTCHA_PROVIDER === undefined) {
+    if (env.CAPTCHA_PROVIDER !== 'turnstile') {
       ctx.addIssue({
         code: 'custom',
         path: ['CAPTCHA_PROVIDER'],
-        message: 'must be non-fake in production',
+        message: 'must be turnstile in production',
+      });
+    }
+    if (env.TURNSTILE_SECRET_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TURNSTILE_SECRET_KEY'],
+        message: 'is required in production',
+      });
+    }
+    if (env.TURNSTILE_EXPECTED_HOSTNAME === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TURNSTILE_EXPECTED_HOSTNAME'],
+        message: 'is required in production',
       });
     }
     if (env.EMAIL_PROVIDER !== 'resend') {

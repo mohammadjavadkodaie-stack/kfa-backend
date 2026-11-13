@@ -26,7 +26,9 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   // Required from stage 4.4a on; it signs the single-use document view links.
   DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
   OTP_PROVIDER: 'twilio',
-  CAPTCHA_PROVIDER: 'recaptcha',
+  CAPTCHA_PROVIDER: 'turnstile',
+  TURNSTILE_SECRET_KEY: 'unit-test-turnstile-secret-0123456789',
+  TURNSTILE_EXPECTED_HOSTNAME: 'app.example',
   // Required from E2-b1 on; production refuses the fake email transport.
   EMAIL_PROVIDER: 'resend',
   RESEND_API_KEY: 'test-resend-api-key',

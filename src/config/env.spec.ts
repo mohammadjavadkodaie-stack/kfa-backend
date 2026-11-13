@@ -43,7 +43,9 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   TOTP_ENC_KEY: PROD_TOTP_ENC_KEY,
   DOCUMENT_MASTER_KEY: PROD_DOCUMENT_MASTER_KEY,
   OTP_PROVIDER: 'twilio',
-  CAPTCHA_PROVIDER: 'recaptcha',
+  CAPTCHA_PROVIDER: 'turnstile',
+  TURNSTILE_SECRET_KEY: 'unit-test-turnstile-secret-0123456789',
+  TURNSTILE_EXPECTED_HOSTNAME: 'app.example',
   EMAIL_PROVIDER: 'resend',
   RESEND_API_KEY: 'test-resend-api-key',
   EMAIL_FROM: 'KFA <no-reply@example.com>',
@@ -695,7 +697,7 @@ describe('loadEnv', () => {
       /OTP_PROVIDER|CAPTCHA_PROVIDER/,
     );
     expect(() =>
-      loadEnv({ ...PROD_ENV, OTP_PROVIDER: 'twilio', CAPTCHA_PROVIDER: 'recaptcha' }),
+      loadEnv({ ...PROD_ENV, OTP_PROVIDER: 'twilio', CAPTCHA_PROVIDER: 'turnstile' }),
     ).not.toThrow();
   });
 
