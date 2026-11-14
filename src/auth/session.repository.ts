@@ -194,6 +194,11 @@ export interface SessionRepository {
   ): Promise<boolean>;
   /** Same contract as `setStatusIf`, for the role. */
   setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean>;
+  /**
+   * Number of accounts currently holding `role`. The first-owner bootstrap
+   * reads it to refuse its run the moment any OWNER exists.
+   */
+  countUsersByRole(role: Role): Promise<number>;
   /** User, device, session and first refresh token in one transaction. */
   createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null>;
   createAccountWithEmail(input: CreateEmailAccountInput): Promise<CreateEmailAccountResult>;

@@ -13,6 +13,7 @@
     "start:dev": "node --watch --require ts-node/register/transpile-only src/main.ts",
     "build": "tsc -p tsconfig.build.json",
     "start:prod": "node dist/main.js",
+    "bootstrap:owner": "node dist/scripts/bootstrap-owner.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.config.js",
     "test:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config test/jest-e2e.json --runInBand",
     "typecheck": "tsc -p tsconfig.json --noEmit",

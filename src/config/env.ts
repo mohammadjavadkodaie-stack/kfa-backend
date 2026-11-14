@@ -840,13 +840,9 @@ export const envSchema = z
       });
     }
 
-    if (env.OTP_PROVIDER === 'fake' || env.OTP_PROVIDER === undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['OTP_PROVIDER'],
-        message: 'must be non-fake in production',
-      });
-    }
+    // OTP_PROVIDER is deliberately not checked here: the phone/OTP identity
+    // flow is disabled in production (its routes answer a generic 404), so a
+    // production process configures no SMS adapter and never dials one.
     if (env.CAPTCHA_PROVIDER !== 'turnstile') {
       ctx.addIssue({
         code: 'custom',

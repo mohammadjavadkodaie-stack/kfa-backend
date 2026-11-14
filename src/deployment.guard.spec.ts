@@ -55,4 +55,62 @@ describe('production deployment guard', () => {
     expect(compose).toMatch(/443:443\/udp/);
     expect(compose).toMatch(/TRUSTED_PROXY_COUNT/);
   });
+
+  it('gives the frontend its whole runtime contract plus the build argument', () => {
+    const frontend = serviceBlock('frontend');
+
+    for (const name of [
+      'NODE_ENV',
+      'APP_URL',
+      'SESSION_SECRET',
+      'LOG_LEVEL',
+      'CAPTCHA_PROVIDER',
+      'TURNSTILE_SITE_KEY',
+    ]) {
+      expect(frontend).toMatch(new RegExp(`^\\s+${name}:`, 'm'));
+    }
+
+    // Every runtime value comes from the env file: none is pinned inline here.
+    expect(frontend).toMatch(/^\s+NODE_ENV: \$\{NODE_ENV:-production\}$/m);
+    expect(frontend).toMatch(/^\s+TRUSTED_PROXY_COUNT: \$\{TRUSTED_PROXY_COUNT:-1\}$/m);
+    expect(frontend).toMatch(/^\s+args:$/m);
+    expect(frontend).toMatch(/^\s+BACKEND_INTERNAL_URL:/m);
+    expect(frontend).not.toContain('FRONTEND_PUBLIC_URL');
+  });
+
+  it('never references the removed frontend URL variable', () => {
+    expect(compose).not.toContain('FRONTEND_PUBLIC_URL');
+    expect(envExample).not.toContain('FRONTEND_PUBLIC_URL');
+  });
+
+  it('wires no OTP provider in production', () => {
+    expect(compose).not.toContain('OTP_PROVIDER');
+    expect(envExample).not.toMatch(/^OTP_PROVIDER=/m);
+  });
+
+  it('gives the backend every document and TOTP key, and the migrate service none', () => {
+    const backend = serviceBlock('backend');
+
+    for (const name of [
+      'TOTP_ENC_KEY',
+      'DOCUMENT_MASTER_KEY',
+      'DOCUMENT_MASTER_KEY_ID',
+      'DOCUMENT_VIEW_TOKEN_SECRET',
+    ]) {
+      expect(backend).toMatch(new RegExp(`^\\s+${name}:`, 'm'));
+    }
+
+    // The break-glass URL stays on the backend so the owner bootstrap can use
+    // the one role the owner-protection trigger allows to create an OWNER.
+    expect(backend).toMatch(/^\s+MIGRATION_DATABASE_URL:/m);
+
+    // Migrations only need the two database URLs; a stray key line after its
+    // block would also make the file invalid YAML.
+    const migrate = serviceBlock('migrate');
+
+    expect(migrate).toMatch(/^\s+DATABASE_URL:/m);
+    expect(migrate).not.toContain('TOTP_ENC_KEY');
+    expect(migrate).not.toContain('DOCUMENT_MASTER_KEY');
+    expect(migrate).not.toContain('DOCUMENT_VIEW_TOKEN_SECRET');
+  });
 });

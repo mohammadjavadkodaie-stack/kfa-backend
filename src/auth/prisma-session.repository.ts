@@ -192,6 +192,10 @@ export class PrismaSessionRepository implements SessionRepository {
     return updated.count === 1;
   }
 
+  async countUsersByRole(role: Role): Promise<number> {
+    return this.prisma.user.count({ where: { role: PRISMA_ROLE[role] } });
+  }
+
   /** Null means "phone or username already exists"; the caller stays generic. */
   async createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null> {
     try {

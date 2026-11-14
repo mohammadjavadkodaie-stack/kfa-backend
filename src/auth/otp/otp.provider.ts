@@ -39,22 +39,41 @@ export class FakeOtpProvider implements OtpProvider {
 }
 
 /**
- * Builds the configured OTP provider, or refuses to boot.
- *
- * The fake adapter sends nothing and accepts one static code for every number,
- * so it must never serve production traffic. The environment validator already
- * rejects that combination; repeating the check here keeps the factory honest
- * for any wiring that does not go through `loadEnv`.
+ * Production wiring: the phone/OTP identity flow is switched off. Every method
+ * fails closed, so even a wiring mistake could never verify a code or send a
+ * message; the routes themselves answer a generic 404 long before this is
+ * reached (see `PhoneRoutesDisabledGuard`).
  */
-export function createOtpProvider(env: Pick<Env, 'NODE_ENV' | 'OTP_PROVIDER'>): OtpProvider {
-  if (env.OTP_PROVIDER !== 'fake') {
-    throw new Error('Unsupported OTP_PROVIDER');
+class DisabledOtpProvider implements OtpProvider {
+  async start(_phoneE164: string, _context: OtpContext): Promise<{ challengeRef: string | null }> {
+    throw new Error('OTP flow is disabled in production');
   }
 
+  async check(_phoneE164: string, _code: string, _challengeRef: string | null): Promise<boolean> {
+    throw new Error('OTP flow is disabled in production');
+  }
+
+  async notify(_phoneE164: string, _notice: OtpNotice): Promise<void> {
+    throw new Error('OTP flow is disabled in production');
+  }
+}
+
+/**
+ * Builds the configured OTP provider.
+ *
+ * Production never configures an adapter: the phone identity flow is disabled
+ * there, the environment validator no longer requires `OTP_PROVIDER`, and the
+ * disabled provider only exists so the DI graph stays complete while failing
+ * closed. Outside production exactly one adapter exists, the fake one; any
+ * other `OTP_PROVIDER` value is refused at wiring time, not at request time.
+ */
+export function createOtpProvider(env: Pick<Env, 'NODE_ENV' | 'OTP_PROVIDER'>): OtpProvider {
   if (env.NODE_ENV === 'production') {
-    throw new Error(
-      'OTP_PROVIDER=fake is not allowed in NODE_ENV=production: it accepts a static code and sends no message',
-    );
+    return new DisabledOtpProvider();
+  }
+
+  if (env.OTP_PROVIDER !== 'fake') {
+    throw new Error('Unsupported OTP_PROVIDER');
   }
 
   return new FakeOtpProvider();

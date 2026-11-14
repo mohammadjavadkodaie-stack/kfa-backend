@@ -18,11 +18,24 @@ describe('createOtpProvider', () => {
     );
   });
 
-  it('refuses to start in production when the fake provider is selected', () => {
-    expect(() => createOtpProvider({ NODE_ENV: 'production', OTP_PROVIDER: 'fake' })).toThrow(
-      /OTP_PROVIDER=fake is not allowed in NODE_ENV=production/,
-    );
-  });
+  it.each(['fake', 'twilio'] as const)(
+    'fails closed in production whatever OTP_PROVIDER says (%s)',
+    async (otpProvider) => {
+      const provider = createOtpProvider({ NODE_ENV: 'production', OTP_PROVIDER: otpProvider });
+
+      expect(provider).not.toBeInstanceOf(FakeOtpProvider);
+
+      await expect(provider.start('+14155552671', { purpose: 'login' })).rejects.toThrow(
+        /OTP flow is disabled in production/,
+      );
+      await expect(provider.check('+14155552671', '123456', null)).rejects.toThrow(
+        /OTP flow is disabled in production/,
+      );
+      await expect(
+        provider.notify('+14155552671', { kind: 'phone_changed', maskedPhone: '***-***-2671' }),
+      ).rejects.toThrow(/OTP flow is disabled in production/);
+    },
+  );
 
   it('refuses a provider that has no adapter', () => {
     expect(() => createOtpProvider({ NODE_ENV: 'test', OTP_PROVIDER: 'twilio' })).toThrow(

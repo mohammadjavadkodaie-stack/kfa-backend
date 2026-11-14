@@ -165,6 +165,16 @@ export class InMemorySessionRepository implements SessionRepository {
     return true;
   }
 
+  async countUsersByRole(role: Role): Promise<number> {
+    let count = 0;
+
+    for (const user of this.users.values()) {
+      if (user.role === role) count += 1;
+    }
+
+    return count;
+  }
+
   async createAccount(input: CreateAccountInput): Promise<IssuedSessionRecord | null> {
     const phoneTaken =
       input.phone !== null && [...this.users.values()].some((user) => user.phone === input.phone);

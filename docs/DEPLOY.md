@@ -29,7 +29,26 @@ The migration command is deliberately a one-off and is not run on app startup. C
 
 ## Verify and first owner
 
-Check `https://$SITE_DOMAIN/health`, then load the site, complete sign-up with a real email, and confirm Turnstile succeeds. No first-owner/bootstrap mechanism is documented in this codebase. **UNSURE: bootstrap of the first OWNER is not documented.** Do not improvise a direct database update in production; establish a reviewed, audited bootstrap procedure first.
+Check `https://$SITE_DOMAIN/health`, then load the site, complete sign-up with a real email, and confirm Turnstile succeeds.
+
+The phone/OTP identity flow is disabled in production: `/auth/otp/*`, `/auth/register`, `/auth/login` and `/auth/phone-change/*` answer the same generic 404 as a route that does not exist, and no `OTP_PROVIDER` is set. Sign-up, login, password reset and email change run through the email flow only.
+
+### Bootstrap the first OWNER
+
+The first staff account signs up like any other user through the email flow. Promote it exactly once, from the host, after the stack is healthy:
+
+```sh
+docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml exec backend node dist/scripts/bootstrap-owner.js --email ops@example.com --confirm
+```
+
+What the command guarantees:
+
+- Without `--confirm` it prints usage and exits 2 without touching the database.
+- The account must already exist; unknown or unusable addresses are refused generically (exit 1) and nothing is written.
+- It refuses with a non-zero exit when any OWNER already exists, so it is safe to re-run after a failed attempt.
+- The role change goes through the application's compare-and-set repository path (no raw SQL) and appends one audit row: action `owner.bootstrapped`, actor `system:bootstrap-cli`, masked email, previous and new role.
+- The database trigger only lets a role other than the runtime role create the OWNER, so the command connects with `MIGRATION_DATABASE_URL`, which the backend container already receives. Without that URL it falls back to the runtime URL and fails closed.
+- The promoted account still enrolls its own TOTP second factor at first staff sign-in; the CLI never bypasses the staff gate.
 
 ## Updates and rollback
 
@@ -58,8 +77,9 @@ The backup script covers PostgreSQL only. Documents are encrypted in the private
 - [ ] `TRUSTED_PROXY_COUNT=1` matches the actual single Caddy proxy.
 - [ ] ClamAV is healthy and signatures have updated successfully.
 - [ ] S3 bucket is private and encryption/versioning/least-privilege credentials are enabled.
-- [ ] No fake/development provider remains enabled (`OTP_PROVIDER`, email, captcha).
+- [ ] No fake/development provider remains enabled (email, captcha); no `OTP_PROVIDER` is configured because the phone/OTP routes are disabled in production.
+- [ ] The first OWNER is bootstrapped once with `bootstrap-owner.js --confirm`, and its TOTP second factor is enrolled.
 - [ ] Backups and a restore have been tested.
 - [ ] Owner/admin is informed of rate-limit and captcha behavior.
 
-UNSURE items: Alpine is selected because Prisma 6 supports the musl runtime used by `node:24-alpine`; validate against the generated Prisma engine in CI. The frontend context defaults to the sibling `../../KFA-frontend` path and its public URL variable is assumed to be `FRONTEND_PUBLIC_URL` because the frontend repository was not read. S3 provider is intentionally generic because `env.ts` defines an S3-compatible interface. First-owner bootstrap is not documented.
+UNSURE items: Alpine is selected because Prisma 6 supports the musl runtime used by `node:24-alpine`; validate against the generated Prisma engine in CI. The frontend context defaults to the sibling `../../KFA-frontend` path; its environment contract is runtime `APP_URL`, `SESSION_SECRET`, `LOG_LEVEL`, `CAPTCHA_PROVIDER`, `TURNSTILE_SITE_KEY`, `NODE_ENV` and `TRUSTED_PROXY_COUNT` (pinned to 1 in the compose file), plus the `BACKEND_INTERNAL_URL` build argument defaulting to `http://backend:3001`. S3 provider is intentionally generic because `env.ts` defines an S3-compatible interface.

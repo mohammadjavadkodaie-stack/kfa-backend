@@ -692,13 +692,14 @@ describe('loadEnv', () => {
     expect(Object.isFrozen(loadEnv({ ...BASE_ENV }))).toBe(true);
   });
 
-  it('rejects fake OTP and CAPTCHA providers in production', () => {
-    expect(() => loadEnv({ ...PROD_ENV, OTP_PROVIDER: 'fake', CAPTCHA_PROVIDER: 'fake' })).toThrow(
-      /OTP_PROVIDER|CAPTCHA_PROVIDER/,
-    );
-    expect(() =>
-      loadEnv({ ...PROD_ENV, OTP_PROVIDER: 'twilio', CAPTCHA_PROVIDER: 'turnstile' }),
-    ).not.toThrow();
+  it('rejects a fake CAPTCHA provider in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, CAPTCHA_PROVIDER: 'fake' })).toThrow(/CAPTCHA_PROVIDER/);
+    expect(() => loadEnv({ ...PROD_ENV, CAPTCHA_PROVIDER: 'turnstile' })).not.toThrow();
+  });
+
+  it('does not require OTP_PROVIDER in production (phone routes are disabled)', () => {
+    expect(loadEnv({ ...PROD_ENV, OTP_PROVIDER: undefined }).OTP_PROVIDER).toBe('fake');
+    expect(() => loadEnv({ ...PROD_ENV, OTP_PROVIDER: 'fake' })).not.toThrow();
   });
 
   it('requires TLS for database URLs in production', () => {

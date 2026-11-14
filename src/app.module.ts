@@ -8,6 +8,7 @@ import { AthleteModule } from './athlete/athlete.module';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { AuthGuard } from './auth/guards/auth.guard';
+import { PhoneRoutesDisabledGuard } from './auth/guards/phone-routes-disabled.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { StaffGateGuard } from './auth/totp/staff-gate.guard';
 import { StepUpGuard } from './auth/totp/step-up.guard';
@@ -37,11 +38,14 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
     HealthModule,
   ],
   providers: [
-    // Order matters: throttle before authenticating so unauthenticated floods
-    // are still rate limited; StaffGateGuard sits right after the token check so
-    // no role or step-up decision ever sees a staff session that never proved a
-    // second factor; RolesGuard then reads the principal AuthGuard already
-    // loaded, and StepUpGuard runs last, so it only ever sees a staff principal.
+    // Order matters: the phone/OTP routes answer a generic 404 in production
+    // before anything else sees them; throttle before authenticating so
+    // unauthenticated floods are still rate limited; StaffGateGuard sits right
+    // after the token check so no role or step-up decision ever sees a staff
+    // session that never proved a second factor; RolesGuard then reads the
+    // principal AuthGuard already loaded, and StepUpGuard runs last, so it only
+    // ever sees a staff principal.
+    { provide: APP_GUARD, useClass: PhoneRoutesDisabledGuard },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: StaffGateGuard },
