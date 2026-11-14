@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.env*
+test
+docs
+coverage
+*.md
+!README.md
+Dockerfile
+.deploy

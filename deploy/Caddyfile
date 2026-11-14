@@ -1,0 +1,39 @@
+{
+    email {$ACME_EMAIL}
+    auto_https prefer_wildcard
+}
+
+# If WWW_REDIRECT_DOMAIN is configured, set it to the www hostname and keep the
+# apex in SITE_DOMAIN; otherwise this block is harmlessly disabled by operators.
+{$WWW_REDIRECT_DOMAIN} {
+    redir https://{$SITE_DOMAIN}{uri} permanent
+}
+
+{$SITE_DOMAIN} {
+    encode gzip zstd
+    request_body {
+        max_size 11MB
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        -Server
+    }
+    log {
+        output stdout
+        format json
+        # Do not log query strings or credential-bearing request headers.
+        format filter {
+            wrap json
+            fields {
+                request>uri query {
+                    delete
+                }
+                request>headers.Authorization delete
+                request>headers.Cookie delete
+            }
+        }
+    }
+    # CSP and application security headers are set by the Next.js app; do not
+    # duplicate or weaken them here.
+    reverse_proxy frontend:3000
+}
