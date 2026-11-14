@@ -17,6 +17,7 @@ import { DocumentCryptoService } from './document-crypto.service';
 import { DOCUMENT_STORAGE, type DocumentStorage } from './document-storage';
 import { DocumentUploadController } from './document-upload.controller';
 import { EnvKeyWrapper } from './env-key-wrapper';
+import { OwnerDocumentsController } from './owner-documents.controller';
 import { ClamdScanner } from './ingest/clamd-scanner';
 import { DocumentIngestService } from './ingest/document-ingest.service';
 import { DocumentIngestError } from './ingest/ingest.errors';
@@ -24,6 +25,7 @@ import type { VirusScanner } from './ingest/virus-scanner';
 import { KEY_WRAPPER, type KeyWrapper, type WrappedDataKey } from './key-wrapper';
 import { DocumentUploadService } from './records/document-upload.service';
 import { IDENTITY_DOCUMENT_REPOSITORY } from './records/identity-document.repository';
+import { OwnerDocumentsService } from './records/owner-documents.service';
 import { PrismaIdentityDocumentRepository } from './records/prisma-identity-document.repository';
 import { S3DocumentStorage } from './s3-document-storage';
 import { DocumentViewLinkController } from './view/document-view-link.controller';
@@ -202,9 +204,13 @@ export function buildProofNonceStore(client: unknown): ProofNonceStore | null {
     StaffDocumentViewLinkController,
     // The bytes behind a link: the only route whose credential is the path.
     DocumentViewFileController,
+    // The owner's own list and delete: no owner parameter, no staff variant.
+    OwnerDocumentsController,
   ],
   providers: [
     DocumentUploadService,
+    // Reading and revoking one's own documents: same repository, same trail.
+    OwnerDocumentsService,
     // Its own decorators declare the dependencies; every one of them is a real
     // provider in this graph (crypto and storage below, the trail from
     // AuditModule, the two seams right after it).
@@ -260,13 +266,14 @@ export class DocumentsModule implements NestModule {
    * whole routes, which also covers the guard refusals.
    */
   configure(consumer: MiddlewareConsumer): void {
-    consumer
-      .apply(noStoreMiddleware)
-      .forRoutes(
-        DocumentUploadController,
-        DocumentViewLinkController,
-        StaffDocumentViewLinkController,
-        DocumentViewFileController,
-      );
+    consumer.apply(noStoreMiddleware).forRoutes(
+      DocumentUploadController,
+      DocumentViewLinkController,
+      StaffDocumentViewLinkController,
+      DocumentViewFileController,
+      // The owner's list describes private documents, and a delete is a
+      // state change; neither answer is ever cacheable.
+      OwnerDocumentsController,
+    );
   }
 }

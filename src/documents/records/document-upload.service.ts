@@ -42,6 +42,7 @@ import {
 /** The closed set of audit actions this module writes. */
 export const DOCUMENT_AUDIT_ACTIONS = {
   UPLOADED: 'document.uploaded',
+  DELETED: 'document.deleted',
 } as const;
 
 export type DocumentAuditAction =

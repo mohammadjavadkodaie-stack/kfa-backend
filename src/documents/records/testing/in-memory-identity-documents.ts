@@ -22,6 +22,10 @@ export class InMemoryIdentityDocuments implements IdentityDocumentRepository {
   readonly counts: string[] = [];
   /** Every id the view path asked for, in order. */
   readonly reads: string[] = [];
+  /** Every owner list read, with the cap it asked for, in order. */
+  readonly lists: { ownerUserId: string; limit: number }[] = [];
+  /** Every delete attempt, in order - foreign and missing ones included. */
+  readonly deletions: { documentId: string; ownerUserId: string }[] = [];
   /** The client each insert went through; `undefined` when the call had none. */
   readonly transactions: (Prisma.TransactionClient | undefined)[] = [];
 
@@ -68,6 +72,47 @@ export class InMemoryIdentityDocuments implements IdentityDocumentRepository {
     return row === undefined || row.status !== 'ACTIVE' ? null : row;
   }
 
+  async listActiveByOwner(
+    ownerUserId: string,
+    limit: number,
+    _tx?: Prisma.TransactionClient,
+  ): Promise<IdentityDocumentRecord[]> {
+    this.lists.push({ ownerUserId, limit });
+
+    // Same predicate and total order as the query: ACTIVE only, newest first,
+    // the id breaking a tie, at most `limit` rows.
+    return this.rows
+      .filter((row) => row.ownerUserId === ownerUserId && row.status === 'ACTIVE')
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() || right.id.localeCompare(left.id),
+      )
+      .slice(0, limit);
+  }
+
+  async softDeleteOwnedActive(
+    documentId: string,
+    ownerUserId: string,
+    deletedAt: Date,
+    _tx?: Prisma.TransactionClient,
+  ): Promise<IdentityDocumentRecord | null> {
+    this.deletions.push({ documentId, ownerUserId });
+
+    const row = this.rowsById.get(documentId);
+
+    // The compare-and-set of the query: a missing, foreign or already deleted
+    // row is not moved, and the caller cannot tell the three apart.
+    if (row === undefined || row.ownerUserId !== ownerUserId || row.status !== 'ACTIVE') {
+      return null;
+    }
+
+    const deleted: IdentityDocumentRecord = { ...row, status: 'DELETED', deletedAt };
+
+    this.rowsById.set(documentId, deleted);
+
+    return deleted;
+  }
+
   /** The committed state a rollback has to bring back. */
   snapshot(): Map<string, IdentityDocumentRecord> {
     return new Map(this.rowsById);
@@ -90,24 +135,39 @@ export class InMemoryIdentityDocuments implements IdentityDocumentRepository {
   /** Puts `count` ACTIVE rows on the owner, for the quota checks. */
   seedActive(ownerUserId: string, count: number, kind: DocumentKind = 'NATIONAL_ID'): void {
     for (let index = 0; index < count; index += 1) {
-      const id = randomUUID();
-
-      this.rowsById.set(id, {
-        id,
-        ownerUserId,
-        kind,
-        objectKey: randomUUID(),
-        contentType: 'image/jpeg',
-        sizeBytes: 1_024,
-        sha256: '9f'.repeat(32),
-        keyId: 'v1',
-        wrappedDek: Buffer.alloc(61, 1),
-        iv: Buffer.alloc(12, 2),
-        authTag: Buffer.alloc(16, 3),
-        status: 'ACTIVE',
-        createdAt: new Date(),
-        deletedAt: null,
-      });
+      this.seed(ownerUserId, new Date(), kind);
     }
+  }
+
+  /**
+   * Puts one ACTIVE row on the owner at a chosen time, for the ordering checks.
+   * Returns the row, so a test can address exactly what it seeded.
+   */
+  seed(
+    ownerUserId: string,
+    createdAt: Date,
+    kind: DocumentKind = 'NATIONAL_ID',
+  ): IdentityDocumentRecord {
+    const id = randomUUID();
+    const row: IdentityDocumentRecord = {
+      id,
+      ownerUserId,
+      kind,
+      objectKey: randomUUID(),
+      contentType: 'image/jpeg',
+      sizeBytes: 1_024,
+      sha256: '9f'.repeat(32),
+      keyId: 'v1',
+      wrappedDek: Buffer.alloc(61, 1),
+      iv: Buffer.alloc(12, 2),
+      authTag: Buffer.alloc(16, 3),
+      status: 'ACTIVE',
+      createdAt,
+      deletedAt: null,
+    };
+
+    this.rowsById.set(id, row);
+
+    return row;
   }
 }

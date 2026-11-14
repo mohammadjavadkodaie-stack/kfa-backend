@@ -71,4 +71,33 @@ export interface IdentityDocumentRepository {
    * viewable, so it answers null exactly like a missing one.
    */
   findActiveById(id: string, tx?: Prisma.TransactionClient): Promise<IdentityDocumentRecord | null>;
+
+  /**
+   * The owner's own ACTIVE documents, newest first, at most `limit`.
+   *
+   * The order is total (creation time, then id), so two requests with the same
+   * rows cannot disagree about it. Only ACTIVE rows are read: the list is the
+   * same set the quota counts.
+   */
+  listActiveByOwner(
+    ownerUserId: string,
+    limit: number,
+    tx?: Prisma.TransactionClient,
+  ): Promise<IdentityDocumentRecord[]>;
+
+  /**
+   * Soft-deletes one ACTIVE document of one owner and returns it, or null.
+   *
+   * A compare-and-set on (id, owner, ACTIVE): a row that is missing, belongs to
+   * somebody else or was already deleted answers null in exactly the same way,
+   * and two racing deletes cannot both count as successful - the loser sees the
+   * predicate fail and gets the same null. The caller passes its transaction so
+   * the audit entry describing the delete commits or rolls back with it.
+   */
+  softDeleteOwnedActive(
+    documentId: string,
+    ownerUserId: string,
+    deletedAt: Date,
+    tx?: Prisma.TransactionClient,
+  ): Promise<IdentityDocumentRecord | null>;
 }

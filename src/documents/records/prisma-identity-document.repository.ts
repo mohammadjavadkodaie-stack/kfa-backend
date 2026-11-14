@@ -104,4 +104,46 @@ export class PrismaIdentityDocumentRepository implements IdentityDocumentReposit
 
     return row === null ? null : toRecord(row);
   }
+
+  async listActiveByOwner(
+    ownerUserId: string,
+    limit: number,
+    tx?: Prisma.TransactionClient,
+  ): Promise<IdentityDocumentRecord[]> {
+    const client: Prisma.TransactionClient = tx ?? this.prisma;
+    // A total order (time, then the unique id) makes the answer stable between
+    // two reads of the same rows. The cap is applied by the query, so a large
+    // account cannot make the route read or serialize an unbounded set.
+    const rows = await client.identityDocument.findMany({
+      where: { ownerUserId, status: 'ACTIVE' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit,
+      select: RECORD_FIELDS,
+    });
+
+    return rows.map(toRecord);
+  }
+
+  async softDeleteOwnedActive(
+    documentId: string,
+    ownerUserId: string,
+    deletedAt: Date,
+    tx?: Prisma.TransactionClient,
+  ): Promise<IdentityDocumentRecord | null> {
+    const client: Prisma.TransactionClient = tx ?? this.prisma;
+    // Read first for the columns the trail names (kind, id), then write with the
+    // same predicate. The UPDATE is the gate: `count` is 1 only for the caller
+    // that moved an ACTIVE row, so a racing or repeated delete writes nothing.
+    const where = { id: documentId, ownerUserId, status: 'ACTIVE' as const };
+    const row = await client.identityDocument.findFirst({ where, select: RECORD_FIELDS });
+
+    if (row === null) return null;
+
+    const result = await client.identityDocument.updateMany({
+      where,
+      data: { status: 'DELETED', deletedAt },
+    });
+
+    return result.count === 1 ? toRecord({ ...row, status: 'DELETED', deletedAt }) : null;
+  }
 }
