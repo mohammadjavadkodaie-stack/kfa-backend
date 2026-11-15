@@ -24,6 +24,11 @@ const storedRow = {
   heightCm: 168,
   createdAt: new Date('2026-11-08T10:00:00.000Z'),
   updatedAt: new Date('2026-11-08T10:00:00.000Z'),
+  reviewStatus: 'DRAFT',
+  submittedAt: null,
+  reviewedAt: null,
+  reviewedById: null,
+  rejectionReason: null,
 };
 
 const input: AthleteProfileInput = {
@@ -44,6 +49,7 @@ function createPrisma(found: typeof storedRow | null = storedRow) {
     athleteProfile: {
       upsert: jest.fn(async () => storedRow),
       findUnique: jest.fn(async () => found),
+      updateMany: jest.fn(async () => ({ count: 1 })),
     },
   };
 }
@@ -92,6 +98,36 @@ describe('PrismaAthleteProfileRepository', () => {
     expect(upsertArgs(prisma)?.create.dateOfBirth).toEqual(new Date('2001-02-03T00:00:00.000Z'));
     expect(record.dateOfBirth).toBe('2001-02-03');
     expect(record.userId).toBe('user-a');
+  });
+
+  it('updates only draft or rejected rows when submitting for review', async () => {
+    const prisma = createPrisma();
+    const repository = new PrismaAthleteProfileRepository(prisma as unknown as PrismaService);
+    const submittedAt = new Date('2026-11-14T12:00:00.000Z');
+
+    await expect(repository.submitForReview('user-a', submittedAt)).resolves.toBe(1);
+
+    expect(prisma.athleteProfile.updateMany).toHaveBeenCalledWith({
+      where: { userId: 'user-a', reviewStatus: { in: ['DRAFT', 'REJECTED'] } },
+      data: { reviewStatus: 'PENDING', submittedAt, rejectionReason: null },
+    });
+  });
+
+  it('uses the transaction client for the conditional submit', async () => {
+    const prisma = createPrisma();
+    const tx = { athleteProfile: { updateMany: jest.fn(async () => ({ count: 0 })) } };
+    const repository = new PrismaAthleteProfileRepository(prisma as unknown as PrismaService);
+
+    await expect(
+      repository.submitForReview(
+        'user-a',
+        new Date('2026-11-14T12:00:00.000Z'),
+        tx as unknown as Prisma.TransactionClient,
+      ),
+    ).resolves.toBe(0);
+
+    expect(tx.athleteProfile.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.athleteProfile.updateMany).not.toHaveBeenCalled();
   });
 
   it('returns null for a user without a profile', async () => {

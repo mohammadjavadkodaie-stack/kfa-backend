@@ -18,7 +18,13 @@
  * audit failure answers one generic 503.
  */
 
-import { Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../../audit/audit.service';
@@ -106,6 +112,14 @@ export class OwnerDocumentsService {
    * or not applied at all. The blob is intentionally not removed here.
    */
   async delete(actor: PolicySubject, documentId: string): Promise<void> {
+    const profile = await this.prisma.athleteProfile.findUnique({
+      where: { userId: actor.id },
+      select: { reviewStatus: true },
+    });
+    if (profile?.reviewStatus === 'PENDING' || profile?.reviewStatus === 'APPROVED') {
+      throw new ConflictException({ code: 'profile_edit_locked' });
+    }
+
     let deleted: IdentityDocumentRecord | null;
 
     try {

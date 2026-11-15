@@ -56,6 +56,8 @@ const VIEW_FIELDS = [
   'legalFirstName',
   'legalLastName',
   'nationality',
+  'reviewStatus',
+  'submittedAt',
   'updatedAt',
   'weightKg',
 ];
@@ -75,14 +77,17 @@ describe('Athlete profile routes (e2e)', () => {
     await harness.close();
   });
 
-  it('refuses both routes without a token, and writes nothing', async () => {
+  it('refuses every route without a token, and writes nothing', async () => {
     const read = await harness.get('/athlete/profile');
     const write = await harness.put('/athlete/profile', undefined, body());
+    const submit = await harness.post('/athlete/profile/submit', undefined, body());
 
     expect(read.status).toBe(401);
     expect(read.body).toEqual({ ...UNAUTHORIZED, requestId: expect.any(String) });
     expect(write.status).toBe(401);
     expect(write.body).toEqual({ ...UNAUTHORIZED, requestId: expect.any(String) });
+    expect(submit.status).toBe(401);
+    expect(submit.body).toEqual({ ...UNAUTHORIZED, requestId: expect.any(String) });
     expect(harness.profiles.writes).toEqual([]);
   });
 
@@ -185,7 +190,90 @@ describe('Athlete profile routes (e2e)', () => {
     expect(trail).not.toContain(yearsAgo(10));
   });
 
-  it('marks both handlers as authenticated and never public', () => {
+  it('submits a complete profile for review and reports it as pending', async () => {
+    harness.documents.set(athlete.userId, 1);
+
+    const submitted = await harness.post('/athlete/profile/submit', athlete.token, body());
+
+    expect(submitted.status).toBe(200);
+    expect(submitted.body).toEqual({ reviewStatus: 'PENDING', submittedAt: expect.any(String) });
+
+    const read = await harness.get('/athlete/profile', athlete.token);
+
+    expect(read.status).toBe(200);
+    expect(read.body).toMatchObject({ reviewStatus: 'PENDING' });
+    expect(read.body).not.toHaveProperty('rejectionReason');
+
+    // One trail row, field names only - never a profile value.
+    const submissions = harness.rows('ATHLETE_PROFILE_SUBMITTED', athlete.userId);
+
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]?.metadata).toEqual({ fields: [] });
+    expect(JSON.stringify(submissions)).not.toContain('Karachi');
+    expect(JSON.stringify(submissions)).not.toContain('Lovelace');
+  });
+
+  it('answers the generic conflict on a second submit', async () => {
+    const again = await harness.post('/athlete/profile/submit', athlete.token, body());
+
+    expect(again.status).toBe(409);
+    expect(again.body).toMatchObject({ code: 'profile_wrong_state' });
+
+    const read = await harness.get('/athlete/profile', athlete.token);
+
+    expect(read.body).toMatchObject({ reviewStatus: 'PENDING' });
+  });
+
+  it('refuses to submit without an identity document', async () => {
+    const without = await harness.signUp(Role.ATHLETE);
+
+    await harness.put('/athlete/profile', without.token, body());
+
+    const submitted = await harness.post('/athlete/profile/submit', without.token, body());
+
+    expect(submitted.status).toBe(409);
+    expect(submitted.body).toMatchObject({ code: 'profile_not_ready' });
+
+    const read = await harness.get('/athlete/profile', without.token);
+
+    expect(read.body).toMatchObject({ reviewStatus: 'DRAFT', submittedAt: null });
+  });
+
+  it('locks edits while the profile is pending review', async () => {
+    const locked = await harness.put('/athlete/profile', athlete.token, body({ city: 'Lahore' }));
+
+    expect(locked.status).toBe(409);
+    expect(locked.body).toMatchObject({ code: 'profile_edit_locked' });
+
+    const read = await harness.get('/athlete/profile', athlete.token);
+
+    expect(read.body).toMatchObject({ city: 'Karachi', reviewStatus: 'PENDING' });
+  });
+
+  it('keeps one account out of another account review', async () => {
+    const stranger = await harness.signUp(Role.ATHLETE);
+
+    await harness.put('/athlete/profile', stranger.token, body({ city: 'Lahore' }));
+    harness.documents.set(stranger.userId, 1);
+
+    const submitted = await harness.post('/athlete/profile/submit', stranger.token, body());
+
+    expect(submitted.status).toBe(200);
+
+    // The first athlete's row is untouched by the stranger's submission.
+    const mine = await harness.get('/athlete/profile', athlete.token);
+
+    expect(mine.body).toMatchObject({ city: 'Karachi', reviewStatus: 'PENDING' });
+
+    // No route takes a user id, so there is nothing to aim at another row.
+    const aimed = await harness.put(`/athlete/profile/${stranger.userId}`, athlete.token, body());
+
+    expect(aimed.status).toBe(404);
+    expect(aimed.body).toEqual({ ...NOT_FOUND, requestId: expect.any(String) });
+    expect(harness.rows('ATHLETE_PROFILE_SUBMITTED', stranger.userId)).toHaveLength(1);
+  });
+
+  it('marks every handler as authenticated and never public', () => {
     const prototype = AthleteController.prototype as unknown as Record<string, unknown>;
     const handlers = Object.getOwnPropertyNames(prototype).filter((name) => {
       const handler = prototype[name];
@@ -195,7 +283,7 @@ describe('Athlete profile routes (e2e)', () => {
       );
     });
 
-    expect(handlers.sort()).toEqual(['read', 'save']);
+    expect(handlers.sort()).toEqual(['read', 'save', 'submit']);
 
     for (const name of handlers) {
       const handler = prototype[name] as object;

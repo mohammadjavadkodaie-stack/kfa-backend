@@ -39,10 +39,16 @@ export const STEP_UP_REQUIRED_CODE = 'step_up_required';
 
 /** The staff session has never proved a second factor. */
 export const SECOND_FACTOR_REQUIRED_CODE = 'second_factor_required';
+export const PROFILE_EDIT_LOCKED_CODE = 'profile_edit_locked';
+export const PROFILE_NOT_READY_CODE = 'profile_not_ready';
+export const PROFILE_WRONG_STATE_CODE = 'profile_wrong_state';
 
 const PUBLIC_CODES: ReadonlySet<string> = new Set([
   STEP_UP_REQUIRED_CODE,
   SECOND_FACTOR_REQUIRED_CODE,
+  PROFILE_EDIT_LOCKED_CODE,
+  PROFILE_NOT_READY_CODE,
+  PROFILE_WRONG_STATE_CODE,
 ]);
 
 export function genericMessageFor(statusCode: number): string {

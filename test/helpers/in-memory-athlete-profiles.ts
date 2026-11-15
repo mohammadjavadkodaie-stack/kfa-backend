@@ -21,6 +21,17 @@ export class InMemoryAthleteProfileRepository implements AthleteProfileRepositor
     return this.rows.get(userId) ?? null;
   }
 
+  async submitForReview(
+    userId: string,
+    submittedAt: Date,
+    _tx?: Prisma.TransactionClient,
+  ): Promise<number> {
+    const row = this.rows.get(userId);
+    if (row === undefined || !['DRAFT', 'REJECTED'].includes(row.reviewStatus)) return 0;
+    this.rows.set(userId, { ...row, reviewStatus: 'PENDING', submittedAt, rejectionReason: null });
+    return 1;
+  }
+
   async upsertForUser(
     userId: string,
     data: AthleteProfileInput,
@@ -39,6 +50,11 @@ export class InMemoryAthleteProfileRepository implements AthleteProfileRepositor
       heightCm: data.heightCm ?? null,
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
+      reviewStatus: previous?.reviewStatus ?? 'DRAFT',
+      submittedAt: previous?.submittedAt ?? null,
+      reviewedAt: previous?.reviewedAt ?? null,
+      reviewedById: previous?.reviewedById ?? null,
+      rejectionReason: previous?.rejectionReason ?? null,
     };
 
     this.rows.set(userId, next);

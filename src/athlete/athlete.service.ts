@@ -1,9 +1,18 @@
-import { Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import type { Prisma } from '@prisma/client';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
 import type { PolicySubject } from '../auth/policy/access-policy';
 import type { AccessPolicyContext } from '../auth/policy/access-policy.service';
+import { PROFILE_NOT_READY_CODE, PROFILE_WRONG_STATE_CODE } from '../common/errors/error-response';
 import { ResourceOwnershipService } from '../auth/policy/resource-ownership.service';
 import { PrismaService } from '../database/prisma.service';
 import { CLOCK, isMinor, type Clock } from './profile/athlete-age';
@@ -13,12 +22,15 @@ import {
   type AthleteProfileRecord,
   type AthleteProfileRepository,
   type Gender,
+  type ReviewStatus,
 } from './profile/athlete-profile.repository';
+import { AthleteProfileDto } from './dto/athlete-profile.dto';
 
 /** The closed set of audit actions this module writes. */
 export const ATHLETE_AUDIT_ACTIONS = {
   PROFILE_CREATE: 'athlete.profile.create',
   PROFILE_UPDATE: 'athlete.profile.update',
+  PROFILE_SUBMITTED: 'ATHLETE_PROFILE_SUBMITTED',
 } as const;
 
 export type AthleteAuditAction = (typeof ATHLETE_AUDIT_ACTIONS)[keyof typeof ATHLETE_AUDIT_ACTIONS];
@@ -53,6 +65,9 @@ export interface AthleteProfileView {
   readonly heightCm: number | null;
   readonly isMinor: boolean;
   readonly updatedAt: string;
+  readonly reviewStatus: ReviewStatus;
+  readonly submittedAt: string | null;
+  readonly rejectionReason?: string;
 }
 
 /** `undefined` from the input layer would otherwise read as "changed" against NULL. */
@@ -109,6 +124,10 @@ export class AthleteService {
   ): Promise<AthleteProfileView> {
     const previous = await this.loadOwn(actor, context);
 
+    if (previous !== null && ['PENDING', 'APPROVED'].includes(previous.reviewStatus)) {
+      throw new ConflictException({ code: 'profile_edit_locked' });
+    }
+
     // One transaction for the row and its trail: the upsert goes first so the
     // chain lock is held for the shortest possible time, and the audit row joins
     // the same client. If the trail cannot be written, nothing is written at all.
@@ -132,6 +151,41 @@ export class AthleteService {
     );
 
     return this.toView(record);
+  }
+
+  async submitForReview(
+    actor: PolicySubject,
+    input: AthleteProfileInput,
+    context: AccessPolicyContext,
+  ): Promise<{ reviewStatus: 'PENDING'; submittedAt: string }> {
+    const current = await this.loadOwn(actor, context);
+
+    if (current === null) throw new ConflictException({ code: PROFILE_NOT_READY_CODE });
+    if (!['DRAFT', 'REJECTED'].includes(current.reviewStatus)) {
+      throw new ConflictException({ code: PROFILE_WRONG_STATE_CODE });
+    }
+
+    const candidate = plainToInstance(AthleteProfileDto, input);
+    if ((await validate(candidate)).length > 0) {
+      throw new ConflictException({ code: PROFILE_NOT_READY_CODE });
+    }
+
+    const documents = await this.prisma.identityDocument.count({
+      where: { ownerUserId: actor.id, status: 'ACTIVE' },
+    });
+    if (documents === 0) throw new ConflictException({ code: PROFILE_NOT_READY_CODE });
+
+    const submittedAt = new Date();
+    const changed = await this.prisma.$transaction(async (tx) => {
+      const count = await this.profiles.submitForReview(actor.id, submittedAt, tx);
+      if (count !== 1) throw new ConflictException({ code: PROFILE_WRONG_STATE_CODE });
+
+      await this.record(ATHLETE_AUDIT_ACTIONS.PROFILE_SUBMITTED, actor, [], context, tx);
+      return count;
+    });
+
+    if (changed !== 1) throw new ConflictException({ code: PROFILE_WRONG_STATE_CODE });
+    return { reviewStatus: 'PENDING', submittedAt: submittedAt.toISOString() };
   }
 
   /**
@@ -200,6 +254,11 @@ export class AthleteService {
       heightCm: record.heightCm,
       isMinor: isMinor(record.dateOfBirth, this.clock()),
       updatedAt: record.updatedAt.toISOString(),
+      reviewStatus: record.reviewStatus,
+      submittedAt: record.submittedAt?.toISOString() ?? null,
+      ...(record.reviewStatus === 'REJECTED' && record.rejectionReason !== null
+        ? { rejectionReason: record.rejectionReason }
+        : {}),
     };
   }
 }

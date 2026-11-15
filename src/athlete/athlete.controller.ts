@@ -1,4 +1,14 @@
-import { Body, Controller, ForbiddenException, Get, Put, Req } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Put,
+  Req,
+} from '@nestjs/common';
 import { Authenticated } from '../auth/decorators/authenticated.decorator';
 import type { AuthenticatedRequest } from '../auth/guards/auth.guard';
 import type { PolicySubject } from '../auth/policy/access-policy';
@@ -23,6 +33,20 @@ export class AthleteController {
   @Get('profile')
   read(@Req() request: AuthenticatedRequest): Promise<AthleteProfileView> {
     return this.athlete.readProfile(this.actor(request), this.context(request));
+  }
+
+  @Authenticated()
+  @Post('profile/submit')
+  @HttpCode(HttpStatus.OK)
+  submit(
+    @Body() body: AthleteProfileDto,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<{ reviewStatus: 'PENDING'; submittedAt: string }> {
+    return this.athlete.submitForReview(
+      this.actor(request),
+      toProfileInput(body),
+      this.context(request),
+    );
   }
 
   /** Create or replace, decided by the repository's single-statement upsert. */

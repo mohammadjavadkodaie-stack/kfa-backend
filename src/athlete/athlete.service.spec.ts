@@ -1,4 +1,9 @@
-import { ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { PinoLogger } from 'nestjs-pino';
 import { FakeAudit, type AuditRecord } from '../../test/helpers/auth-service-harness';
@@ -60,6 +65,11 @@ function record(
     heightCm: merged.heightCm ?? null,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+    reviewStatus: 'DRAFT',
+    submittedAt: null,
+    reviewedAt: null,
+    reviewedById: null,
+    rejectionReason: null,
   };
 }
 
@@ -91,11 +101,49 @@ class RecordingProfiles implements AthleteProfileRepository {
       heightCm: data.heightCm ?? null,
       createdAt: previous?.createdAt ?? NOW,
       updatedAt: NOW,
+      reviewStatus: previous?.reviewStatus ?? 'DRAFT',
+      submittedAt: previous?.submittedAt ?? null,
+      reviewedAt: previous?.reviewedAt ?? null,
+      reviewedById: previous?.reviewedById ?? null,
+      rejectionReason: previous?.rejectionReason ?? null,
     };
 
     this.rows.set(userId, next);
 
     return next;
+  }
+
+  /** Set to make the conditional update lose, as a concurrent submit would. */
+  steal = false;
+  readonly submissions: string[] = [];
+
+  async submitForReview(
+    userId: string,
+    submittedAt: Date,
+    tx?: Prisma.TransactionClient,
+  ): Promise<number> {
+    this.submissions.push(userId);
+    this.transactions.push(tx);
+
+    const current = this.rows.get(userId);
+
+    // The same guard the conditional updateMany applies in one statement.
+    if (
+      this.steal ||
+      current === undefined ||
+      !['DRAFT', 'REJECTED'].includes(current.reviewStatus)
+    ) {
+      return 0;
+    }
+
+    this.rows.set(userId, {
+      ...current,
+      reviewStatus: 'PENDING',
+      submittedAt,
+      rejectionReason: null,
+    });
+
+    return 1;
   }
 
   /** The commits a rollback has to undo. */
@@ -116,6 +164,13 @@ class RecordingProfiles implements AthleteProfileRepository {
  */
 class FakePrisma {
   readonly transactions: Prisma.TransactionClient[] = [];
+
+  /** How many active identity documents the submit precondition will count. */
+  activeDocuments = 0;
+
+  readonly identityDocument = {
+    count: (): Promise<number> => Promise.resolve(this.activeDocuments),
+  };
 
   constructor(private readonly profiles: RecordingProfiles) {}
 
@@ -186,6 +241,13 @@ async function refusalOf(call: Promise<unknown>, type: new () => Error): Promise
   }
 
   throw new Error('expected the call to be refused');
+}
+
+/** The allow-listed code a refusal carries; nothing else is read out of it. */
+async function codeOf(call: Promise<unknown>): Promise<string> {
+  const error = await refusalOf(call, ConflictException);
+
+  return (error as unknown as { getResponse: () => { code?: string } }).getResponse().code ?? '';
 }
 
 describe('AthleteService', () => {
@@ -325,10 +387,250 @@ describe('AthleteService', () => {
       'legalFirstName',
       'legalLastName',
       'nationality',
+      'reviewStatus',
+      'submittedAt',
       'updatedAt',
       'weightKg',
     ]);
     expect(view.updatedAt).toBe('2026-01-02T00:00:00.000Z');
     expect(JSON.stringify(view)).not.toContain(USER_ID);
+  });
+
+  it('submits a draft profile and answers pending with the timestamp', async () => {
+    const { service, audit, profiles, prisma } = createService();
+
+    profiles.rows.set(USER_ID, record());
+    prisma.activeDocuments = 1;
+
+    const result = await service.submitForReview(actor, INPUT, CONTEXT);
+    const stored = profiles.rows.get(USER_ID);
+
+    expect(result).toEqual({ reviewStatus: 'PENDING', submittedAt: expect.any(String) });
+    expect(stored?.reviewStatus).toBe('PENDING');
+    expect(stored?.submittedAt).toBeInstanceOf(Date);
+    expect(stored?.rejectionReason).toBeNull();
+
+    // The row and its trail share one unit of work.
+    const submissions = audit.records.filter(
+      (row) => row.action === ATHLETE_AUDIT_ACTIONS.PROFILE_SUBMITTED,
+    );
+
+    expect(submissions).toHaveLength(1);
+    expect(profiles.transactions).toEqual([prisma.transactions[0]]);
+    expect(audit.transactions).toEqual([prisma.transactions[0]]);
+  });
+
+  it('resubmits a rejected profile and opens the edit again', async () => {
+    const { service, profiles, prisma } = createService();
+    const rejectedAt = new Date('2026-05-01T00:00:00.000Z');
+
+    profiles.rows.set(USER_ID, {
+      ...record(),
+      reviewStatus: 'REJECTED',
+      submittedAt: rejectedAt,
+      reviewedAt: rejectedAt,
+      reviewedById: OTHER_ID,
+      rejectionReason: 'photo unreadable',
+    });
+    prisma.activeDocuments = 1;
+
+    await service.submitForReview(actor, INPUT, CONTEXT);
+
+    const stored = profiles.rows.get(USER_ID);
+
+    expect(stored?.reviewStatus).toBe('PENDING');
+    expect(stored?.rejectionReason).toBeNull();
+    expect(stored?.submittedAt).not.toEqual(rejectedAt);
+  });
+
+  it('refuses a second submit while one is already pending', async () => {
+    const { service, audit, profiles, prisma } = createService();
+
+    profiles.rows.set(USER_ID, { ...record(), reviewStatus: 'PENDING', submittedAt: NOW });
+    prisma.activeDocuments = 1;
+
+    await expect(codeOf(service.submitForReview(actor, INPUT, CONTEXT))).resolves.toBe(
+      'profile_wrong_state',
+    );
+
+    // The refusal happens before the conditional update, so nothing is attempted.
+    expect(profiles.submissions).toEqual([]);
+    expect(audit.records).toEqual([]);
+  });
+
+  it('refuses to submit a profile that is already approved', async () => {
+    const { service, audit, profiles, prisma } = createService();
+
+    profiles.rows.set(USER_ID, { ...record(), reviewStatus: 'APPROVED', submittedAt: NOW });
+    prisma.activeDocuments = 1;
+
+    await expect(codeOf(service.submitForReview(actor, INPUT, CONTEXT))).resolves.toBe(
+      'profile_wrong_state',
+    );
+    expect(profiles.submissions).toEqual([]);
+    expect(audit.records).toEqual([]);
+  });
+
+  it('refuses to submit an account without a profile', async () => {
+    const { service, audit, prisma } = createService();
+
+    prisma.activeDocuments = 1;
+
+    await expect(codeOf(service.submitForReview(actor, INPUT, CONTEXT))).resolves.toBe(
+      'profile_not_ready',
+    );
+    expect(audit.records).toEqual([]);
+  });
+
+  it('refuses to submit without an active identity document', async () => {
+    const { service, audit, profiles } = createService();
+
+    profiles.rows.set(USER_ID, record());
+
+    await expect(codeOf(service.submitForReview(actor, INPUT, CONTEXT))).resolves.toBe(
+      'profile_not_ready',
+    );
+
+    // The profile is untouched and nothing is attempted.
+    expect(profiles.rows.get(USER_ID)?.reviewStatus).toBe('DRAFT');
+    expect(profiles.submissions).toEqual([]);
+    expect(audit.records).toEqual([]);
+  });
+
+  it('refuses to submit a profile that fails its own rules', async () => {
+    const { service, audit, profiles, prisma } = createService();
+
+    profiles.rows.set(USER_ID, record());
+    prisma.activeDocuments = 1;
+
+    await expect(
+      codeOf(service.submitForReview(actor, { ...INPUT, city: '' }, CONTEXT)),
+    ).resolves.toBe('profile_not_ready');
+    expect(profiles.submissions).toEqual([]);
+    expect(audit.records).toEqual([]);
+  });
+
+  it('loses the submit to a concurrent writer without a second trail row', async () => {
+    const { service, audit, profiles, prisma } = createService();
+
+    profiles.rows.set(USER_ID, record());
+    profiles.steal = true;
+    prisma.activeDocuments = 1;
+
+    // The read saw DRAFT while the conditional update matched no row: a conflict,
+    // never a second transition of an already submitted profile.
+    await expect(codeOf(service.submitForReview(actor, INPUT, CONTEXT))).resolves.toBe(
+      'profile_wrong_state',
+    );
+
+    expect(profiles.submissions).toEqual([USER_ID]);
+    expect(profiles.rows.get(USER_ID)?.reviewStatus).toBe('DRAFT');
+    expect(audit.records).toEqual([]);
+  });
+
+  it('audits the submit by name only, with no profile values', async () => {
+    const { service, audit, profiles, prisma } = createService();
+
+    profiles.rows.set(USER_ID, record());
+    prisma.activeDocuments = 1;
+
+    await service.submitForReview(actor, INPUT, CONTEXT);
+
+    const [entry] = audit.records;
+
+    expect(entry).toMatchObject({
+      action: ATHLETE_AUDIT_ACTIONS.PROFILE_SUBMITTED,
+      actorId: USER_ID,
+      actorRole: Role.ATHLETE,
+      targetType: 'athlete_profile',
+      targetId: USER_ID,
+      requestId: REQUEST_ID,
+      metadata: { fields: [] },
+    });
+
+    const trail = JSON.stringify(entry);
+
+    expect(trail).not.toContain('Ada');
+    expect(trail).not.toContain('Lovelace');
+    expect(trail).not.toContain('Karachi');
+  });
+
+  it('locks edits while the profile is pending', async () => {
+    const { service, audit, profiles } = createService();
+
+    profiles.rows.set(USER_ID, { ...record(), reviewStatus: 'PENDING', submittedAt: NOW });
+
+    await expect(codeOf(service.saveProfile(actor, INPUT, CONTEXT))).resolves.toBe(
+      'profile_edit_locked',
+    );
+
+    // A locked edit writes neither the row nor a trail row.
+    expect(profiles.upserts).toEqual([]);
+    expect(audit.records).toEqual([]);
+  });
+
+  it('locks edits while the profile is approved', async () => {
+    const { service, audit, profiles } = createService();
+
+    profiles.rows.set(USER_ID, { ...record(), reviewStatus: 'APPROVED', submittedAt: NOW });
+
+    await expect(codeOf(service.saveProfile(actor, INPUT, CONTEXT))).resolves.toBe(
+      'profile_edit_locked',
+    );
+    expect(profiles.upserts).toEqual([]);
+    expect(audit.records).toEqual([]);
+  });
+
+  it('keeps edits open while the profile is draft or rejected', async () => {
+    const { service, profiles } = createService();
+
+    profiles.rows.set(USER_ID, record());
+    await expect(service.saveProfile(actor, INPUT, CONTEXT)).resolves.toMatchObject({
+      reviewStatus: 'DRAFT',
+    });
+
+    profiles.rows.set(USER_ID, {
+      ...record(),
+      reviewStatus: 'REJECTED',
+      rejectionReason: 'photo unreadable',
+    });
+    await expect(service.saveProfile(actor, INPUT, CONTEXT)).resolves.toMatchObject({
+      reviewStatus: 'REJECTED',
+    });
+
+    expect(profiles.upserts).toEqual([USER_ID, USER_ID]);
+  });
+
+  it('shows the rejection reason only for a rejected profile', async () => {
+    const { service, profiles } = createService();
+
+    profiles.rows.set(USER_ID, record());
+    await expect(service.readProfile(actor, CONTEXT)).resolves.not.toHaveProperty(
+      'rejectionReason',
+    );
+
+    profiles.rows.set(USER_ID, {
+      ...record(),
+      reviewStatus: 'PENDING',
+      submittedAt: NOW,
+      rejectionReason: 'photo unreadable',
+    });
+
+    const pending = await service.readProfile(actor, CONTEXT);
+
+    // A stale reason on a pending row is not shown, and the timestamp is.
+    expect(pending).not.toHaveProperty('rejectionReason');
+    expect(pending.submittedAt).toBe(NOW.toISOString());
+
+    profiles.rows.set(USER_ID, {
+      ...record(),
+      reviewStatus: 'REJECTED',
+      rejectionReason: 'photo unreadable',
+    });
+
+    await expect(service.readProfile(actor, CONTEXT)).resolves.toMatchObject({
+      reviewStatus: 'REJECTED',
+      rejectionReason: 'photo unreadable',
+    });
   });
 });

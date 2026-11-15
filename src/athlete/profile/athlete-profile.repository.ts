@@ -8,6 +8,8 @@
 
 import type { Prisma } from '@prisma/client';
 
+export type ReviewStatus = 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED';
+
 /** DI token so the Prisma implementation can be swapped in tests. */
 export const ATHLETE_PROFILE_REPOSITORY = Symbol('ATHLETE_PROFILE_REPOSITORY');
 
@@ -40,6 +42,11 @@ export interface AthleteProfileRecord extends Required<AthleteProfileInput> {
   readonly userId: string;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+  readonly reviewStatus: ReviewStatus;
+  readonly submittedAt: Date | null;
+  readonly reviewedAt: Date | null;
+  readonly reviewedById: string | null;
+  readonly rejectionReason: string | null;
 }
 
 export interface AthleteProfileRepository {
@@ -56,4 +63,9 @@ export interface AthleteProfileRepository {
     data: AthleteProfileInput,
     tx?: Prisma.TransactionClient,
   ): Promise<AthleteProfileRecord>;
+  submitForReview(
+    userId: string,
+    submittedAt: Date,
+    tx?: Prisma.TransactionClient,
+  ): Promise<number>;
 }

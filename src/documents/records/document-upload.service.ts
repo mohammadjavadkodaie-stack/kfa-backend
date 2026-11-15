@@ -18,7 +18,7 @@
  * its type and its size, and learns nothing about the key or the digest.
  */
 
-import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../../audit/audit.service';
@@ -107,6 +107,14 @@ export class DocumentUploadService {
    * the same unavailable answer for anything that failed further down.
    */
   async upload(actor: PolicySubject, request: DocumentUploadRequest): Promise<DocumentUploadView> {
+    const profile = await this.prisma.athleteProfile.findUnique({
+      where: { userId: actor.id },
+      select: { reviewStatus: true },
+    });
+    if (profile?.reviewStatus === 'PENDING' || profile?.reviewStatus === 'APPROVED') {
+      throw new ConflictException({ code: 'profile_edit_locked' });
+    }
+
     // 1. The quota first. Over the limit the upload stops here, before the scan,
     //    the encryption and the store, so an over-quota account costs nothing.
     //    The refusal is the pipeline's own rejection on purpose: a caller cannot

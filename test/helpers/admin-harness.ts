@@ -56,8 +56,15 @@ export interface AdminAuditRow {
 }
 
 /** Same in-memory Prisma replacement as the moderation suite: real hashing, no rows. */
-function createAuditPrisma(): { prisma: object; rows: AdminAuditRow[] } {
+function createAuditPrisma(): {
+  prisma: object;
+  rows: AdminAuditRow[];
+  /** Active identity documents per owner, so a suite can grant the submit precondition. */
+  documents: Map<string, number>;
+} {
   const rows: AdminAuditRow[] = [];
+  // Empty unless a suite fills it: every owner reads as "no active document".
+  const documents = new Map<string, number>();
 
   const tx = {
     $executeRaw: (): Promise<number> => Promise.resolve(1),
@@ -75,6 +82,10 @@ function createAuditPrisma(): { prisma: object; rows: AdminAuditRow[] } {
         return Promise.resolve(data);
       },
     },
+    identityDocument: {
+      count: ({ where }: { where: { ownerUserId: string } }): Promise<number> =>
+        Promise.resolve(documents.get(where.ownerUserId) ?? 0),
+    },
   };
 
   const prisma = {
@@ -82,9 +93,18 @@ function createAuditPrisma(): { prisma: object; rows: AdminAuditRow[] } {
     $disconnect: (): Promise<void> => Promise.resolve(),
     $transaction: (callback: (client: typeof tx) => Promise<unknown>): Promise<unknown> =>
       callback(tx),
+    // No profile is under review unless a suite says so, so the document
+    // services keep their unlocked behaviour in every other suite.
+    athleteProfile: {
+      findUnique: (): Promise<null> => Promise.resolve(null),
+    },
+    identityDocument: {
+      count: ({ where }: { where: { ownerUserId: string } }): Promise<number> =>
+        Promise.resolve(documents.get(where.ownerUserId) ?? 0),
+    },
   };
 
-  return { prisma, rows };
+  return { prisma, rows, documents };
 }
 
 /** An account as the suite sees it: one live token plus the row behind it. */
@@ -190,7 +210,19 @@ export async function createAdminHarness(
       (row) => row.action === action && (targetId === undefined || row.targetId === targetId),
     );
 
-  return { app, sessions, proofs, post, del, get, signUp, signIn, rows, close: () => app.close() };
+  return {
+    app,
+    sessions,
+    proofs,
+    post,
+    del,
+    get,
+    signUp,
+    signIn,
+    rows,
+    documents: auditPrisma.documents,
+    close: () => app.close(),
+  };
 }
 
 export type AdminHarness = Awaited<ReturnType<typeof createAdminHarness>>;

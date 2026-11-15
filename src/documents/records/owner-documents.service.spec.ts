@@ -1,4 +1,4 @@
-import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { ConflictException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { PinoLogger } from 'nestjs-pino';
 import {
@@ -69,6 +69,14 @@ class UndeletableDocuments extends InMemoryIdentityDocuments {
 class FakePrisma {
   readonly transactions: Prisma.TransactionClient[] = [];
   readonly options: unknown[] = [];
+
+  /** The review state the delete lock reads; `null` means the account has no profile. */
+  reviewStatus: 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED' | null = null;
+
+  readonly athleteProfile = {
+    findUnique: (): Promise<{ reviewStatus: string } | null> =>
+      Promise.resolve(this.reviewStatus === null ? null : { reviewStatus: this.reviewStatus }),
+  };
 
   constructor(private readonly documents: InMemoryIdentityDocuments) {}
 
@@ -259,5 +267,44 @@ describe('OwnerDocumentsService.delete', () => {
     await expect(service.delete(OWNER, row.id)).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(audit.records).toEqual([]);
     expect(documents.rows[0]?.status).toBe('ACTIVE');
+  });
+
+  it('refuses to delete while the profile is pending review', async () => {
+    const { service, documents, audit, prisma } = createHarness();
+    const row = documents.seed(OWNER.id, new Date('2026-01-01T00:00:00.000Z'));
+
+    prisma.reviewStatus = 'PENDING';
+
+    await expect(service.delete(OWNER, row.id)).rejects.toBeInstanceOf(ConflictException);
+
+    // The lock is checked first: the row is untouched and no trail is written.
+    expect(documents.rows[0]?.status).toBe('ACTIVE');
+    expect(documents.deletions).toEqual([]);
+    expect(audit.records).toEqual([]);
+    expect(prisma.transactions).toEqual([]);
+  });
+
+  it('refuses to delete while the profile is approved', async () => {
+    const { service, documents, audit, prisma } = createHarness();
+    const row = documents.seed(OWNER.id, new Date('2026-01-01T00:00:00.000Z'));
+
+    prisma.reviewStatus = 'APPROVED';
+
+    await expect(service.delete(OWNER, row.id)).rejects.toBeInstanceOf(ConflictException);
+
+    expect(documents.rows[0]?.status).toBe('ACTIVE');
+    expect(audit.records).toEqual([]);
+  });
+
+  it('deletes again once the profile is only rejected', async () => {
+    const { service, documents, audit, prisma } = createHarness();
+    const row = documents.seed(OWNER.id, new Date('2026-01-01T00:00:00.000Z'));
+
+    prisma.reviewStatus = 'REJECTED';
+
+    await service.delete(OWNER, row.id);
+
+    expect(documents.rows[0]?.status).toBe('DELETED');
+    expect(audit.records).toHaveLength(1);
   });
 });

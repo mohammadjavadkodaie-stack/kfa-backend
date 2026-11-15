@@ -22,6 +22,11 @@ const RECORD_FIELDS = {
   heightCm: true,
   createdAt: true,
   updatedAt: true,
+  reviewStatus: true,
+  submittedAt: true,
+  reviewedAt: true,
+  reviewedById: true,
+  rejectionReason: true,
 } as const;
 
 type ProfileRow = Prisma.AthleteProfileGetPayload<{ select: typeof RECORD_FIELDS }>;
@@ -66,6 +71,21 @@ export class PrismaAthleteProfileRepository implements AthleteProfileRepository 
   }
 
   /** One statement: the unique `user_id` resolves insert versus replace atomically. */
+  async submitForReview(
+    userId: string,
+    submittedAt: Date,
+    tx?: Prisma.TransactionClient,
+  ): Promise<number> {
+    const client: Prisma.TransactionClient = tx ?? this.prisma;
+
+    const result = await client.athleteProfile.updateMany({
+      where: { userId, reviewStatus: { in: ['DRAFT', 'REJECTED'] } },
+      data: { reviewStatus: 'PENDING', submittedAt, rejectionReason: null },
+    });
+
+    return result.count;
+  }
+
   async upsertForUser(
     userId: string,
     data: AthleteProfileInput,

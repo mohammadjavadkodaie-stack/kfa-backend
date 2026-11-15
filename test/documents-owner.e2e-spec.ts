@@ -156,6 +156,8 @@ function createFailingDeleteAuditPrisma(documents: InMemoryIdentityDocuments): {
   const prisma = {
     $connect: (): Promise<void> => Promise.resolve(),
     $disconnect: (): Promise<void> => Promise.resolve(),
+    // No profile is under review here, so the delete lock never applies.
+    athleteProfile: { findUnique: (): Promise<null> => Promise.resolve(null) },
     $transaction: async (run: (client: typeof tx) => Promise<unknown>): Promise<unknown> => {
       const before = documents.snapshot();
 

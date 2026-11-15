@@ -1,4 +1,4 @@
-import { ServiceUnavailableException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import type { PinoLogger } from 'nestjs-pino';
@@ -160,6 +160,14 @@ class RecordingAudit extends FakeAudit {
 class FakePrisma {
   readonly transactions: Prisma.TransactionClient[] = [];
   readonly options: unknown[] = [];
+
+  /** The review state the upload lock reads; `null` means the account has no profile. */
+  reviewStatus: 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED' | null = null;
+
+  readonly athleteProfile = {
+    findUnique: (): Promise<{ reviewStatus: string } | null> =>
+      Promise.resolve(this.reviewStatus === null ? null : { reviewStatus: this.reviewStatus }),
+  };
 
   constructor(private readonly documents: RecordingDocuments) {}
 
@@ -507,5 +515,44 @@ describe('DocumentUploadService', () => {
     await expect(upload(service)).rejects.toBeInstanceOf(ServiceUnavailableException);
 
     expect(documents.rows).toEqual([]);
+  });
+
+  it('refuses to upload while the profile is pending review', async () => {
+    const { service, timeline, documents, audit, prisma } = createService();
+
+    prisma.reviewStatus = 'PENDING';
+
+    await expect(upload(service)).rejects.toBeInstanceOf(ConflictException);
+
+    // The lock is checked first: nothing was counted, scanned, stored or audited.
+    expect(timeline.events).toEqual([]);
+    expect(documents.rows).toEqual([]);
+    expect(audit.records).toEqual([]);
+    expect(prisma.transactions).toEqual([]);
+  });
+
+  it('refuses to upload while the profile is approved', async () => {
+    const { service, timeline, documents, audit, prisma } = createService();
+
+    prisma.reviewStatus = 'APPROVED';
+
+    await expect(upload(service)).rejects.toBeInstanceOf(ConflictException);
+
+    expect(timeline.events).toEqual([]);
+    expect(documents.rows).toEqual([]);
+    expect(audit.records).toEqual([]);
+  });
+
+  it('uploads again once the profile is only rejected', async () => {
+    const { service, timeline, documents, audit, prisma } = createService();
+
+    prisma.reviewStatus = 'REJECTED';
+
+    await expect(upload(service)).resolves.toMatchObject({ kind: 'NATIONAL_ID' });
+
+    // A rejected profile is editable again, so the whole pipeline runs.
+    expect(timeline.events).toEqual(['count', 'scan', 'encrypt', 'put', 'insert', 'audit']);
+    expect(documents.rows).toHaveLength(1);
+    expect(audit.records).toHaveLength(1);
   });
 });
