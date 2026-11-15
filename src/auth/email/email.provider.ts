@@ -10,6 +10,9 @@ export type EmailCodePurpose =
 export type EmailNoticeKind =
   'password_changed' | 'email_changed' | 'new_device_login' | 'admin_granted';
 
+/** The outcome of a membership review, as the athlete sees it. */
+export type ReviewResultStatus = 'APPROVED' | 'REJECTED';
+
 export interface EmailCodeMessage {
   readonly to: string;
   readonly purpose: EmailCodePurpose;
@@ -23,6 +26,14 @@ export interface EmailNoticeMessage {
   readonly locale?: EmailLocale;
 }
 
+/** The decision only; `reason` is the reviewer's text and is sent for rejections. */
+export interface ReviewResultMessage {
+  readonly to: string;
+  readonly status: ReviewResultStatus;
+  readonly reason?: string | null;
+  readonly locale?: EmailLocale;
+}
+
 /**
  * Transport for the email identity flow.
  *
@@ -33,11 +44,14 @@ export interface EmailNoticeMessage {
 export interface EmailProvider {
   sendCode(input: EmailCodeMessage): Promise<void>;
   sendNotice(input: EmailNoticeMessage): Promise<void>;
+  sendReviewResult(input: ReviewResultMessage): Promise<void>;
   /**
    * Present only on the fake adapter, so tests (and only tests) can read back
    * the static code. A real transport never exposes one.
    */
   readonly fixedCode?: string;
+  /** Fake only: the review results it accepted, in order. */
+  readonly reviewResults?: readonly ReviewResultMessage[];
 }
 
 export const EMAIL_PROVIDER = Symbol('EMAIL_PROVIDER');
@@ -50,12 +64,19 @@ export const EMAIL_PROVIDER = Symbol('EMAIL_PROVIDER');
  */
 export class FakeEmailProvider implements EmailProvider {
   readonly fixedCode = '123456';
+  /** Kept so a suite can check what a decision sent, and in which language. */
+  readonly reviewResults: ReviewResultMessage[] = [];
 
   /** There is no transport in development, so the message stops here. */
   async sendCode(_input: EmailCodeMessage): Promise<void> {}
 
   /** Same for notices: nothing is delivered and nothing is written anywhere. */
   async sendNotice(_input: EmailNoticeMessage): Promise<void> {}
+
+  /** Recorded only in memory: the fake is refused in production by the factory. */
+  async sendReviewResult(input: ReviewResultMessage): Promise<void> {
+    this.reviewResults.push(input);
+  }
 }
 
 /**

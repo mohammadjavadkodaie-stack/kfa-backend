@@ -20,6 +20,7 @@ import { DocumentsModule } from './documents/documents.module';
 import { HealthModule } from './health/health.module';
 import { buildPinoParams } from './logging/pino.config';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
+import { StaffReviewModule } from './staff-review/staff-review.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
     AdminUsersModule,
     AthleteModule,
     DocumentsModule,
+    StaffReviewModule,
     HealthModule,
   ],
   providers: [

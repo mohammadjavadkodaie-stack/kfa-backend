@@ -5,6 +5,8 @@ import type {
   AthleteProfileInput,
   AthleteProfileRecord,
   AthleteProfileRepository,
+  ReviewDecision,
+  ReviewQueueQuery,
 } from './athlete-profile.repository';
 
 /** Columns the repository reads back; the row id and the user relation stay inside. */
@@ -68,6 +70,45 @@ export class PrismaAthleteProfileRepository implements AthleteProfileRepository 
     });
 
     return row === null ? null : toRecord(row);
+  }
+
+  async listForReview({
+    status,
+    limit,
+    cursor,
+  }: ReviewQueueQuery): Promise<AthleteProfileRecord[]> {
+    const rows = await this.prisma.athleteProfile.findMany({
+      where: { reviewStatus: status },
+      // `submittedAt` alone is not a key: the unique id completes the order, so a
+      // cursor page resumes at exactly the row it was handed.
+      orderBy: [{ submittedAt: 'asc' }, { userId: 'asc' }],
+      take: limit + 1,
+      ...(cursor === undefined ? {} : { cursor: { userId: cursor }, skip: 1 }),
+      select: RECORD_FIELDS,
+    });
+
+    return rows.map(toRecord);
+  }
+
+  /** Same statement as `submitForReview`: the predicate is the gate, the count is the answer. */
+  async applyReviewDecision(
+    userId: string,
+    decision: ReviewDecision,
+    tx?: Prisma.TransactionClient,
+  ): Promise<number> {
+    const client: Prisma.TransactionClient = tx ?? this.prisma;
+
+    const result = await client.athleteProfile.updateMany({
+      where: { userId, reviewStatus: 'PENDING' },
+      data: {
+        reviewStatus: decision.status,
+        reviewedAt: decision.reviewedAt,
+        reviewedById: decision.reviewedById,
+        rejectionReason: decision.rejectionReason,
+      },
+    });
+
+    return result.count;
   }
 
   /** One statement: the unique `user_id` resolves insert versus replace atomically. */

@@ -49,6 +49,23 @@ export interface AthleteProfileRecord extends Required<AthleteProfileInput> {
   readonly rejectionReason: string | null;
 }
 
+/** The one transition a reviewer makes: a PENDING row moves once, and only out of PENDING. */
+export interface ReviewDecision {
+  readonly status: 'APPROVED' | 'REJECTED';
+  readonly reviewedAt: Date;
+  readonly reviewedById: string;
+  readonly rejectionReason: string | null;
+}
+
+export interface ReviewQueueQuery {
+  /** Part of the predicate, never a column the caller filters afterwards. */
+  readonly status: ReviewStatus;
+  /** One row more than this comes back, so the caller can tell whether a page follows. */
+  readonly limit: number;
+  /** The `userId` of the last row of the previous page. */
+  readonly cursor?: string;
+}
+
 export interface AthleteProfileRepository {
   findByUserId(userId: string): Promise<AthleteProfileRecord | null>;
   /**
@@ -66,6 +83,21 @@ export interface AthleteProfileRepository {
   submitForReview(
     userId: string,
     submittedAt: Date,
+    tx?: Prisma.TransactionClient,
+  ): Promise<number>;
+  /**
+   * Oldest submission first, so nobody waits behind a busy queue. The cursor is
+   * the previous page's last `userId`; the order is completed by that same unique
+   * column, so a page never repeats or skips a row.
+   */
+  listForReview(query: ReviewQueueQuery): Promise<AthleteProfileRecord[]>;
+  /**
+   * The conditional `updateMany`: `count` is 1 only for the call that moved a
+   * PENDING row, so two reviewers racing on the same profile write one decision.
+   */
+  applyReviewDecision(
+    userId: string,
+    decision: ReviewDecision,
     tx?: Prisma.TransactionClient,
   ): Promise<number>;
 }

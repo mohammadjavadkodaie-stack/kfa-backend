@@ -134,6 +134,9 @@ import { TotpModule } from './totp/totp.module';
   exports: [
     OTP_PROVIDER,
     CAPTCHA_PROVIDER,
+    // The one email transport; the review module sends decision mail through it
+    // instead of building an adapter of its own.
+    EMAIL_PROVIDER,
     ProofTokenService,
     SESSION_REPOSITORY,
     // Exported so the global guards and later modules share one definition.

@@ -24,6 +24,10 @@ import {
   type IdentityDocumentRepository,
 } from '../../src/documents/records/identity-document.repository';
 import { RateLimitService } from '../../src/rate-limit/rate-limit.service';
+import {
+  STAFF_REVIEW_REPOSITORY,
+  type StaffReviewRepository,
+} from '../../src/staff-review/staff-review.repository';
 import { TestController } from './test.controller';
 import { applyTestEnv, type TestEnvOverrides } from './test-env';
 
@@ -57,6 +61,8 @@ export interface CreateTestAppOptions {
   readonly rateLimit?: RateLimitService;
   /** In-memory profiles, so the athlete endpoints run without PostgreSQL. */
   readonly athleteProfileRepository?: AthleteProfileRepository;
+  /** In-memory queue reads, so the review endpoints run without PostgreSQL. */
+  readonly staffReviewRepository?: StaffReviewRepository;
   /** In-memory document rows, so the upload route runs without PostgreSQL. */
   readonly identityDocumentRepository?: IdentityDocumentRepository;
   /** In-memory object store, so no suite reaches a bucket. */
@@ -118,6 +124,12 @@ export async function createTestApp(
     builder = builder
       .overrideProvider(ATHLETE_PROFILE_REPOSITORY)
       .useValue(options.athleteProfileRepository);
+  }
+
+  if (options.staffReviewRepository !== undefined) {
+    builder = builder
+      .overrideProvider(STAFF_REVIEW_REPOSITORY)
+      .useValue(options.staffReviewRepository);
   }
 
   if (options.identityDocumentRepository !== undefined) {

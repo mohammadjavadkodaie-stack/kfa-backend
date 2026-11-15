@@ -17,6 +17,8 @@ import { PrismaAthleteProfileRepository } from './profile/prisma-athlete-profile
     // Production time; the specs override this token with a fixed clock.
     { provide: CLOCK, useValue: SYSTEM_CLOCK },
   ],
-  exports: [AthleteService],
+  // Exported so the review module reads and writes the same profile rows and the
+  // same clock instead of declaring a second binding of either.
+  exports: [AthleteService, ATHLETE_PROFILE_REPOSITORY, CLOCK],
 })
 export class AthleteModule {}

@@ -1,4 +1,4 @@
-import type { EmailCodePurpose, EmailNoticeKind } from './email.provider';
+import type { EmailCodePurpose, EmailNoticeKind, ReviewResultStatus } from './email.provider';
 
 export type EmailLocale = 'en' | 'fa' | 'tr' | 'ar';
 
@@ -123,6 +123,52 @@ export function buildNoticeEmail(kind: EmailNoticeKind, locale: EmailLocale = 'e
     ar: 'إذا لم تكن أنت، أمّن حسابك وتواصل مع الدعم.',
   }[locale];
   return { subject: title, text: `${title}\n\n${action}` };
+}
+
+/**
+ * Wording for the review outcome. The three keys are the same in every language,
+ * so a new locale cannot silently drop the reason line.
+ */
+const reviewResults: Record<EmailLocale, { approved: string; rejected: string; reason: string }> = {
+  en: {
+    approved: 'Your KFA profile was approved',
+    rejected: 'Your KFA profile was not approved',
+    reason: 'Reason given',
+  },
+  fa: {
+    approved: 'پروفایل KFA شما تأیید شد',
+    rejected: 'پروفایل KFA شما تأیید نشد',
+    reason: 'دلیل اعلام‌شده',
+  },
+  tr: {
+    approved: 'KFA profiliniz onaylandı',
+    rejected: 'KFA profiliniz onaylanmadı',
+    reason: 'Belirtilen gerekçe',
+  },
+  ar: {
+    approved: 'تمت الموافقة على ملف KFA الخاص بك',
+    rejected: 'لم تتم الموافقة على ملف KFA الخاص بك',
+    reason: 'السبب المذكور',
+  },
+};
+
+/**
+ * The result of a membership review: the status and, when rejected, the reason
+ * the reviewer wrote. Nothing else - no name, no document, no reviewer id.
+ */
+export function buildReviewResultEmail(
+  status: ReviewResultStatus,
+  reason: string | null = null,
+  locale: EmailLocale = 'en',
+): EmailContent {
+  const words = reviewResults[locale];
+  const title = status === 'APPROVED' ? words.approved : words.rejected;
+  const withReason =
+    status === 'REJECTED' && reason !== null && reason.length > 0
+      ? `${title}\n\n${words.reason}: ${reason}`
+      : title;
+
+  return { subject: title, text: withReason };
 }
 
 export function escapeHtml(value: string): string {

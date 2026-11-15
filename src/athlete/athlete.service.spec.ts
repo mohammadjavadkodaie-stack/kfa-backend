@@ -146,6 +146,15 @@ class RecordingProfiles implements AthleteProfileRepository {
     return 1;
   }
 
+  /** The review surface is not the athlete surface: a call here is a wiring bug. */
+  async listForReview(): Promise<AthleteProfileRecord[]> {
+    throw new Error('the athlete service never lists the review queue');
+  }
+
+  async applyReviewDecision(): Promise<number> {
+    throw new Error('the athlete service never decides a review');
+  }
+
   /** The commits a rollback has to undo. */
   snapshot(): Map<string, AthleteProfileRecord> {
     return new Map(this.rows);

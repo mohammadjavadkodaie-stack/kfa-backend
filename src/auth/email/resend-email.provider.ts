@@ -1,6 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import type { EmailCodeMessage, EmailNoticeMessage, EmailProvider } from './email.provider';
-import { buildCodeEmail, buildNoticeEmail, escapeHtml, type EmailLocale } from './email.templates';
+import type {
+  EmailCodeMessage,
+  EmailNoticeMessage,
+  EmailProvider,
+  ReviewResultMessage,
+} from './email.provider';
+import {
+  buildCodeEmail,
+  buildNoticeEmail,
+  buildReviewResultEmail,
+  escapeHtml,
+  type EmailLocale,
+} from './email.templates';
 
 const RESEND_URL = 'https://api.resend.com/emails';
 const TIMEOUT_MS = 8_000;
@@ -28,6 +39,12 @@ export class ResendEmailProvider implements EmailProvider {
   async sendNotice(input: EmailNoticeMessage): Promise<void> {
     const content = buildNoticeEmail(input.kind, input.locale);
     await this.send(input.to, content.subject, content.text, input.kind);
+  }
+
+  /** A review decision is a single athlete-facing message about their own profile. */
+  async sendReviewResult(input: ReviewResultMessage): Promise<void> {
+    const content = buildReviewResultEmail(input.status, input.reason ?? null, input.locale);
+    await this.send(input.to, content.subject, content.text, input.status.toLowerCase());
   }
 
   private async send(to: string, subject: string, text: string, purpose: string): Promise<void> {
