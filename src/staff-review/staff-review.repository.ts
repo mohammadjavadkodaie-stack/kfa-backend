@@ -2,9 +2,9 @@
  * Persistence boundary for the staff review queue.
  *
  * The queue reads profiles, document counts and document metadata - and nothing
- * else. No method here returns a name, a storage object key or document bytes:
- * the reviewer works from the view-link flow for content, and the athlete's
- * legal name never reaches this feature at all.
+ * else. No method here returns a storage object key or document bytes: the
+ * reviewer works from the view-link flow for content, while the declared profile
+ * fields come from the profile repository and never from here.
  */
 
 import type { DocumentKind } from '../documents/records/identity-document.repository';

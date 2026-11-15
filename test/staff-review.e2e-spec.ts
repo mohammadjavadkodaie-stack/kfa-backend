@@ -31,8 +31,37 @@ const CONFLICT = { statusCode: 409, message: 'Conflict' } as const;
 const STEP_UP_REQUIRED = { ...FORBIDDEN, code: 'step_up_required' } as const;
 const SECOND_FACTOR_REQUIRED = { ...FORBIDDEN, code: 'second_factor_required' } as const;
 
-/** The fields a queue row promises; a name or an address here would be a leak. */
-const QUEUE_ITEM_FIELDS = ['documentCount', 'profileId', 'reviewStatus', 'submittedAt'];
+/** The fields a queue row promises: a birthday, a city or an address would be a leak. */
+const QUEUE_ITEM_FIELDS = [
+  'documentCount',
+  'legalFirstName',
+  'legalLastName',
+  'nationality',
+  'profileId',
+  'reviewStatus',
+  'submittedAt',
+];
+
+/** The fields a detail page promises; the account behind the profile stays out. */
+const DETAIL_FIELDS = [
+  'city',
+  'clubName',
+  'countryOfResidence',
+  'dateOfBirth',
+  'documents',
+  'gender',
+  'heightCm',
+  'isMinor',
+  'legalFirstName',
+  'legalLastName',
+  'nationality',
+  'profileId',
+  'rejectionReason',
+  'reviewStatus',
+  'reviewedAt',
+  'submittedAt',
+  'weightKg',
+];
 
 /** Two envelopes of the same refusal differ only by request id. */
 function withoutRequestId(body: { requestId?: string }): Record<string, unknown> {
@@ -95,7 +124,7 @@ describe('Staff review routes (e2e)', () => {
   });
 
   describe('GET /staff/reviews', () => {
-    it('lists the oldest submission first, by id and count only', async () => {
+    it('lists the oldest submission first, with the name and nationality to compare', async () => {
       const older = '77777777-7777-4777-8777-777777777777';
       const newer = '88888888-8888-4888-8888-888888888888';
 
@@ -114,17 +143,25 @@ describe('Staff review routes (e2e)', () => {
             reviewStatus: 'PENDING',
             submittedAt: '2026-05-01T10:00:00.000Z',
             documentCount: 2,
+            legalFirstName: 'Ada',
+            legalLastName: 'Lovelace',
+            nationality: 'PK',
           },
           {
             profileId: newer,
             reviewStatus: 'PENDING',
             submittedAt: '2026-05-02T10:00:00.000Z',
             documentCount: 0,
+            legalFirstName: 'Ada',
+            legalLastName: 'Lovelace',
+            nationality: 'PK',
           },
         ],
         nextCursor: null,
       });
       expect(Object.keys(response.body.items[0]).sort()).toEqual(QUEUE_ITEM_FIELDS);
+      // Reading the queue is not a detail read, so it leaves no trail.
+      expect(harness.rows('STAFF_REVIEW_DETAIL_VIEWED')).toHaveLength(0);
     });
 
     it('pages with the cursor it hands back', async () => {
@@ -173,8 +210,8 @@ describe('Staff review routes (e2e)', () => {
   });
 
   describe('GET /staff/reviews/:profileId', () => {
-    it('shows the state and document metadata, and no personal data', async () => {
-      const { account } = await harness.submittedAthlete();
+    it('shows what the athlete declared, and the account behind it stays out', async () => {
+      const { account, profile } = await harness.submittedAthlete();
 
       harness.reviews.recipients.set(account.userId, { email: 'ada@example.org' });
 
@@ -188,6 +225,17 @@ describe('Staff review routes (e2e)', () => {
         submittedAt: expect.any(String),
         reviewedAt: null,
         rejectionReason: null,
+        legalFirstName: 'Ada',
+        legalLastName: 'Lovelace',
+        dateOfBirth: profile.dateOfBirth,
+        gender: 'FEMALE',
+        nationality: 'PK',
+        countryOfResidence: 'SE',
+        city: 'Karachi',
+        clubName: 'KFA Academy',
+        weightKg: 41,
+        heightCm: 152,
+        isMinor: true,
         documents: [
           {
             id: expect.any(String),
@@ -197,10 +245,37 @@ describe('Staff review routes (e2e)', () => {
           },
         ],
       });
-      // Neither the athlete's name nor their address is part of this answer.
-      expect(text).not.toContain('Ada');
-      expect(text).not.toContain('Lovelace');
+      // An accidental extra field - an address, an object key - fails right here.
+      expect(Object.keys(response.body).sort()).toEqual(DETAIL_FIELDS);
       expect(text).not.toContain('ada@example.org');
+      expect(text).not.toMatch(/username|objectKey/);
+    });
+
+    it('leaves exactly one trail row per read, with the actor and the profile only', async () => {
+      const { account } = await harness.submittedAthlete();
+
+      await harness.get(detail(account.userId), staff.token);
+
+      const entries = harness.rows('STAFF_REVIEW_DETAIL_VIEWED', account.userId);
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        actorId: staff.userId,
+        targetId: account.userId,
+        metadata: {},
+      });
+      // Nothing the reviewer saw is copied into the trail.
+      expect(JSON.stringify(entries)).not.toContain('Ada');
+    });
+
+    it('refuses an athlete on the detail route and writes no trail row', async () => {
+      const athlete = await harness.signUp(Role.ATHLETE);
+
+      const response = await harness.get(detail(athlete.userId), athlete.token);
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ ...FORBIDDEN, requestId: expect.any(String) });
+      expect(harness.rows('STAFF_REVIEW_DETAIL_VIEWED')).toHaveLength(0);
     });
 
     it('answers one generic 404 for a draft and for an unknown profile', async () => {
@@ -219,6 +294,8 @@ describe('Staff review routes (e2e)', () => {
       expect(neverSubmitted.body).toEqual({ ...NOT_FOUND, requestId: expect.any(String) });
       // Apart from the request id, the two answers are byte for byte the same.
       expect(withoutRequestId(unknown.body)).toEqual(withoutRequestId(neverSubmitted.body));
+      // A page that was never served is not on the trail either.
+      expect(harness.rows('STAFF_REVIEW_DETAIL_VIEWED')).toHaveLength(0);
     });
   });
 

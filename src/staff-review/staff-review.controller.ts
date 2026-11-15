@@ -54,11 +54,14 @@ export class StaffReviewController {
     return this.reviews.listQueue(query);
   }
 
-  /** One profile's state and document metadata; the bytes stay behind view links. */
+  /** The declared profile data and the documents' metadata; the bytes stay behind view links. */
   @Roles(Role.ADMIN, Role.OWNER)
   @Get(':profileId')
-  async detail(@Param() params: ReviewProfileParamsDto): Promise<ReviewDetailView> {
-    return this.reviews.readDetail(params.profileId);
+  async detail(
+    @Param() params: ReviewProfileParamsDto,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<ReviewDetailView> {
+    return this.reviews.readDetail(this.actor(request), params.profileId, this.context(request));
   }
 
   /** Records an approval and tells the athlete; 409 when someone decided first. */

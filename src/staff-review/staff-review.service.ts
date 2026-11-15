@@ -10,11 +10,12 @@ import {
 import type { Prisma } from '@prisma/client';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
-import { CLOCK, type Clock } from '../athlete/profile/athlete-age';
+import { CLOCK, isMinor, type Clock } from '../athlete/profile/athlete-age';
 import {
   ATHLETE_PROFILE_REPOSITORY,
   type AthleteProfileRecord,
   type AthleteProfileRepository,
+  type Gender,
   type ReviewStatus,
 } from '../athlete/profile/athlete-profile.repository';
 import type { PolicySubject } from '../auth/policy/access-policy';
@@ -30,10 +31,11 @@ import {
   type StaffReviewRepository,
 } from './staff-review.repository';
 
-/** The closed set of audit actions a decision writes. */
+/** The closed set of audit actions this feature writes. */
 export const STAFF_REVIEW_AUDIT_ACTIONS = {
   APPROVED: 'ATHLETE_PROFILE_APPROVED',
   REJECTED: 'ATHLETE_PROFILE_REJECTED',
+  DETAIL_VIEWED: 'STAFF_REVIEW_DETAIL_VIEWED',
 } as const;
 
 export type StaffReviewAuditAction =
@@ -53,7 +55,8 @@ export interface ReviewQueueInput {
 
 /**
  * One row of the queue. `profileId` is the profile's owner id and the only id a
- * reviewer ever gets: no name, no address, no phone number reach this payload.
+ * reviewer ever gets. The name and the nationality are what the reviewer needs to
+ * tell two similar applications apart; nothing else about the person is here.
  */
 export interface ReviewQueueItem {
   readonly profileId: string;
@@ -61,6 +64,10 @@ export interface ReviewQueueItem {
   readonly submittedAt: string | null;
   /** ACTIVE documents only: a deleted row is not evidence. */
   readonly documentCount: number;
+  readonly legalFirstName: string;
+  readonly legalLastName: string;
+  /** ISO 3166-1 alpha-2, to compare with the document's issuing country. */
+  readonly nationality: string;
 }
 
 export interface ReviewQueuePage {
@@ -77,6 +84,11 @@ export interface ReviewDocumentView {
   readonly createdAt: string;
 }
 
+/**
+ * One submitted profile as the reviewer compares it with the identity document.
+ * There is no address, no username and no id beyond the owner id already in the
+ * queue: a reviewer needs the declared facts, not the account behind them.
+ */
 export interface ReviewDetailView {
   readonly profileId: string;
   readonly reviewStatus: ReviewStatus;
@@ -84,6 +96,19 @@ export interface ReviewDetailView {
   readonly reviewedAt: string | null;
   /** The reviewer's own text, kept so a colleague sees why it was refused. */
   readonly rejectionReason: string | null;
+  readonly legalFirstName: string;
+  readonly legalLastName: string;
+  /** `YYYY-MM-DD`: a calendar day, the same shape the athlete declared. */
+  readonly dateOfBirth: string;
+  readonly gender: Gender;
+  readonly nationality: string;
+  readonly countryOfResidence: string;
+  readonly city: string;
+  readonly clubName: string | null;
+  readonly weightKg: number | null;
+  readonly heightCm: number | null;
+  /** Derived from the birthday and the clock; the row does not hold it. */
+  readonly isMinor: boolean;
   readonly documents: ReviewDocumentView[];
 }
 
@@ -123,11 +148,12 @@ function normalizeReason(
 /**
  * The staff review queue and its two decisions.
  *
- * Reads are metadata only: the queue names profiles by id and counts their live
- * documents, the detail page adds those documents' metadata, and the content
- * itself stays behind the step-up-gated view-link route. Decisions are a single
- * conditional UPDATE - a profile leaves PENDING once - and the decision, its
- * audit row and the athlete's email are ordered so that the email can fail
+ * The queue carries the declared name and nationality next to the document count,
+ * and the detail page adds the rest of what the athlete declared so it can be
+ * compared with the identity card. The document content itself stays behind the
+ * step-up-gated view-link route, and every detail read is audited. Decisions are
+ * a single conditional UPDATE - a profile leaves PENDING once - and the decision,
+ * its audit row and the athlete's email are ordered so that the email can fail
  * without undoing anything.
  */
 @Injectable()
@@ -167,15 +193,31 @@ export class StaffReviewService {
         reviewStatus: row.reviewStatus,
         submittedAt: row.submittedAt?.toISOString() ?? null,
         documentCount: counts.get(row.userId) ?? 0,
+        legalFirstName: row.legalFirstName,
+        legalLastName: row.legalLastName,
+        nationality: row.nationality,
       })),
       nextCursor: rows.length > limit && last !== undefined ? last.userId : null,
     };
   }
 
-  /** One submitted profile: its state and its documents' metadata, nothing else. */
-  async readDetail(profileId: string): Promise<ReviewDetailView> {
+  /**
+   * One submitted profile: the declared data a reviewer compares with the
+   * document, plus the documents' metadata. No address, no username and no
+   * content. Every successful read leaves a trail row, and a trail that cannot
+   * be written fails the read closed.
+   */
+  async readDetail(
+    actor: PolicySubject,
+    profileId: string,
+    context: AccessPolicyContext,
+  ): Promise<ReviewDetailView> {
     const record = await this.findSubmitted(profileId);
     const documents = await this.reviews.listActiveDocuments(record.userId);
+
+    // Before the page leaves the service: the answer is personal data and the
+    // trail is what proves who looked at it.
+    await this.recordDetailView(actor, record.userId, context);
 
     return {
       profileId: record.userId,
@@ -183,6 +225,17 @@ export class StaffReviewService {
       submittedAt: record.submittedAt?.toISOString() ?? null,
       reviewedAt: record.reviewedAt?.toISOString() ?? null,
       rejectionReason: record.rejectionReason,
+      legalFirstName: record.legalFirstName,
+      legalLastName: record.legalLastName,
+      dateOfBirth: record.dateOfBirth,
+      gender: record.gender,
+      nationality: record.nationality,
+      countryOfResidence: record.countryOfResidence,
+      city: record.city,
+      clubName: record.clubName,
+      weightKg: record.weightKg,
+      heightCm: record.heightCm,
+      isMinor: isMinor(record.dateOfBirth, this.clock()),
       documents: documents.map((document) => ({
         id: document.id,
         kind: document.kind,
@@ -266,6 +319,36 @@ export class StaffReviewService {
 
   private wrongState(): ConflictException {
     return new ConflictException({ code: PROFILE_WRONG_STATE_CODE });
+  }
+
+  /**
+   * One trail row per successful detail read: who saw which profile, and not a
+   * word about the profile itself. A read that cannot be accounted for is not
+   * served, the same fail-closed rule a decision follows.
+   */
+  private async recordDetailView(
+    actor: PolicySubject,
+    profileId: string,
+    context: AccessPolicyContext,
+  ): Promise<void> {
+    const action = STAFF_REVIEW_AUDIT_ACTIONS.DETAIL_VIEWED;
+
+    try {
+      await this.audit.record({
+        action,
+        actorId: actor.id,
+        actorRole: String(actor.role),
+        targetType: AUDIT_TARGET_TYPE,
+        targetId: profileId,
+        requestId: context.requestId,
+        ip: context.ip,
+        metadata: {},
+      });
+    } catch {
+      this.logger.warn({ requestId: context.requestId, action }, 'staff review audit failed');
+
+      throw new ServiceUnavailableException();
+    }
   }
 
   /**

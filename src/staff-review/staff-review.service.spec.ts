@@ -44,6 +44,38 @@ const LATER = new Date('2026-06-02T08:00:00.000Z');
 
 const reviewer: PolicySubject = { id: STAFF_ID, role: Role.ADMIN };
 
+/** Exactly what a queue row may carry: no birthday, no city, no address. */
+const QUEUE_ITEM_FIELDS = [
+  'documentCount',
+  'legalFirstName',
+  'legalLastName',
+  'nationality',
+  'profileId',
+  'reviewStatus',
+  'submittedAt',
+];
+
+/** Exactly what a detail page may carry: no address, no username, no object key. */
+const DETAIL_FIELDS = [
+  'city',
+  'clubName',
+  'countryOfResidence',
+  'dateOfBirth',
+  'documents',
+  'gender',
+  'heightCm',
+  'isMinor',
+  'legalFirstName',
+  'legalLastName',
+  'nationality',
+  'profileId',
+  'rejectionReason',
+  'reviewStatus',
+  'reviewedAt',
+  'submittedAt',
+  'weightKg',
+];
+
 /** One stored profile, PENDING by default: what the queue and the detail read. */
 function record(
   userId = PROFILE_ID,
@@ -230,8 +262,13 @@ describe('StaffReviewService', () => {
           reviewStatus: 'PENDING',
           submittedAt: EARLIER.toISOString(),
           documentCount: 0,
+          legalFirstName: 'Ada',
+          legalLastName: 'Lovelace',
+          nationality: 'PK',
         },
       ]);
+      // A birthday, a city or an address here would be a leak.
+      expect(Object.keys(page.items[0] ?? {}).sort()).toEqual(QUEUE_ITEM_FIELDS);
       expect(page.nextCursor).toBeNull();
     });
 
@@ -292,22 +329,29 @@ describe('StaffReviewService', () => {
   });
 
   describe('readDetail', () => {
-    it('returns the state and the documents metadata, and nothing else', async () => {
+    it('returns the declared profile and the documents metadata, and nothing else', async () => {
       const reviews = new InMemoryStaffReviews();
       const document = reviews.addDocument(PROFILE_ID, { sizeBytes: 2_048 });
 
       const { service } = serviceWith([record()], { reviews });
-      const detail = await service.readDetail(PROFILE_ID);
+      const detail = await service.readDetail(reviewer, PROFILE_ID, CONTEXT);
 
-      // No name, no address, no object key: the reviewer gets metadata only.
-      expect(Object.keys(detail).sort()).toEqual([
-        'documents',
-        'profileId',
-        'rejectionReason',
-        'reviewStatus',
-        'reviewedAt',
-        'submittedAt',
-      ]);
+      // No address, no username, no object key: the reviewer gets the declaration.
+      expect(Object.keys(detail).sort()).toEqual(DETAIL_FIELDS);
+      expect(detail).toMatchObject({
+        profileId: PROFILE_ID,
+        reviewStatus: 'PENDING',
+        legalFirstName: 'Ada',
+        legalLastName: 'Lovelace',
+        dateOfBirth: '2016-06-15',
+        gender: 'FEMALE',
+        nationality: 'PK',
+        countryOfResidence: 'SE',
+        city: 'Karachi',
+        clubName: 'KFA Academy',
+        weightKg: 41,
+        heightCm: 152,
+      });
       expect(detail.documents).toEqual([
         {
           id: document.id,
@@ -320,6 +364,55 @@ describe('StaffReviewService', () => {
       expect(detail.rejectionReason).toBeNull();
     });
 
+    it('derives isMinor from the birthday and the clock', async () => {
+      const minor = record();
+      const adult = record('44444444-4444-4444-8444-444444444444', { dateOfBirth: '2000-06-15' });
+      // The 18th birthday is an adult day: eighteen today is not a minor.
+      const turningAdult = record('55555555-5555-4555-8555-555555555555', {
+        dateOfBirth: '2008-07-01',
+      });
+
+      const { service } = serviceWith([minor, adult, turningAdult]);
+
+      expect((await service.readDetail(reviewer, minor.userId, CONTEXT)).isMinor).toBe(true);
+      expect((await service.readDetail(reviewer, adult.userId, CONTEXT)).isMinor).toBe(false);
+      expect((await service.readDetail(reviewer, turningAdult.userId, CONTEXT)).isMinor).toBe(
+        false,
+      );
+    });
+
+    it('writes one trail row for the read, with the actor and the profile only', async () => {
+      const { service, audit } = serviceWith([record()]);
+
+      await service.readDetail(reviewer, PROFILE_ID, CONTEXT);
+
+      expect(audit.records).toEqual([
+        {
+          action: STAFF_REVIEW_AUDIT_ACTIONS.DETAIL_VIEWED,
+          actorId: STAFF_ID,
+          actorRole: String(Role.ADMIN),
+          targetType: 'athlete_profile',
+          targetId: PROFILE_ID,
+          requestId: REQUEST_ID,
+          ip: CONTEXT.ip,
+          metadata: {},
+        },
+      ]);
+      // Nothing the athlete declared travels into the trail.
+      expect(JSON.stringify(audit.records)).not.toContain('Ada');
+    });
+
+    it('fails closed when the trail cannot be written', async () => {
+      const { service, logger } = serviceWith([record()], { audit: new FailingAudit() });
+
+      await refusalOf(
+        service.readDetail(reviewer, PROFILE_ID, CONTEXT),
+        ServiceUnavailableException,
+      );
+
+      expect(logger.messages()).toEqual(['staff review audit failed']);
+    });
+
     it('hides a document that was deleted', async () => {
       const reviews = new InMemoryStaffReviews();
 
@@ -327,24 +420,30 @@ describe('StaffReviewService', () => {
 
       const { service } = serviceWith([record()], { reviews });
 
-      expect((await service.readDetail(PROFILE_ID)).documents).toEqual([]);
+      expect((await service.readDetail(reviewer, PROFILE_ID, CONTEXT)).documents).toEqual([]);
     });
 
     it('answers the same 404 for a profile that does not exist', async () => {
-      const { service } = serviceWith([]);
+      const { service, audit } = serviceWith([]);
 
-      await refusalOf(service.readDetail(PROFILE_ID), NotFoundException);
+      await refusalOf(service.readDetail(reviewer, PROFILE_ID, CONTEXT), NotFoundException);
+      // Nothing was read, so nothing is on the trail.
+      expect(audit.records).toEqual([]);
     });
 
     it('answers that same 404 for a draft that was never submitted', async () => {
-      const { service } = serviceWith([
+      const { service, audit } = serviceWith([
         record(PROFILE_ID, { reviewStatus: 'DRAFT', submittedAt: null }),
       ]);
 
-      const missing = await refusalOf(service.readDetail(PROFILE_ID), NotFoundException);
+      const missing = await refusalOf(
+        service.readDetail(reviewer, PROFILE_ID, CONTEXT),
+        NotFoundException,
+      );
 
       // Nothing distinguishes "no such account" from "still filling the form".
       expect(messageOf(missing)).toBe('Not Found');
+      expect(audit.records).toEqual([]);
     });
   });
 
