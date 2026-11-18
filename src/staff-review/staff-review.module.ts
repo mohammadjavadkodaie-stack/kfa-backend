@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AthleteModule } from '../athlete/athlete.module';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { PrismaStaffReviewRepository } from './prisma-staff-review.repository';
 import { REVIEW_RESULT_NOTIFIER, EmailReviewResultNotifier } from './review-result-notifier';
 import { StaffReviewController } from './staff-review.controller';
@@ -11,8 +12,9 @@ import { StaffReviewService } from './staff-review.service';
 @Module({
   // AuthModule supplies the shared guards, the policy and the email transport;
   // AthleteModule owns the profile repository and the clock this module reads;
-  // AuditModule is the append-only trail every decision writes to.
-  imports: [AuthModule, AthleteModule, AuditModule],
+  // AuditModule is the append-only trail every decision writes to;
+  // NotificationsModule is the in-site inbox a decision also writes to.
+  imports: [AuthModule, AthleteModule, AuditModule, NotificationsModule],
   controllers: [StaffReviewController],
   providers: [
     StaffReviewService,

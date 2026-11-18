@@ -4,6 +4,7 @@ import { FakeEmailProvider } from '../../src/auth/email/email.provider';
 import { Role } from '../../src/auth/roles';
 import { createAdminHarness, type AdminAccount } from './admin-harness';
 import { InMemoryAthleteProfileRepository } from './in-memory-athlete-profiles';
+import { InMemoryNotificationRepository } from './in-memory-notifications';
 import { InMemoryStaffReviews } from './in-memory-staff-reviews';
 
 /**
@@ -73,14 +74,19 @@ function profileRecord(
   };
 }
 
-export async function createStaffReviewHarness(prefix = 'review') {
+export async function createStaffReviewHarness(
+  prefix = 'review',
+  options: { readonly notifications?: InMemoryNotificationRepository } = {},
+) {
   const profiles = new InMemoryAthleteProfileRepository();
   const reviews = new InMemoryStaffReviews();
   const email = new FakeEmailProvider();
+  const notifications = options.notifications ?? new InMemoryNotificationRepository();
   const base = await createAdminHarness(prefix, {
     athleteProfileRepository: profiles,
     staffReviewRepository: reviews,
     emailProvider: email,
+    notificationRepository: notifications,
   });
 
   const server = () => request(base.app.getHttpServer());
@@ -176,6 +182,7 @@ export async function createStaffReviewHarness(prefix = 'review') {
     profiles,
     reviews,
     email,
+    notifications,
     anon,
     put,
     grantDocument,
