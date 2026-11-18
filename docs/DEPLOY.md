@@ -31,7 +31,7 @@ The migration command is deliberately a one-off and is not run on app startup. C
 
 Check `https://$SITE_DOMAIN/health`, then load the site, complete sign-up with a real email, and confirm Turnstile succeeds.
 
-The phone/OTP identity flow is disabled in production: `/auth/otp/*`, `/auth/register`, `/auth/login` and `/auth/phone-change/*` answer the same generic 404 as a route that does not exist, and no `OTP_PROVIDER` is set. Sign-up, login, password reset and email change run through the email flow only.
+The identity flow is email only: `/auth/otp/*`, `/auth/register`, `/auth/login` and `/auth/phone-change/*` no longer exist and answer the same generic 404 as any unknown route, and no SMS provider is configured. Sign-up, login, password reset and email change run through the email flow.
 
 ### Bootstrap the first OWNER
 
@@ -77,7 +77,7 @@ The backup script covers PostgreSQL only. Documents are encrypted in the private
 - [ ] `TRUSTED_PROXY_COUNT=1` matches the actual single Caddy proxy.
 - [ ] ClamAV is healthy and signatures have updated successfully.
 - [ ] S3 bucket is private and encryption/versioning/least-privilege credentials are enabled.
-- [ ] No fake/development provider remains enabled (email, captcha); no `OTP_PROVIDER` is configured because the phone/OTP routes are disabled in production.
+- [ ] No fake/development provider remains enabled (email, captcha), and the removed phone/OTP routes answer a generic 404.
 - [ ] The first OWNER is bootstrapped once with `bootstrap-owner.js --confirm`, and its TOTP second factor is enrolled.
 - [ ] Backups and a restore have been tested.
 - [ ] Owner/admin is informed of rate-limit and captcha behavior.

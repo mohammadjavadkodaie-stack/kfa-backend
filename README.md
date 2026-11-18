@@ -43,9 +43,9 @@ pnpm test:e2e
 ## Rate limiting (Redis)
 
 The global `ThrottlerGuard` keeps its counters in Redis whenever `REDIS_URL` is set, and
-`RateLimitService` (for explicit checks such as login or OTP) uses the same atomic Lua
-script. Identifiers are HMAC-SHA256 hashed with `RATE_LIMIT_HMAC_KEY`, so keys under the
-`kfa:rl:` namespace never contain a raw IP, phone number or user id.
+`RateLimitService` (for explicit checks such as sign-in or email codes) uses the same
+atomic Lua script. Identifiers are HMAC-SHA256 hashed with `RATE_LIMIT_HMAC_KEY`, so keys
+under the `kfa:rl:` namespace never contain a raw IP address or user id.
 
 ```powershell
 docker compose -f docker-compose.dev.yml up -d redis   # loopback only, password, no persistence
