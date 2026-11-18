@@ -1,23 +1,51 @@
-import { Controller, Delete, ForbiddenException, HttpCode, Param, Post, Req } from '@nestjs/common';
+import {
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { Roles } from '../auth/decorators/roles.decorator';
 import type { AuthenticatedRequest } from '../auth/guards/auth.guard';
 import type { PolicySubject } from '../auth/policy/access-policy';
 import { Role } from '../auth/roles';
 import { RequireStepUp } from '../auth/totp/step-up.guard';
 import { getRequestId } from '../common/middleware/request-id.middleware';
-import { AdminUsersService } from './admin-users.service';
+import { AdminUsersQueryDto, toAdminUsersFilter } from './admin-users.dto';
+import { AdminUsersService, type AdminUsersPageView } from './admin-users.service';
 
 /**
- * Moderation, promotion and demotion of an account.
+ * Moderation, promotion and demotion of an account, plus the account list.
  *
- * Every route changes who may use the API, so each one carries the staff role
- * and a fresh second factor; the global staff gate stays in front of them.
- * There is no body: the only input is the id in the path, which the service
- * validates against storage.
+ * Every route carries the staff role and a fresh second factor; the global
+ * staff gate stays in front of them. The mutations take no body: their only
+ * input is the id in the path, which the service validates against storage.
+ * The one read takes the same gates, because a page of accounts is every
+ * address at once.
  */
 @Controller('admin/users')
 export class AdminUsersController {
   constructor(private readonly users: AdminUsersService) {}
+
+  /**
+   * One page of accounts, oldest first. Read-only, so it records what was
+   * listed instead of what changed - and still refuses to serve when that
+   * record cannot be written. The step-up stays: the page hands out every
+   * address at once, so a stolen staff session must not be enough to list it.
+   */
+  @Roles(Role.ADMIN, Role.OWNER)
+  @RequireStepUp()
+  @Get()
+  async list(
+    @Query() query: AdminUsersQueryDto,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<AdminUsersPageView> {
+    return this.users.list(this.actor(request), toAdminUsersFilter(query), getRequestId(request));
+  }
 
   @Roles(Role.ADMIN, Role.OWNER)
   @RequireStepUp()

@@ -6,11 +6,12 @@ import { STEPUP_WINDOW_MS, STEP_UP_REQUIRED_KEY } from '../src/auth/totp/step-up
 import { createAdminHarness, type AdminAccount, type AdminHarness } from './helpers/admin-harness';
 
 /**
- * The five admin routes as one surface, checked once over the whole set: every
- * refusal looks the same from outside, both gates refuse in their own words,
- * every handler carries the markers, and a doubled request records one row.
+ * The admin mutation routes as one surface, checked once over the whole set:
+ * every refusal looks the same from outside, both gates refuse in their own
+ * words, every handler carries the markers, and a doubled request records one
+ * row.
  *
- * Earlier suites prove each route on its own; this one exists so a sixth route
+ * Earlier suites prove each route on its own; this one exists so another route
  * cannot arrive with weaker refusal bytes or without a step-up.
  */
 
@@ -27,8 +28,12 @@ const ROUTES = [
   { path: 'totp/reset', method: 'POST' },
 ] as const;
 
-/** The handlers that answer `ROUTES`, in the order above. */
-const HANDLERS = ['block', 'unblock', 'grantAdmin', 'revokeAdmin', 'resetTotp'] as const;
+/**
+ * Every handler of the controller. `list` answers no row of `ROUTES` - its
+ * refusals are the list suite's business - but it is kept here so the metadata
+ * sweep below covers every route that exists.
+ */
+const HANDLERS = ['list', 'block', 'unblock', 'grantAdmin', 'revokeAdmin', 'resetTotp'] as const;
 
 /** Bodies carry a per-request id; two refusals are compared without it. */
 const withoutRequestId = (body: unknown): Record<string, unknown> => ({
