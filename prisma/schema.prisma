@@ -112,6 +112,7 @@ model User {
   recoveryCodes    RecoveryCode[]
   athleteProfile   AthleteProfile?
   documents        IdentityDocument[]
+  notifications    Notification[]
   @@map("users")
 }
 
@@ -255,4 +256,34 @@ model RecoveryCode {
   @@unique([userId, codeHash])
   @@index([userId])
   @@map("recovery_codes")
+}
+
+/// The closed set of in-site notifications. The client's message catalog has a
+/// sentence for each kind and each enum param value, so the server stores no
+/// text of its own and nothing it writes can reach the page verbatim.
+enum NotificationKind {
+  profile_under_review
+  profile_approved
+  profile_rejected
+  upload_status
+  subscription_status
+}
+
+/// One in-site inbox row per thing the owner should see. The row names no
+/// person and carries no free text: the owner is the subject, `kind` is closed
+/// and `params` holds enum values only. `readAt` is the whole read state - an
+/// unread row is simply a row whose `readAt` is still NULL.
+model Notification {
+  id        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  kind      NotificationKind
+  params    Json             @default("{}")
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  readAt    DateTime?        @map("read_at") @db.Timestamptz(6)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The inbox reads newest first and counts unread per owner.
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, readAt])
+  @@map("notifications")
 }
