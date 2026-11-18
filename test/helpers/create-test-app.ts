@@ -23,6 +23,10 @@ import {
   IDENTITY_DOCUMENT_REPOSITORY,
   type IdentityDocumentRepository,
 } from '../../src/documents/records/identity-document.repository';
+import {
+  NOTIFICATION_REPOSITORY,
+  type NotificationRepository,
+} from '../../src/notifications/notification.repository';
 import { RateLimitService } from '../../src/rate-limit/rate-limit.service';
 import {
   STAFF_REVIEW_REPOSITORY,
@@ -65,6 +69,8 @@ export interface CreateTestAppOptions {
   readonly staffReviewRepository?: StaffReviewRepository;
   /** In-memory document rows, so the upload route runs without PostgreSQL. */
   readonly identityDocumentRepository?: IdentityDocumentRepository;
+  /** In-memory inbox rows, so the notification routes run without PostgreSQL. */
+  readonly notificationRepository?: NotificationRepository;
   /** In-memory object store, so no suite reaches a bucket. */
   readonly documentStorage?: DocumentStorage;
   /** A fake daemon verdict for the ingest pipeline, instead of the refusing default. */
@@ -136,6 +142,12 @@ export async function createTestApp(
     builder = builder
       .overrideProvider(IDENTITY_DOCUMENT_REPOSITORY)
       .useValue(options.identityDocumentRepository);
+  }
+
+  if (options.notificationRepository !== undefined) {
+    builder = builder
+      .overrideProvider(NOTIFICATION_REPOSITORY)
+      .useValue(options.notificationRepository);
   }
 
   if (options.documentStorage !== undefined) {

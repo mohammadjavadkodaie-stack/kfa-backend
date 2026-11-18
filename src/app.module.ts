@@ -18,6 +18,7 @@ import { PrismaModule } from './database/prisma.module';
 import { DocumentsModule } from './documents/documents.module';
 import { HealthModule } from './health/health.module';
 import { buildPinoParams } from './logging/pino.config';
+import { NotificationsModule } from './notifications/notifications.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { StaffReviewModule } from './staff-review/staff-review.module';
 
@@ -35,6 +36,7 @@ import { StaffReviewModule } from './staff-review/staff-review.module';
     AdminUsersModule,
     AthleteModule,
     DocumentsModule,
+    NotificationsModule,
     StaffReviewModule,
     HealthModule,
   ],
