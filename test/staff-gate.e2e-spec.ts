@@ -1,12 +1,13 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { Role } from '../src/auth/roles';
 import { InMemoryTotpRepository } from '../src/auth/totp/in-memory-totp.repository';
 import { base32Decode, totpAt } from '../src/auth/totp/totp';
 import type { RateLimitDecision, RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import { signInByEmail, signUpByEmail } from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
  * The default-deny second-factor gate over HTTP, with no database and no Redis.
@@ -26,26 +27,14 @@ const SECOND_FACTOR_REQUIRED = {
   code: 'second_factor_required',
 } as const;
 
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-}
-
 /** The explicit limiter is out of scope here: always admit. */
 class PermissiveRateLimit {
   async consume(): Promise<RateLimitDecision> {
+    return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
+  }
+
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
     return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
   }
 
@@ -57,7 +46,7 @@ interface Account {
   readonly userId: string;
   readonly sessionId: string;
   readonly username: string;
-  readonly phone: string;
+  readonly email: string;
 }
 
 interface Session {
@@ -73,7 +62,6 @@ interface Enrolled {
 describe('Staff second-factor gate (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
-  let proofs: ProofTokenService;
   let sequence = 0;
   let stepOffset = 0;
 
@@ -95,12 +83,9 @@ describe('Staff second-factor gate (e2e)', () => {
   async function signUp(role: Role): Promise<Account> {
     sequence += 1;
     const username = `gate_user_${sequence}`;
-    const phone = `+1415888${String(1_000 + sequence).padStart(4, '0')}`;
+    const email = `gate_user_${sequence}@example.com`;
 
-    const response = await post('/auth/register', undefined, {
-      proof: await proofs.issue(phone, 'register'),
-      username,
-    });
+    const response = await signUpByEmail(app, { email, username });
 
     expect(response.status).toBe(200);
 
@@ -119,15 +104,13 @@ describe('Staff second-factor gate (e2e)', () => {
       userId: stored.id,
       sessionId: session.id,
       username,
-      phone,
+      email,
     };
   }
 
   /** A second device of the same account: a fresh session with no stamp. */
   async function login(account: Account): Promise<Session> {
-    const response = await post('/auth/login', undefined, {
-      proof: await proofs.issue(account.phone, 'login'),
-    });
+    const response = await signInByEmail(app, account);
 
     expect(response.status).toBe(200);
 
@@ -170,11 +153,10 @@ describe('Staff second-factor gate (e2e)', () => {
       {
         sessionRepository: sessions,
         totpRepository: new InMemoryTotpRepository(),
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: new PermissiveRateLimit() as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   afterAll(async () => {

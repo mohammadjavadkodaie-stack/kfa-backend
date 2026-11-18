@@ -5,7 +5,7 @@ import {
   RedisProofNonceStore,
   type ProofNonceStore,
   type ProofRedisClient,
-} from '../auth/otp/proof-token';
+} from '../auth/proof/proof-nonce.store';
 import { PrismaSessionRepository } from '../auth/prisma-session.repository';
 import { SESSION_REPOSITORY } from '../auth/session.repository';
 import { noStoreMiddleware } from '../common/middleware/no-store.middleware';

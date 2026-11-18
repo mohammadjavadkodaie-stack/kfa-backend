@@ -1,11 +1,12 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { AccessAction } from '../src/auth/policy/access-policy';
 import { Role } from '../src/auth/roles';
 import type { RateLimitDecision, RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import { signUpByEmail } from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
  * The access policy and its audit event over HTTP, with no database and no
@@ -21,26 +22,14 @@ import { createTestApp } from './helpers/create-test-app';
 
 const FORBIDDEN = { statusCode: 403, message: 'Forbidden' } as const;
 
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-}
-
 /** The explicit limiter is out of scope here: always admit. */
 class PermissiveRateLimit {
   async consume(): Promise<RateLimitDecision> {
+    return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
+  }
+
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
     return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
   }
 
@@ -95,7 +84,6 @@ function createAuditPrisma(): { prisma: object; rows: AuditRow[] } {
 describe('Access policy and authz.denied (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
-  let proofs: ProofTokenService;
   let auditRows: AuditRow[];
   let sequence = 0;
 
@@ -106,11 +94,11 @@ describe('Access policy and authz.denied (e2e)', () => {
   async function signUp(role: Role): Promise<{ token: string; userId: string }> {
     sequence += 1;
     const username = `policy_user_${sequence}`;
-    const phone = `+1415555${String(4_000 + sequence).padStart(4, '0')}`;
 
-    const response = await server()
-      .post('/auth/register')
-      .send({ proof: await proofs.issue(phone, 'register'), username });
+    const response = await signUpByEmail(app, {
+      email: `policy_user_${sequence}@example.com`,
+      username,
+    });
 
     expect(response.status).toBe(200);
 
@@ -148,11 +136,10 @@ describe('Access policy and authz.denied (e2e)', () => {
       {
         prisma: auditPrisma.prisma,
         sessionRepository: sessions,
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: new PermissiveRateLimit() as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   afterAll(async () => {

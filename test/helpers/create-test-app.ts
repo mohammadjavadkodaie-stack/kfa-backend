@@ -10,7 +10,7 @@ import {
 import { AuthModule } from '../../src/auth/auth.module';
 import { EMAIL_CODE_STORE, type EmailCodeStore } from '../../src/auth/email/email-code.store';
 import { EMAIL_PROVIDER, type EmailProvider } from '../../src/auth/email/email.provider';
-import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/otp/proof-token';
+import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/proof/proof-nonce.store';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
 import { TOTP_REPOSITORY, type TotpRepository } from '../../src/auth/totp/totp.repository';
 import { ENV } from '../../src/config/config.module';
@@ -51,7 +51,7 @@ export interface CreateTestAppOptions {
   readonly sessionRepository?: SessionRepository;
   /** In-memory second-factor store, so the TOTP endpoints run without PostgreSQL. */
   readonly totpRepository?: TotpRepository;
-  /** Lets `ProofTokenService` keep nonces without Redis. */
+  /** Lets the email proof service keep nonces without Redis. */
   readonly proofNonceStore?: ProofNonceStore;
   /** In-memory one-time codes, so the email flow runs without Redis. */
   readonly emailCodeStore?: EmailCodeStore;

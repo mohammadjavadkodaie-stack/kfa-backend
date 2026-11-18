@@ -12,7 +12,7 @@ import { VIEWED_FILE_ROUTE_PATTERN } from '../../logging/request-path';
 import { TEST_ENV } from '../../../test/helpers/test-env';
 import type { AuditService } from '../../audit/audit.service';
 import { InMemorySessionRepository } from '../../auth/in-memory-session.repository';
-import type { ProofNonceStore } from '../../auth/otp/proof-token';
+import type { ProofNonceStore } from '../../auth/proof/proof-nonce.store';
 import { Role } from '../../auth/roles';
 import { AllExceptionsFilter } from '../../common/filters/all-exceptions.filter';
 import type { RateLimitDecision, RateLimitService } from '../../rate-limit/rate-limit.service';

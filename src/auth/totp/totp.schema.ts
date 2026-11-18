@@ -14,3 +14,10 @@ export const totpCodeSchema = z.strictObject({
 
 /** Enrolment carries no input at all, so any field makes the body malformed. */
 export const totpEnrollSchema = z.strictObject({});
+
+/** Returns the parsed body, or null when it is not exactly the expected shape. */
+export function parseBody<T>(schema: z.ZodType<T>, body: unknown): T | null {
+  const result = schema.safeParse(body);
+
+  return result.success ? result.data : null;
+}

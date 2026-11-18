@@ -3,7 +3,6 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { AuthService, ME_USER_LIMIT } from '../src/auth/auth.service';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { Role } from '../src/auth/roles';
 import { REFRESH_COOKIE_NAME } from '../src/auth/token/refresh-token';
 import { SECOND_FACTOR_REQUIRED_CODE } from '../src/common/errors/error-response';
@@ -13,6 +12,8 @@ import type {
   RateLimitService,
 } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import { signUpByEmail } from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
  * `GET /auth/me` over HTTP with no database, no Redis and no SMS provider: the
@@ -24,28 +25,9 @@ import { createTestApp } from './helpers/create-test-app';
  * generic refusals.
  */
 
-const PHONE = '+14155552671';
-const OTHER_PHONE = '+14155550123';
+const EMAIL = 'ivan@example.com';
+const OTHER_EMAIL = 'other@example.com';
 const USERNAME = 'ivan';
-
-/** Nonce store stand-in: `ProofTokenService` keeps its real signing logic. */
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-}
-
 /**
  * The explicit limiter, with a switch and a log of every request: one app
  * instance can admit a registration, then refuse everything, then behave as if
@@ -71,6 +53,17 @@ class SwitchableRateLimit {
 
   async reset(): Promise<void> {
     this.allowed = true;
+  }
+
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
+    if (this.storeDown) throw new ServiceUnavailableException();
+
+    return {
+      allowed: this.allowed,
+      remaining: this.allowed ? 99 : 0,
+      retryAfterSeconds: this.allowed ? 0 : this.retryAfterSeconds,
+    };
   }
 }
 
@@ -112,15 +105,12 @@ function refreshCookieOf(response: request.Response): string {
 describe('GET /auth/me (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
-  let proofs: ProofTokenService;
   let limiter: SwitchableRateLimit;
 
   const server = () => request(app.getHttpServer());
 
-  const registerOk = async (username: string = USERNAME, phone: string = PHONE) => {
-    const response = await server()
-      .post('/auth/register')
-      .send({ proof: await proofs.issue(phone, 'register'), username });
+  const registerOk = async (username: string = USERNAME, email: string = EMAIL) => {
+    const response = await signUpByEmail(app, { email, username });
 
     expect(response.status).toBe(200);
 
@@ -141,12 +131,12 @@ describe('GET /auth/me (e2e)', () => {
     return id;
   };
 
-  const userIdOfPhone = (phone: string): string => {
+  const userIdOfEmail = (email: string): string => {
     for (const [id, user] of sessions.users) {
-      if (user.phone === phone) return id;
+      if (user.email === email) return id;
     }
 
-    throw new Error(`no account owns ${phone}`);
+    throw new Error(`no account owns ${email}`);
   };
 
   beforeAll(async () => {
@@ -156,11 +146,10 @@ describe('GET /auth/me (e2e)', () => {
       {},
       {
         sessionRepository: sessions,
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: limiter as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   beforeEach(() => {
@@ -232,13 +221,13 @@ describe('GET /auth/me (e2e)', () => {
       });
     });
 
-    it('never contains the phone, an id or the token', async () => {
+    it('never contains the email, an id or the token', async () => {
       const registered = await registerOk();
       const token = accessTokenOf(registered);
       const response = await me(token);
 
       expect(response.status).toBe(200);
-      expect(response.text).not.toContain(PHONE);
+      expect(response.text).not.toContain(EMAIL);
       expect(response.text).not.toContain(onlyUserId());
       expect(response.text).not.toContain(token);
     });
@@ -274,8 +263,8 @@ describe('GET /auth/me (e2e)', () => {
 
     it('ignores a user id in the query string', async () => {
       const mine = await registerOk();
-      await registerOk('other_user', OTHER_PHONE);
-      const foreignId = userIdOfPhone(OTHER_PHONE);
+      await registerOk('other_user', OTHER_EMAIL);
+      const foreignId = userIdOfEmail(OTHER_EMAIL);
 
       const response = await server()
         .get(`/auth/me?userId=${foreignId}`)

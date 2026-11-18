@@ -1,12 +1,9 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
-  LOGIN_BODY,
-  REGISTER_BODY,
   TEST_CONTEXT,
   TEST_NOW,
-  TEST_OTHER_PHONE,
-  TEST_PHONE,
+  TEST_OTHER_EMAIL,
   TEST_USERNAME,
   auditedActions,
   auditedMetadata,
@@ -14,6 +11,8 @@ import {
   cookieContext,
   createHarness,
   issued,
+  loginFixture,
+  registerFixture,
   type Harness,
 } from '../../test/helpers/auth-service-harness';
 import {
@@ -23,6 +22,7 @@ import {
   type SessionPrincipal,
   type SessionSummary,
 } from './auth.service';
+import { Role } from './roles';
 
 const SECONDS_PER_DAY = 86_400;
 const MINUTE = 60_000;
@@ -54,11 +54,19 @@ async function accountWithSessions(
   harness: Harness,
   extraSessions: number,
 ): Promise<IssuedCredentials[]> {
-  const credentials = [issued(await harness.service.register(REGISTER_BODY, TEST_CONTEXT))];
+  const credentials = [issued(await registerFixture(harness, TEST_CONTEXT))];
 
   for (let index = 1; index <= extraSessions; index += 1) {
     jest.setSystemTime(new Date(TEST_NOW.getTime() + index * MINUTE));
-    credentials.push(issued(await harness.service.login(LOGIN_BODY, TEST_CONTEXT)));
+    credentials.push(
+      issued(
+        await loginFixture(
+          harness,
+          { id: at(credentials, 0).userId, role: Role.USER },
+          TEST_CONTEXT,
+        ),
+      ),
+    );
   }
 
   return credentials;
@@ -66,13 +74,12 @@ async function accountWithSessions(
 
 /** A second account, so "somebody else's session" is a real row. */
 async function otherAccount(harness: Harness): Promise<IssuedCredentials> {
-  harness.proof.phone = TEST_OTHER_PHONE;
-  const credentials = issued(
-    await harness.service.register({ ...REGISTER_BODY, username: 'other_user' }, CONTEXT),
+  return issued(
+    await registerFixture(harness, CONTEXT, {
+      username: 'other_user',
+      email: TEST_OTHER_EMAIL,
+    }),
   );
-  harness.proof.phone = TEST_PHONE;
-
-  return credentials;
 }
 
 async function isActive(harness: Harness, credentials: IssuedCredentials): Promise<boolean> {
@@ -349,7 +356,7 @@ describe('AuthService device binding on registration', () => {
   it('binds the first session when the client sent a device key', async () => {
     const harness = createHarness();
 
-    await harness.service.register(REGISTER_BODY, TEST_CONTEXT);
+    await registerFixture(harness, TEST_CONTEXT);
 
     const session = [...harness.sessions.sessions.values()][0];
 
@@ -360,22 +367,8 @@ describe('AuthService device binding on registration', () => {
   it('leaves the first session unbound when no device key was sent', async () => {
     const harness = createHarness();
 
-    await harness.service.register(REGISTER_BODY, contextWith({ deviceKey: null }));
+    await registerFixture(harness, contextWith({ deviceKey: null }));
 
     expect([...harness.sessions.sessions.values()][0]?.deviceBound).toBe(false);
-  });
-});
-
-describe('AuthService.register username pre-check', () => {
-  it('refuses a taken username without spending the proof', async () => {
-    const harness = createHarness();
-    harness.sessions.seedUser({ phone: TEST_OTHER_PHONE, username: TEST_USERNAME });
-
-    await expect(harness.service.register(REGISTER_BODY, TEST_CONTEXT)).rejects.toThrow();
-
-    // A taken name must not cost the caller their one-time code.
-    expect(harness.proof.consumed).toHaveLength(0);
-    expect(harness.sessions.users.size).toBe(1);
-    expect(harness.sessions.sessions.size).toBe(0);
   });
 });

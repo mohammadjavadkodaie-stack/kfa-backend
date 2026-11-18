@@ -10,7 +10,7 @@ import {
 } from '../../../test/helpers/auth-service-harness';
 import type { AuditService } from '../../audit/audit.service';
 import { InMemorySessionRepository } from '../../auth/in-memory-session.repository';
-import type { ProofNonceStore } from '../../auth/otp/proof-token';
+import type { ProofNonceStore } from '../../auth/proof/proof-nonce.store';
 import type { PolicySubject } from '../../auth/policy/access-policy';
 import { Role } from '../../auth/roles';
 import { DocumentCryptoService, type EncryptedDocument } from '../document-crypto.service';

@@ -1,18 +1,40 @@
 import { z } from 'zod';
-import {
-  AUTH_DEVICE_NAME_MAX_LENGTH,
-  AUTH_PROOF_MAX_LENGTH,
-  deviceNameSchema,
-  usernameSchema,
-} from '../auth.schema';
+
+/**
+ * Request bodies for the email identity endpoints.
+ *
+ * Parsed with zod instead of DTO classes because every failure must collapse
+ * into one generic error: no field names, no reasons.
+ */
 
 export const EMAIL_MAX_LENGTH = 254;
 export const EMAIL_CAPTCHA_MAX_LENGTH = 2048;
+export const AUTH_PROOF_MAX_LENGTH = 2048;
+export const USERNAME_MIN_LENGTH = 3;
+export const USERNAME_MAX_LENGTH = 30;
+/** Matches the label length check of the devices table. */
+export const AUTH_DEVICE_NAME_MAX_LENGTH = 100;
 
 const emailSchema = z.string().min(3).max(EMAIL_MAX_LENGTH);
 const passwordSchema = z.string().min(1).max(512);
 const proofSchema = z.string().min(1).max(AUTH_PROOF_MAX_LENGTH);
 const localeSchema = z.enum(['en', 'fa', 'tr', 'ar']).optional();
+
+/** Letters, digits and underscore; stored lowercased so `Ivan` cannot shadow `ivan`. */
+export const usernameSchema = z
+  .string()
+  .min(USERNAME_MIN_LENGTH)
+  .max(USERNAME_MAX_LENGTH)
+  .regex(/^[A-Za-z0-9_]+$/u)
+  .transform((value) => value.toLowerCase());
+
+/** Optional label for the device list; the `User-Agent` is only the fallback. */
+export const deviceNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(AUTH_DEVICE_NAME_MAX_LENGTH)
+  .optional();
 
 export const emailStartSchema = z.strictObject({
   email: emailSchema,

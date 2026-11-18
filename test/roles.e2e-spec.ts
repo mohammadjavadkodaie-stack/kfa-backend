@@ -2,10 +2,11 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { createHmac } from 'node:crypto';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { ALL_ROLES, Role } from '../src/auth/roles';
 import type { RateLimitDecision, RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import { signUpByEmail } from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 import { TEST_ENV } from './helpers/test-env';
 
 /**
@@ -24,26 +25,14 @@ import { TEST_ENV } from './helpers/test-env';
 
 const FORBIDDEN = { statusCode: 403, message: 'Forbidden' } as const;
 
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-}
-
 /** The explicit limiter is out of scope here: always admit. */
 class PermissiveRateLimit {
   async consume(): Promise<RateLimitDecision> {
+    return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
+  }
+
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
     return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
   }
 
@@ -73,7 +62,6 @@ function withRoleClaim(token: string, role: Role): string {
 describe('Role-based route protection (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
-  let proofs: ProofTokenService;
   let sequence = 0;
 
   const server = () => request(app.getHttpServer());
@@ -92,11 +80,11 @@ describe('Role-based route protection (e2e)', () => {
   ): Promise<{ token: string; userId: string; sessionId: string }> {
     sequence += 1;
     const username = `role_user_${sequence}`;
-    const phone = `+1415555${String(2_000 + sequence).padStart(4, '0')}`;
 
-    const response = await server()
-      .post('/auth/register')
-      .send({ proof: await proofs.issue(phone, 'register'), username });
+    const response = await signUpByEmail(app, {
+      email: `role_user_${sequence}@example.com`,
+      username,
+    });
 
     expect(response.status).toBe(200);
 
@@ -126,11 +114,10 @@ describe('Role-based route protection (e2e)', () => {
       {},
       {
         sessionRepository: sessions,
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: new PermissiveRateLimit() as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   afterAll(async () => {

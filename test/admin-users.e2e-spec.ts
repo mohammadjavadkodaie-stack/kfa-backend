@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { Role } from '../src/auth/roles';
 import { STEPUP_WINDOW_MS } from '../src/auth/totp/step-up.guard';
 import type { RateLimitDecision, RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import { signInByEmail, signUpByEmail } from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
  * Block and unblock over HTTP, with no database and no Redis.
@@ -21,27 +22,14 @@ const SECOND_FACTOR_REQUIRED = { ...FORBIDDEN, code: 'second_factor_required' } 
 const STEP_UP_REQUIRED = { ...FORBIDDEN, code: 'step_up_required' } as const;
 const NOT_FOUND = { statusCode: 404, message: 'Not Found' } as const;
 
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-}
-
 /** The explicit limiter is out of scope here: always admit. */
 class PermissiveRateLimit {
   async consume(): Promise<RateLimitDecision> {
+    return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
+  }
+
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
     return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
   }
 
@@ -96,13 +84,13 @@ interface Account {
   readonly token: string;
   readonly userId: string;
   readonly sessionId: string;
-  readonly phone: string;
+  readonly email: string;
+  readonly username: string;
 }
 
 describe('Admin block and unblock (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
-  let proofs: ProofTokenService;
   let auditRows: AuditRow[];
   let sequence = 0;
 
@@ -124,12 +112,9 @@ describe('Admin block and unblock (e2e)', () => {
   async function signUp(role: Role, withStepUp = false): Promise<Account> {
     sequence += 1;
     const username = `moderation_user_${sequence}`;
-    const phone = `+1415889${String(5_000 + sequence).padStart(4, '0')}`;
+    const email = `moderation_user_${sequence}@example.com`;
 
-    const response = await post('/auth/register', undefined, {
-      proof: await proofs.issue(phone, 'register'),
-      username,
-    });
+    const response = await signUpByEmail(app, { email, username });
 
     expect(response.status).toBe(200);
 
@@ -150,12 +135,13 @@ describe('Admin block and unblock (e2e)', () => {
       token: (response.body as { accessToken: string }).accessToken,
       userId: stored.id,
       sessionId: session.id,
-      phone,
+      email,
+      username,
     };
   }
 
   async function signIn(account: Account) {
-    return post('/auth/login', undefined, { proof: await proofs.issue(account.phone, 'login') });
+    return signInByEmail(app, account);
   }
 
   beforeAll(async () => {
@@ -169,11 +155,10 @@ describe('Admin block and unblock (e2e)', () => {
       {
         prisma: auditPrisma.prisma,
         sessionRepository: sessions,
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: new PermissiveRateLimit() as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   afterAll(async () => {
@@ -239,15 +224,16 @@ describe('Admin block and unblock (e2e)', () => {
     ).toBe(401);
 
     const denied = await signIn(user);
-    const unknownNumber = await post('/auth/login', undefined, {
-      proof: await proofs.issue('+14150000000', 'login'),
+    const unknownAccount = await signInByEmail(app, {
+      email: 'nobody@example.com',
+      username: 'nobody',
     });
 
     // Already true before this feature: the auth contract collapses every
     // credential rejection into one shape, so a block leaks no new signal.
     expect(denied.status).toBe(401);
     expect(denied.body).toEqual({ error: 'invalid_credentials' });
-    expect(denied.body).toEqual(unknownNumber.body);
+    expect(denied.body).toEqual(unknownAccount.body);
 
     expect(rows('admin.user.block', user.userId)).toHaveLength(1);
   });

@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { Role } from './roles';
 import type {
-  AccountRecord,
   EmailAccountRecord,
   ActiveSessionRecord,
+  AdminUserListPage,
+  AdminUserListQuery,
   AdminUserRecord,
-  ChangePhoneInput,
-  ChangePhoneResult,
   CreateAccountInput,
   CreateEmailAccountInput,
   CreateEmailAccountResult,
@@ -29,6 +28,8 @@ import type {
 
 interface FakeUser {
   readonly id: string;
+  /** Set once at creation; the admin list orders by it, oldest first. */
+  readonly createdAt: Date;
   phone: string | null;
   email: string | null;
   passwordHash: string | null;
@@ -78,12 +79,6 @@ export class InMemorySessionRepository implements SessionRepository {
     return [...this.users.values()].some((user) => user.username.toLowerCase() === needle);
   }
 
-  async findUserByPhone(phoneE164: string): Promise<AccountRecord | null> {
-    const user = [...this.users.values()].find((candidate) => candidate.phone === phoneE164);
-
-    return user === undefined ? null : { id: user.id, status: user.status, role: user.role };
-  }
-
   async findUserByEmail(email: string): Promise<EmailAccountRecord | null> {
     const user = [...this.users.values()].find((candidate) => candidate.email === email);
 
@@ -113,10 +108,6 @@ export class InMemorySessionRepository implements SessionRepository {
     );
   }
 
-  async findPhoneByUserId(userId: string): Promise<string | null> {
-    return this.users.get(userId)?.phone ?? null;
-  }
-
   async findUsernameByUserId(userId: string): Promise<string | null> {
     return this.users.get(userId)?.username ?? null;
   }
@@ -125,6 +116,30 @@ export class InMemorySessionRepository implements SessionRepository {
     const user = this.users.get(userId);
 
     return user === undefined ? null : { id: user.id, role: user.role, status: user.status };
+  }
+
+  async listAccounts(query: AdminUserListQuery): Promise<AdminUserListPage> {
+    const matching = [...this.users.values()]
+      .filter((user) => query.role === undefined || user.role === query.role)
+      .filter((user) =>
+        query.blocked === undefined ? true : (user.status === 'BLOCKED') === query.blocked,
+      )
+      .filter((user) => query.email === undefined || user.email === query.email)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
+
+    const start = (query.page - 1) * query.pageSize;
+
+    return {
+      rows: matching.slice(start, start + query.pageSize).map((user) => ({
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        createdAt: user.createdAt,
+      })),
+      total: matching.length,
+    };
   }
 
   async findSelfProfile(userId: string): Promise<SelfProfileRecord | null> {
@@ -190,6 +205,7 @@ export class InMemorySessionRepository implements SessionRepository {
 
     this.users.set(input.userId, {
       id: input.userId,
+      createdAt: input.now,
       phone: input.phone,
       email: input.email ?? null,
       passwordHash: input.passwordHash ?? null,
@@ -354,34 +370,6 @@ export class InMemorySessionRepository implements SessionRepository {
     }
   }
 
-  async changePhone(input: ChangePhoneInput): Promise<ChangePhoneResult> {
-    const user = this.users.get(input.userId);
-
-    if (user === undefined) return { outcome: 'not_found' };
-
-    // The same rule as the unique index, with no await between check and write.
-    const taken = [...this.users.values()].some(
-      (candidate) => candidate.id !== user.id && candidate.phone === input.phone,
-    );
-
-    if (taken) return { outcome: 'conflict' };
-
-    user.phone = input.phone;
-
-    const others = [...this.sessions.values()].filter(
-      (session) =>
-        session.userId === user.id &&
-        session.revokedAt === null &&
-        session.id !== input.keepSessionId,
-    );
-
-    for (const session of others) {
-      await this.revokeSession(session.id, 'phone_changed', input.now);
-    }
-
-    return { outcome: 'changed', revokedSessions: others.length };
-  }
-
   async revokeSessionByRefreshTokenHash(
     tokenHash: string,
     reason: string,
@@ -489,6 +477,8 @@ export class InMemorySessionRepository implements SessionRepository {
     role?: Role;
     identityVerifier?: boolean;
     status?: 'ACTIVE' | 'BLOCKED';
+    /** Defaults to now; a spec seeds staggered values to prove the ordering. */
+    createdAt?: Date;
   }): {
     id: string;
   } {
@@ -504,6 +494,7 @@ export class InMemorySessionRepository implements SessionRepository {
       role: user.role ?? Role.USER,
       identityVerifier: user.identityVerifier ?? false,
       status: user.status ?? 'ACTIVE',
+      createdAt: user.createdAt ?? new Date(),
     });
 
     return { id };

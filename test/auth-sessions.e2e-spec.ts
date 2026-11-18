@@ -2,39 +2,22 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { REFRESH_COOKIE_NAME } from '../src/auth/token/refresh-token';
 import type { RateLimitDecision, RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import { signInByEmail, signUpByEmail } from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
- * Session management over HTTP with no database, no Redis and no SMS provider:
+ * Session management over HTTP with no database, no Redis and no mail provider:
  * the store is in memory, proofs are minted in-process and the explicit limiter
  * is a switch. Only the contract is under test - status codes, the shape of the
  * list, the cookie clearing and the fact that a session id never leaks anything.
  */
 
-const PHONE = '+14155552671';
-const OTHER_PHONE = '+14155550123';
+const EMAIL = 'ivan@example.com';
+const OTHER_EMAIL = 'other@example.com';
 const USERNAME = 'ivan';
-
-/** Nonce store stand-in: `ProofTokenService` keeps its real signing logic. */
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-}
 
 /**
  * The explicit limiter, with a switch: the same app instance can first admit a
@@ -46,15 +29,24 @@ class SwitchableRateLimit {
   readonly retryAfterSeconds = 42;
 
   async consume(): Promise<RateLimitDecision> {
+    return this.decision();
+  }
+
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
+    return this.decision();
+  }
+
+  async reset(): Promise<void> {
+    this.allowed = true;
+  }
+
+  private decision(): RateLimitDecision {
     return {
       allowed: this.allowed,
       remaining: this.allowed ? 99 : 0,
       retryAfterSeconds: this.allowed ? 0 : this.retryAfterSeconds,
     };
-  }
-
-  async reset(): Promise<void> {
-    this.allowed = true;
   }
 }
 
@@ -129,27 +121,22 @@ const GENERIC_NOT_FOUND = {
 describe('Session management over HTTP (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
-  let proofs: ProofTokenService;
 
   const server = () => request(app.getHttpServer());
 
-  const register = async (username: string = USERNAME, phone: string = PHONE) =>
-    server()
-      .post('/auth/register')
-      .send({ proof: await proofs.issue(phone, 'register'), username });
+  const register = async (username: string = USERNAME, email: string = EMAIL) =>
+    signUpByEmail(app, { email, username });
 
-  const registerOk = async (username: string = USERNAME, phone: string = PHONE) => {
-    const response = await register(username, phone);
+  const registerOk = async (username: string = USERNAME, email: string = EMAIL) => {
+    const response = await register(username, email);
 
     expect(response.status).toBe(200);
 
     return response;
   };
 
-  const loginOk = async (phone: string = PHONE) => {
-    const response = await server()
-      .post('/auth/login')
-      .send({ proof: await proofs.issue(phone, 'login') });
+  const loginOk = async (email: string = EMAIL, username: string = USERNAME) => {
+    const response = await signInByEmail(app, { email, username });
 
     expect(response.status).toBe(200);
 
@@ -168,11 +155,10 @@ describe('Session management over HTTP (e2e)', () => {
       {},
       {
         sessionRepository: sessions,
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: new SwitchableRateLimit() as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   beforeEach(() => {
@@ -234,9 +220,9 @@ describe('Session management over HTTP (e2e)', () => {
 
     it('lists nothing that belongs to another account', async () => {
       const mine = await registerOk();
-      const other = await registerOk('other_user', OTHER_PHONE);
+      const other = await registerOk('other_user', OTHER_EMAIL);
 
-      await loginOk(OTHER_PHONE);
+      await loginOk(OTHER_EMAIL, 'other_user');
 
       const mineIds = (await listOk(accessTokenOf(mine))).map((entry) => entry.id);
       const otherIds = (await listOk(accessTokenOf(other))).map((entry) => entry.id);
@@ -293,7 +279,7 @@ describe('Session management over HTTP (e2e)', () => {
 
     it('answers the same 404 for unknown, malformed and foreign ids', async () => {
       const mine = await registerOk();
-      const other = await registerOk('other_user', OTHER_PHONE);
+      const other = await registerOk('other_user', OTHER_EMAIL);
       const token = accessTokenOf(mine);
       const foreignId = (await listOk(accessTokenOf(other)))[0]?.id ?? randomUUID();
 
@@ -357,7 +343,7 @@ describe('Session management over HTTP (e2e)', () => {
 
     it('leaves other accounts signed in', async () => {
       const mine = await registerOk();
-      const other = await registerOk('other_user', OTHER_PHONE);
+      const other = await registerOk('other_user', OTHER_EMAIL);
 
       await server()
         .post('/auth/logout-all')
@@ -376,7 +362,6 @@ describe('Session management over HTTP (e2e)', () => {
 describe('Session route rate limiting (e2e)', () => {
   let app: NestExpressApplication;
   let limiter: SwitchableRateLimit;
-  let proofs: ProofTokenService;
 
   const server = () => request(app.getHttpServer());
 
@@ -386,11 +371,10 @@ describe('Session route rate limiting (e2e)', () => {
       {},
       {
         sessionRepository: new InMemorySessionRepository(),
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: limiter as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   afterAll(async () => {
@@ -398,9 +382,7 @@ describe('Session route rate limiting (e2e)', () => {
   });
 
   it('answers 429 with Retry-After once the per-user budget is gone', async () => {
-    const registered = await server()
-      .post('/auth/register')
-      .send({ proof: await proofs.issue(PHONE, 'register'), username: USERNAME });
+    const registered = await signUpByEmail(app, { email: EMAIL, username: USERNAME });
     const token = (registered.body as { accessToken: string }).accessToken;
     const sessionId =
       entriesOf(await server().get('/auth/sessions').set(bearer(token)))[0]?.id ?? '';

@@ -32,18 +32,12 @@ import {
 } from './email/email-code.store';
 import { OriginCheckGuard } from './guards/origin.guard';
 import { RolesGuard } from './guards/roles.guard';
-import { OtpController } from './otp/otp.controller';
-import { createOtpProvider, OTP_PROVIDER, OtpProvider } from './otp/otp.provider';
-import { OtpService } from './otp/otp.service';
 import {
   PROOF_NONCE_STORE,
-  ProofTokenService,
   RedisProofNonceStore,
   type ProofNonceStore,
   type ProofRedisClient,
-} from './otp/proof-token';
-import { PhoneChangeController } from './phone-change/phone-change.controller';
-import { PhoneChangeService } from './phone-change/phone-change.service';
+} from './proof/proof-nonce.store';
 import { AccessPolicyService } from './policy/access-policy.service';
 import { ResourceOwnershipService } from './policy/resource-ownership.service';
 import { PrismaSessionRepository } from './prisma-session.repository';
@@ -55,22 +49,8 @@ import { TotpModule } from './totp/totp.module';
 
 @Module({
   imports: [RateLimitModule, AuditModule, PrismaModule, TotpModule],
-  controllers: [
-    OtpController,
-    AuthController,
-    EmailAuthController,
-    MeController,
-    PhoneChangeController,
-    TotpController,
-  ],
+  controllers: [AuthController, EmailAuthController, MeController, TotpController],
   providers: [
-    {
-      provide: OTP_PROVIDER,
-      inject: [ENV],
-      // A fake provider in production is a boot error, not a warning.
-      useFactory: (env: Pick<Env, 'NODE_ENV' | 'OTP_PROVIDER'>): OtpProvider =>
-        createOtpProvider(env),
-    },
     {
       provide: EMAIL_PROVIDER,
       inject: [ENV],
@@ -114,14 +94,11 @@ import { TotpModule } from './totp/totp.module';
       provide: SESSION_REPOSITORY,
       useClass: PrismaSessionRepository,
     },
-    ProofTokenService,
     EmailProofService,
     EmailCodeService,
-    OtpService,
     AuthService,
     EmailAuthService,
     PasswordResetService,
-    PhoneChangeService,
     AuthGuard,
     RolesGuard,
     StepUpGuard,
@@ -132,12 +109,10 @@ import { TotpModule } from './totp/totp.module';
     PasswordService,
   ],
   exports: [
-    OTP_PROVIDER,
     CAPTCHA_PROVIDER,
     // The one email transport; the review module sends decision mail through it
     // instead of building an adapter of its own.
     EMAIL_PROVIDER,
-    ProofTokenService,
     SESSION_REPOSITORY,
     // Exported so the global guards and later modules share one definition.
     AuthGuard,

@@ -2,18 +2,20 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { PinoLogger } from 'nestjs-pino';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { Role } from '../src/auth/roles';
 import { InMemoryTotpRepository } from '../src/auth/totp/in-memory-totp.repository';
 import { STEPUP_WINDOW_MS } from '../src/auth/totp/step-up.guard';
 import { base32Decode, totpAt } from '../src/auth/totp/totp';
 import type {
   ConsumeRateLimitInput,
+  PeekRateLimitInput,
   RateLimitDecision,
   RateLimitService,
   ResetRateLimitInput,
 } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import { signInByEmail, signUpByEmail } from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
  * The second-factor endpoints over HTTP, with no database and no Redis: the
@@ -31,23 +33,6 @@ import { createTestApp } from './helpers/create-test-app';
 /** Matches the generic refusal the filter produces for a plain 401. */
 const UNAUTHORIZED = { statusCode: 401, message: 'Unauthorized' } as const;
 const FORBIDDEN = { statusCode: 403, message: 'Forbidden' } as const;
-
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-}
 
 /**
  * Fixed-window limiter without Redis. Only the second-factor verifier budget is
@@ -74,6 +59,19 @@ class CountingRateLimit {
       : { allowed: false, remaining: 0, retryAfterSeconds: input.windowSeconds };
   }
 
+  /** The read-only variant: reads the counter without billing a hit. */
+  async peek(input: PeekRateLimitInput): Promise<RateLimitDecision> {
+    if (!ENFORCED_SCOPES.has(input.scope)) {
+      return { allowed: true, remaining: input.limit, retryAfterSeconds: 0 };
+    }
+
+    const hits = this.counters.get(`${input.scope}:${input.identifier}`) ?? 0;
+
+    return hits < input.limit
+      ? { allowed: true, remaining: input.limit - hits, retryAfterSeconds: 0 }
+      : { allowed: false, remaining: 0, retryAfterSeconds: 1 };
+  }
+
   async reset(input: ResetRateLimitInput): Promise<void> {
     this.counters.delete(`${input.scope}:${input.identifier}`);
   }
@@ -84,7 +82,7 @@ interface Account {
   readonly userId: string;
   readonly sessionId: string;
   readonly username: string;
-  readonly phone: string;
+  readonly email: string;
 }
 
 interface Enrolled {
@@ -102,7 +100,6 @@ describe('TOTP endpoints (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
   let credentials: InMemoryTotpRepository;
-  let proofs: ProofTokenService;
   let sequence = 0;
 
   const server = () => request(app.getHttpServer());
@@ -128,12 +125,9 @@ describe('TOTP endpoints (e2e)', () => {
   async function signUp(role: Role = Role.USER): Promise<Account> {
     sequence += 1;
     const username = `totp_user_${sequence}`;
-    const phone = `+1415777${String(1_000 + sequence).padStart(4, '0')}`;
+    const email = `totp_user_${sequence}@example.com`;
 
-    const response = await post('/auth/register', undefined, {
-      proof: await proofs.issue(phone, 'register'),
-      username,
-    });
+    const response = await signUpByEmail(app, { email, username });
 
     expect(response.status).toBe(200);
 
@@ -154,7 +148,7 @@ describe('TOTP endpoints (e2e)', () => {
       userId: stored.id,
       sessionId: session.id,
       username,
-      phone,
+      email,
     };
   }
 
@@ -162,9 +156,7 @@ describe('TOTP endpoints (e2e)', () => {
 
   /** A second device of the same account: a fresh session with no stamp. */
   async function login(account: Account): Promise<Session> {
-    const response = await post('/auth/login', undefined, {
-      proof: await proofs.issue(account.phone, 'login'),
-    });
+    const response = await signInByEmail(app, account);
 
     expect(response.status).toBe(200);
 
@@ -226,11 +218,10 @@ describe('TOTP endpoints (e2e)', () => {
       {
         sessionRepository: sessions,
         totpRepository: credentials,
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: new CountingRateLimit() as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   afterAll(async () => {
@@ -302,8 +293,8 @@ describe('TOTP endpoints (e2e)', () => {
       `otpauth://totp/KFA:${encodeURIComponent(account.username)}` +
         `?secret=${secretBase32}&issuer=KFA&algorithm=SHA1&digits=6&period=30`,
     );
-    // The phone number identified the account at signup; it is not a label here.
-    expect(otpauthUri).not.toContain(account.phone.replace('+', '').slice(-6));
+    // The address identified the account at signup; it is not a label here.
+    expect(otpauthUri).not.toContain(account.email);
 
     const pending = await get('/auth/totp/status', account.token);
 
@@ -542,7 +533,7 @@ describe('TOTP endpoints (e2e)', () => {
 
     expect(Object.keys(start.body as object).sort()).toEqual(['otpauthUri', 'secretBase32']);
     expect(otpauthUri).toContain(`otpauth://totp/KFA:${encodeURIComponent(account.username)}`);
-    expect(otpauthUri).not.toContain(account.phone.replace('+', '').slice(-6));
+    expect(otpauthUri).not.toContain(account.email);
     expect(secretBase32).not.toBe(enrolled.secretBase32);
 
     const next = base32Decode(secretBase32);

@@ -9,7 +9,7 @@ import {
   type LogoutResult,
 } from '../../src/auth/auth.service';
 import { InMemorySessionRepository } from '../../src/auth/in-memory-session.repository';
-import type { ProofTokenService } from '../../src/auth/otp/proof-token';
+import type { Role } from '../../src/auth/roles';
 import { REFRESH_COOKIE_NAME } from '../../src/auth/token/refresh-token';
 
 /**
@@ -20,8 +20,10 @@ import { REFRESH_COOKIE_NAME } from '../../src/auth/token/refresh-token';
  */
 
 export const TEST_SECRET = 'unit-test-access-token-secret-0123456789abcdef';
-export const TEST_PHONE = '+14155552671';
-export const TEST_OTHER_PHONE = '+14155550000';
+export const TEST_EMAIL = 'ivan@example.com';
+export const TEST_OTHER_EMAIL = 'other@example.com';
+/** Never verified by these specs: they exercise sessions, not passwords. */
+export const TEST_PASSWORD_HASH = 'scrypt$fixture$hash';
 export const TEST_USERNAME = 'ivan';
 export const TEST_NOW = new Date('2026-03-01T00:00:00.000Z');
 
@@ -32,9 +34,6 @@ export const TEST_CONTEXT: AuthRequestContext = {
   cookieHeader: undefined,
   userAgent: 'jest-agent',
 };
-
-export const REGISTER_BODY = { proof: 'proof-1', username: TEST_USERNAME };
-export const LOGIN_BODY = { proof: 'proof-1' };
 
 export function contextWith(overrides: Partial<AuthRequestContext> = {}): AuthRequestContext {
   return { ...TEST_CONTEXT, ...overrides };
@@ -143,21 +142,6 @@ export class FakeRateLimit {
   }
 }
 
-/** Proof store stand-in: every token resolves to the configured phone. */
-export class FakeProof {
-  readonly consumed: unknown[] = [];
-  readonly purposes: string[] = [];
-
-  constructor(public phone: string | null = TEST_PHONE) {}
-
-  async verifyAndConsumeProof(token: unknown, purpose: string): Promise<string | null> {
-    this.consumed.push(token);
-    this.purposes.push(purpose);
-
-    return this.phone;
-  }
-}
-
 export interface AuditRecord {
   readonly action: string;
   readonly actorId: string;
@@ -205,7 +189,6 @@ export interface HarnessEnv {
 
 export function createHarness(env: HarnessEnv = {}) {
   const rateLimit = new FakeRateLimit();
-  const proof = new FakeProof();
   const audit = new FakeAudit();
   const logger = new FakeLogger();
   const sessions = new InMemorySessionRepository();
@@ -221,16 +204,46 @@ export function createHarness(env: HarnessEnv = {}) {
       SESSIONS_MAX_PER_USER: env.sessionsMaxPerUser ?? 10,
     },
     sessions,
-    proof as unknown as ProofTokenService,
     rateLimit as unknown as RateLimitService,
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
   );
 
-  return { service, rateLimit, proof, audit, logger, sessions };
+  return { service, rateLimit, audit, logger, sessions };
 }
 
 export type Harness = ReturnType<typeof createHarness>;
+
+export interface FixtureIdentity {
+  readonly email?: string;
+  readonly username?: string;
+}
+
+/**
+ * The same first session the email sign-up issues, without the proof, the
+ * password policy or an HTTP round trip: those belong to the email specs.
+ */
+export async function registerFixture(
+  harness: Harness,
+  context: AuthRequestContext = TEST_CONTEXT,
+  identity: FixtureIdentity = {},
+): Promise<AuthResult> {
+  return harness.service.issueEmailAccountSession({
+    email: identity.email ?? TEST_EMAIL,
+    username: identity.username ?? TEST_USERNAME,
+    passwordHash: TEST_PASSWORD_HASH,
+    context,
+  });
+}
+
+/** A new session for an account that already exists. */
+export async function loginFixture(
+  harness: Harness,
+  account: { readonly id: string; readonly role: Role },
+  context: AuthRequestContext = TEST_CONTEXT,
+): Promise<AuthResult> {
+  return harness.service.issueEmailLoginSession({ email: TEST_EMAIL, account, context });
+}
 
 export function auditedActions(audit: FakeAudit): string[] {
   return audit.records.map((entry) => entry.action);

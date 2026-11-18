@@ -1,6 +1,5 @@
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import {
-  REGISTER_BODY,
   TEST_CONTEXT,
   TEST_NOW,
   auditedActions,
@@ -8,6 +7,7 @@ import {
   cookieContext,
   createHarness,
   issued,
+  registerFixture,
   throttled,
   type Harness,
 } from '../../test/helpers/auth-service-harness';
@@ -22,7 +22,7 @@ async function registered(): Promise<{
   sessionId: string;
 }> {
   const harness = createHarness();
-  const credentials = issued(await harness.service.register(REGISTER_BODY, TEST_CONTEXT));
+  const credentials = issued(await registerFixture(harness, TEST_CONTEXT));
 
   return { harness, refreshToken: credentials.refreshToken, sessionId: credentials.sessionId };
 }
@@ -58,7 +58,7 @@ describe('AuthService.refresh', () => {
 
   it('caps the next cookie by what is left of the absolute session', async () => {
     const harness = createHarness({ sessionAbsoluteDays: 1 });
-    const credentials = issued(await harness.service.register(REGISTER_BODY, TEST_CONTEXT));
+    const credentials = issued(await registerFixture(harness, TEST_CONTEXT));
 
     jest.setSystemTime(new Date(TEST_NOW.getTime() + 12 * 3_600 * 1_000));
 
@@ -126,9 +126,7 @@ describe('AuthService.refresh', () => {
 
   it('accepts a cookie without a device key when the session was never bound', async () => {
     const harness = createHarness();
-    const credentials = issued(
-      await harness.service.register(REGISTER_BODY, contextWith({ deviceKey: null })),
-    );
+    const credentials = issued(await registerFixture(harness, contextWith({ deviceKey: null })));
 
     const rotated = issued(await harness.service.refresh(cookieContext(credentials.refreshToken)));
 
@@ -138,9 +136,7 @@ describe('AuthService.refresh', () => {
 
   it('rotates an unbound session even when the client starts sending a key', async () => {
     const harness = createHarness();
-    const credentials = issued(
-      await harness.service.register(REGISTER_BODY, contextWith({ deviceKey: null })),
-    );
+    const credentials = issued(await registerFixture(harness, contextWith({ deviceKey: null })));
 
     const rotated = issued(
       await harness.service.refresh(cookieContext(credentials.refreshToken, { deviceKey: 'x' })),

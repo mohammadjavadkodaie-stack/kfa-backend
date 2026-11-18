@@ -10,11 +10,11 @@ import {
 } from '@nestjs/common';
 import {
   AuthService,
-  REGISTER_IP_LIMIT,
+  SIGNUP_IP_LIMIT,
   type AuthRequestContext,
   type AuthResult,
 } from '../auth.service';
-import { usernameSchema } from '../auth.schema';
+import { usernameSchema } from './email-auth.schema';
 import { EmailProofService } from '../email/email-proof';
 import { EmailCodeService } from '../email/email-code.service';
 import { hashDeviceKey } from '../device-key';
@@ -24,7 +24,6 @@ import { validatePassword } from '../password/password.policy';
 import { RateLimitService } from '../../rate-limit/rate-limit.service';
 import { SESSION_REPOSITORY, type SessionRepository } from '../session.repository';
 
-const SIGNUP_IP_LIMIT = { ...REGISTER_IP_LIMIT } as const;
 const SIGNIN_IP_LIMIT = { limit: 20, windowSeconds: 900 } as const;
 const SIGNIN_DEVICE_LIMIT = { limit: 10, windowSeconds: 900 } as const;
 const SIGNIN_FAIL_EMAIL_IP_LIMIT = { limit: 5, windowSeconds: 900 } as const;
@@ -62,7 +61,11 @@ export class EmailAuthService {
     ) => {
       const decision = await this.rateLimit.consume({ scope, identifier, limit, windowSeconds });
       if (!decision.allowed)
-        throw new HttpException({ error: 'rate_limited' }, 429, { cause: undefined });
+        throw new HttpException(
+          { error: 'rate_limited', retryAfterSeconds: decision.retryAfterSeconds },
+          429,
+          { cause: undefined },
+        );
     };
     await throttle('signin-ip', input.ip, SIGNIN_IP_LIMIT.limit, SIGNIN_IP_LIMIT.windowSeconds);
     if (input.deviceKey !== null)
@@ -81,13 +84,21 @@ export class EmailAuthService {
         identifier: failureIp,
         limit: SIGNIN_FAIL_EMAIL_IP_LIMIT.limit,
       });
-      if (!check.allowed) throw new HttpException({ error: 'rate_limited' }, 429);
+      if (!check.allowed)
+        throw new HttpException(
+          { error: 'rate_limited', retryAfterSeconds: check.retryAfterSeconds },
+          429,
+        );
       const accountCheck = await this.rateLimit.peek({
         scope: 'signin-fail-email',
         identifier: email as string,
         limit: SIGNIN_FAIL_EMAIL_LIMIT.limit,
       });
-      if (!accountCheck.allowed) throw new HttpException({ error: 'rate_limited' }, 429);
+      if (!accountCheck.allowed)
+        throw new HttpException(
+          { error: 'rate_limited', retryAfterSeconds: accountCheck.retryAfterSeconds },
+          429,
+        );
     }
 
     const account = email === null ? null : await this.sessions.findUserByEmail(email);

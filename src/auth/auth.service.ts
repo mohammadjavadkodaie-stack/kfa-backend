@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   ForbiddenException,
   Inject,
@@ -14,11 +13,8 @@ import { isUuid } from '../common/middleware/request-id.middleware';
 import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 import { RateLimitService } from '../rate-limit/rate-limit.service';
-import { loginSchema, parseAuthBody, registerSchema } from './auth.schema';
 import { ephemeralDeviceKey, hashDeviceKey } from './device-key';
-import { maskPhone } from './phone';
 import { maskEmail } from './email/email';
-import { ProofTokenService, type ProofPurpose } from './otp/proof-token';
 import { isStaffRole, Role } from './roles';
 import {
   generateRefreshToken,
@@ -36,16 +32,14 @@ import {
 } from './session.repository';
 
 /**
- * Registration, login and rotating refresh sessions.
+ * Rotating refresh sessions on top of the identity flows.
  *
- * Every state change is driven by a credential the caller must already hold:
- * an OTP proof (single use, phone-bound) or a refresh cookie (single use,
- * session-bound). Nothing here trusts a client-supplied id.
+ * Every state change is driven by a credential the caller must already hold: a
+ * refresh cookie (single use, session-bound) or the access token the guard
+ * verified. Nothing here trusts a client-supplied id.
  */
 
-export const REGISTER_IP_LIMIT = { limit: 10, windowSeconds: 3_600 } as const;
-export const LOGIN_IP_LIMIT = { limit: 20, windowSeconds: 900 } as const;
-export const LOGIN_DEVICE_LIMIT = { limit: 10, windowSeconds: 900 } as const;
+export const SIGNUP_IP_LIMIT = { limit: 10, windowSeconds: 3_600 } as const;
 export const REFRESH_IP_LIMIT = { limit: 60, windowSeconds: 300 } as const;
 export const LOGOUT_IP_LIMIT = { limit: 30, windowSeconds: 300 } as const;
 /** Shared per-user budget for listing and revoking sessions. */
@@ -158,7 +152,6 @@ export class AuthService {
       | 'SESSIONS_MAX_PER_USER'
     >,
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
-    private readonly proof: ProofTokenService,
     private readonly rateLimit: RateLimitService,
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
@@ -170,79 +163,6 @@ export class AuthService {
     this.staffSessionTtlSeconds = env.STAFF_SESSION_ABSOLUTE_HOURS * 3_600;
     this.staffIdleMs = env.STAFF_SESSION_IDLE_MINUTES * 60_000;
     this.maxSessionsPerUser = env.SESSIONS_MAX_PER_USER;
-  }
-
-  /**
-   * Creates the account and its first session in one transaction.
-   *
-   * The IP budget is consumed before the proof is touched: an unauthenticated
-   * flood must not be able to burn proofs or database connections.
-   */
-  async register(body: unknown, context: AuthRequestContext): Promise<AuthResult> {
-    const registerThrottle = await this.enforceLimit('register-ip', context.ip, REGISTER_IP_LIMIT);
-
-    if (registerThrottle !== null) {
-      return { outcome: 'throttled', retryAfterSeconds: registerThrottle };
-    }
-
-    const input = parseAuthBody(registerSchema, body);
-
-    if (input === null) {
-      throw new BadRequestException();
-    }
-
-    // Checked before the proof is consumed: a taken username must not burn the
-    // caller's OTP code. The insert still re-checks under its unique index.
-    if (await this.sessions.isUsernameTaken(input.username)) {
-      throw new ConflictException();
-    }
-
-    const phoneE164 = await this.consumeProof(input.proof, 'register');
-
-    if (await this.sessions.findUserByPhone(phoneE164)) {
-      // The caller already proved they own the number, so telling them that an
-      // account exists reveals nothing they could not discover by logging in.
-      throw new ConflictException();
-    }
-
-    const now = this.now();
-    const userId = randomUUID();
-    const refreshToken = generateRefreshToken();
-    // A new account is always a USER, so it keeps the normal lifetime.
-    const sessionExpiresAt = this.sessionExpiry(now, Role.USER);
-    const refreshExpiresAt = this.refreshExpiry(now, sessionExpiresAt);
-
-    const created = await this.sessions.createAccount({
-      userId,
-      phone: phoneE164,
-      username: input.username,
-      deviceKeyHash: this.deviceBinding(userId, context),
-      deviceBound: context.deviceKey !== null,
-      deviceLabel: input.deviceName ?? this.deviceLabel(context.userAgent),
-      now,
-      sessionExpiresAt,
-      refreshTokenHash: hashRefreshToken(refreshToken),
-      refreshExpiresAt,
-    });
-
-    if (created === null) {
-      // Lost the race against a concurrent registration for the same phone/username.
-      throw new ConflictException();
-    }
-
-    await this.writeAudit('auth.registered', created.userId, phoneE164, context, {
-      username: input.username,
-    });
-
-    this.logger.info(
-      { requestId: context.requestId, userId: created.userId, phone: maskPhone(phoneE164) },
-      'account registered',
-    );
-
-    return {
-      outcome: 'issued',
-      credentials: this.issueCredentials(created, refreshToken, now),
-    };
   }
 
   /** Shared first-session issuance for email registration. */
@@ -277,7 +197,7 @@ export class AuthService {
       throw new ConflictException({ error: 'unavailable' });
     }
 
-    await this.writeAudit('auth.registered', created.userId, null, input.context, {
+    await this.writeAudit('auth.registered', created.userId, input.context, {
       email: maskEmail(input.email),
       username: input.username,
     });
@@ -298,7 +218,7 @@ export class AuthService {
     userId: string,
     context: AuthRequestContext,
   ): Promise<void> {
-    await this.writeAudit('auth.login.blocked', userId, null, context, { email: maskEmail(email) });
+    await this.writeAudit('auth.login.blocked', userId, context, { email: maskEmail(email) });
   }
 
   async issueEmailLoginSession(input: {
@@ -320,7 +240,7 @@ export class AuthService {
       refreshExpiresAt: this.refreshExpiry(now, sessionExpiresAt),
       maxActiveSessions: this.maxSessionsPerUser,
     });
-    await this.writeAudit('auth.login', input.account.id, null, input.context, {
+    await this.writeAudit('auth.login', input.account.id, input.context, {
       email: maskEmail(input.email),
     });
     this.logger.info(
@@ -335,86 +255,11 @@ export class AuthService {
   }
 
   /**
-   * Issues a new session for an existing, active account.
-   *
-   * Every failure past the IP check answers 401: whether the proof was stale,
-   * the number unknown or the account blocked must look the same from outside.
-   */
-  async login(body: unknown, context: AuthRequestContext): Promise<AuthResult> {
-    const ipThrottle = await this.enforceLimit('login-ip', context.ip, LOGIN_IP_LIMIT);
-
-    if (ipThrottle !== null) {
-      return { outcome: 'throttled', retryAfterSeconds: ipThrottle };
-    }
-
-    if (context.deviceKey !== null) {
-      // A shared device budget, HMAC'd by the rate-limit service before storage.
-      const deviceThrottle = await this.enforceLimit(
-        'login-device',
-        context.deviceKey,
-        LOGIN_DEVICE_LIMIT,
-      );
-
-      if (deviceThrottle !== null) {
-        return { outcome: 'throttled', retryAfterSeconds: deviceThrottle };
-      }
-    }
-
-    const input = parseAuthBody(loginSchema, body);
-
-    if (input === null) {
-      throw new BadRequestException();
-    }
-
-    const phoneE164 = await this.consumeProof(input.proof, 'login');
-    const account = await this.sessions.findUserByPhone(phoneE164);
-
-    if (account === null) {
-      // Same generic rejection as a bad proof: registration cannot be probed.
-      throw new UnauthorizedException();
-    }
-
-    if (account.status !== 'ACTIVE') {
-      await this.writeAudit('auth.login.blocked', account.id, phoneE164, context, {});
-      throw new ForbiddenException();
-    }
-
-    const now = this.now();
-    const refreshToken = generateRefreshToken();
-    const sessionExpiresAt = this.sessionExpiry(now, account.role);
-    const refreshExpiresAt = this.refreshExpiry(now, sessionExpiresAt);
-
-    const session = await this.sessions.createSession({
-      userId: account.id,
-      deviceKeyHash: this.deviceBinding(account.id, context),
-      deviceBound: context.deviceKey !== null,
-      deviceLabel: this.deviceLabel(context.userAgent),
-      now,
-      sessionExpiresAt,
-      refreshTokenHash: hashRefreshToken(refreshToken),
-      refreshExpiresAt,
-      maxActiveSessions: this.maxSessionsPerUser,
-    });
-
-    await this.writeAudit('auth.login', account.id, phoneE164, context, {});
-
-    this.logger.info(
-      { requestId: context.requestId, userId: account.id, phone: maskPhone(phoneE164) },
-      'login succeeded',
-    );
-
-    return {
-      outcome: 'issued',
-      credentials: this.issueCredentials(session, refreshToken, now),
-    };
-  }
-
-  /**
    * Rotates the refresh token and mints a new access token.
    *
    * A token that was already spent means two parties hold the cookie, so the
    * whole user is logged out: the legitimate client re-authenticates with an
-   * OTP, the thief is left with nothing.
+   * email code, the thief is left with nothing.
    */
   async refresh(context: AuthRequestContext): Promise<AuthResult> {
     const throttle = await this.enforceLimit('refresh-ip', context.ip, REFRESH_IP_LIMIT);
@@ -441,7 +286,7 @@ export class AuthService {
 
     if (result.outcome === 'reused') {
       await this.sessions.revokeAllUserSessions(result.userId, 'refresh_reuse', now);
-      await this.writeAudit('auth.refresh.reused', result.userId, null, context, {});
+      await this.writeAudit('auth.refresh.reused', result.userId, context, {});
       this.logger.warn(
         { requestId: context.requestId, userId: result.userId },
         'refresh token reuse detected; all sessions revoked',
@@ -456,7 +301,7 @@ export class AuthService {
 
     if (!this.deviceMatches(result, context)) {
       await this.sessions.revokeSession(result.sessionId, 'device_mismatch', now);
-      await this.writeAudit('auth.refresh.device_mismatch', result.userId, null, context, {});
+      await this.writeAudit('auth.refresh.device_mismatch', result.userId, context, {});
       this.logger.warn(
         { requestId: context.requestId, userId: result.userId },
         'refresh rejected: device key does not match the session',
@@ -466,7 +311,7 @@ export class AuthService {
 
     if (result.userStatus !== 'ACTIVE') {
       await this.sessions.revokeSession(result.sessionId, 'account_blocked', now);
-      await this.writeAudit('auth.refresh.blocked', result.userId, null, context, {});
+      await this.writeAudit('auth.refresh.blocked', result.userId, context, {});
       throw new ForbiddenException();
     }
 
@@ -477,7 +322,7 @@ export class AuthService {
       now.getTime() - result.lastUsedAt.getTime() > this.staffIdleMs
     ) {
       await this.sessions.revokeSession(result.sessionId, 'idle_timeout', now);
-      await this.writeAudit('auth.refresh.idle_timeout', result.userId, null, context, {});
+      await this.writeAudit('auth.refresh.idle_timeout', result.userId, context, {});
       this.logger.warn(
         { requestId: context.requestId, userId: result.userId },
         'refresh rejected: staff session idle',
@@ -515,7 +360,7 @@ export class AuthService {
     );
 
     if (userId !== null) {
-      await this.writeAudit('auth.logout', userId, null, context, {});
+      await this.writeAudit('auth.logout', userId, context, {});
       this.logger.info({ requestId: context.requestId, userId }, 'session revoked');
     }
 
@@ -590,7 +435,7 @@ export class AuthService {
 
     const current = sessionId === principal.sessionId;
 
-    await this.writeAudit('auth.session.revoked', principal.userId, null, context, {
+    await this.writeAudit('auth.session.revoked', principal.userId, context, {
       sessionId,
       current,
     });
@@ -624,7 +469,7 @@ export class AuthService {
     }
 
     await this.sessions.revokeAllUserSessions(principal.userId, 'logout_all', this.now());
-    await this.writeAudit('auth.logout_all', principal.userId, null, context, {});
+    await this.writeAudit('auth.logout_all', principal.userId, context, {});
 
     this.logger.info(
       { requestId: context.requestId, userId: principal.userId },
@@ -677,20 +522,6 @@ export class AuthService {
     const decision = await this.rateLimit.consume({ scope, identifier, ...limit });
 
     return decision.allowed ? null : decision.retryAfterSeconds;
-  }
-
-  /**
-   * The proof is consumed even when the caller is then rejected, but only for
-   * the purpose this endpoint exists for: a proof minted elsewhere is refused.
-   */
-  private async consumeProof(proof: unknown, purpose: ProofPurpose): Promise<string> {
-    const phoneE164 = await this.proof.verifyAndConsumeProof(proof, purpose);
-
-    if (phoneE164 === null) {
-      throw new UnauthorizedException();
-    }
-
-    return phoneE164;
   }
 
   /** Absolute cap: rotation can approach it but never pass it. */
@@ -801,7 +632,6 @@ export class AuthService {
   private async writeAudit(
     action: string,
     actorId: string,
-    phoneE164: string | null,
     context: AuthRequestContext,
     extra: Record<string, unknown>,
   ): Promise<void> {
@@ -816,7 +646,6 @@ export class AuthService {
         ip: context.ip,
         metadata: {
           actor: 'user',
-          ...(phoneE164 === null ? {} : { phone: maskPhone(phoneE164) }),
           ...extra,
         },
       });

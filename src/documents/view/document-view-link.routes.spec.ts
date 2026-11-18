@@ -10,7 +10,7 @@ import {
 import type { AuditService } from '../../audit/audit.service';
 import type { AuthenticatedRequest } from '../../auth/guards/auth.guard';
 import { InMemorySessionRepository } from '../../auth/in-memory-session.repository';
-import type { ProofNonceStore } from '../../auth/otp/proof-token';
+import type { ProofNonceStore } from '../../auth/proof/proof-nonce.store';
 import { Role } from '../../auth/roles';
 import type { RateLimitDecision, RateLimitService } from '../../rate-limit/rate-limit.service';
 import { DocumentCryptoService } from '../document-crypto.service';

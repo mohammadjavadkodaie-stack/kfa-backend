@@ -5,11 +5,9 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgresql://kfa_app:app-secret@127.0.0.1:5432/kfa?schema=public',
   AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
   RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
-  OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
   ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
   DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
   EMAIL_CODE_HMAC_KEY: 'unit-test-email-code-hmac-key-0123456789',
-  OTP_PROVIDER: 'fake',
   CAPTCHA_PROVIDER: 'fake',
   EMAIL_PROVIDER: 'fake',
 };
@@ -42,7 +40,6 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   REDIS_URL: PROD_REDIS_URL,
   TOTP_ENC_KEY: PROD_TOTP_ENC_KEY,
   DOCUMENT_MASTER_KEY: PROD_DOCUMENT_MASTER_KEY,
-  OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'turnstile',
   TURNSTILE_SECRET_KEY: 'unit-test-turnstile-secret-0123456789',
   TURNSTILE_EXPECTED_HOSTNAME: 'app.example',
@@ -95,16 +92,6 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
     { ...PROD_ENV, REDIS_URL: 'rediss://redis.internal:6380/0' },
   ],
   ['a missing RATE_LIMIT_HMAC_KEY in production', { ...PROD_ENV, RATE_LIMIT_HMAC_KEY: undefined }],
-  ['a short OTP_PROOF_SECRET', { ...BASE_ENV, OTP_PROOF_SECRET: 'too-short' }],
-  [
-    'an OTP_PROOF_SECRET equal to the audit key',
-    { ...BASE_ENV, OTP_PROOF_SECRET: 'unit-test-audit-hmac-key-0123456789' },
-  ],
-  [
-    'an OTP_PROOF_SECRET equal to the rate-limit key',
-    { ...BASE_ENV, OTP_PROOF_SECRET: 'unit-test-rate-limit-hmac-key-0123456789' },
-  ],
-  ['a missing OTP_PROOF_SECRET in production', { ...PROD_ENV, OTP_PROOF_SECRET: undefined }],
   ['a short EMAIL_CODE_HMAC_KEY', { ...BASE_ENV, EMAIL_CODE_HMAC_KEY: 'too-short' }],
   [
     'an EMAIL_CODE_HMAC_KEY equal to the audit key',
@@ -113,10 +100,6 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   [
     'an EMAIL_CODE_HMAC_KEY equal to the rate-limit key',
     { ...BASE_ENV, EMAIL_CODE_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789' },
-  ],
-  [
-    'an EMAIL_CODE_HMAC_KEY equal to the proof secret',
-    { ...BASE_ENV, EMAIL_CODE_HMAC_KEY: 'unit-test-otp-proof-secret-0123456789abcdef' },
   ],
   [
     'an EMAIL_CODE_HMAC_KEY equal to the access-token secret',
@@ -137,10 +120,6 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   [
     'a DOCUMENT_VIEW_TOKEN_SECRET equal to the access-token secret',
     { ...BASE_ENV, DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef' },
-  ],
-  [
-    'a DOCUMENT_VIEW_TOKEN_SECRET equal to the proof secret',
-    { ...BASE_ENV, DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef' },
   ],
   [
     'a missing DOCUMENT_VIEW_TOKEN_SECRET in production',
@@ -177,8 +156,6 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   ],
   ['an unsupported document key id', { ...BASE_ENV, DOCUMENT_MASTER_KEY_ID: 'version/1' }],
   ['a missing DOCUMENT_MASTER_KEY in production', { ...PROD_ENV, DOCUMENT_MASTER_KEY: undefined }],
-  ['an OTP send cap of zero', { ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: '0' }],
-  ['a non numeric OTP send cap', { ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: 'many' }],
   ['a short ACCESS_TOKEN_SECRET', { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'too-short' }],
   [
     'an ACCESS_TOKEN_SECRET equal to the audit key',
@@ -187,10 +164,6 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
   [
     'an ACCESS_TOKEN_SECRET equal to the rate-limit key',
     { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'unit-test-rate-limit-hmac-key-0123456789' },
-  ],
-  [
-    'an ACCESS_TOKEN_SECRET equal to the proof secret',
-    { ...BASE_ENV, ACCESS_TOKEN_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef' },
   ],
   ['a missing ACCESS_TOKEN_SECRET in production', { ...PROD_ENV, ACCESS_TOKEN_SECRET: undefined }],
   ['an access-token TTL below one minute', { ...BASE_ENV, ACCESS_TOKEN_TTL_SECONDS: '59' }],
@@ -250,16 +223,13 @@ describe('loadEnv', () => {
       LOG_LEVEL: 'debug',
       TRUSTED_PROXY_COUNT: 1,
       BODY_LIMIT_BYTES: 2048,
-      OTP_PROVIDER: 'fake',
       CAPTCHA_PROVIDER: 'fake',
       EMAIL_PROVIDER: 'fake',
       DATABASE_URL: 'postgresql://kfa_app:app-secret@127.0.0.1:5432/kfa?schema=public',
       AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
       REDIS_URL: 'redis://:dev-only-change-me@127.0.0.1:6380/0',
       RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
-      OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
       EMAIL_CODE_HMAC_KEY: 'unit-test-email-code-hmac-key-0123456789',
-      OTP_GLOBAL_SENDS_PER_HOUR: 500,
       EMAIL_CODE_TTL_SECONDS: 600,
       EMAIL_CODE_MAX_ATTEMPTS: 5,
       EMAIL_GLOBAL_SENDS_PER_HOUR: 500,
@@ -283,7 +253,6 @@ describe('loadEnv', () => {
     expect(env.TRUSTED_PROXY_COUNT).toBe(0);
     expect(env.BODY_LIMIT_BYTES).toBe(102_400);
     expect(env.MIGRATION_DATABASE_URL).toBeUndefined();
-    expect(env.OTP_GLOBAL_SENDS_PER_HOUR).toBe(500);
     expect(env.EMAIL_PROVIDER).toBe('fake');
     expect(env.EMAIL_CODE_TTL_SECONDS).toBe(600);
     expect(env.EMAIL_CODE_MAX_ATTEMPTS).toBe(5);
@@ -367,22 +336,6 @@ describe('loadEnv', () => {
     );
   });
 
-  it('requires an OTP proof secret in production', () => {
-    expect(() => loadEnv({ ...PROD_ENV, OTP_PROOF_SECRET: undefined })).toThrow(
-      /OTP_PROOF_SECRET.*required in production/,
-    );
-  });
-
-  it('never allows the proof secret to double as another HMAC key', () => {
-    expect(() =>
-      loadEnv({ ...PROD_ENV, OTP_PROOF_SECRET: PROD_ENV.AUDIT_HMAC_KEY as string }),
-    ).toThrow(/OTP_PROOF_SECRET.*must differ/);
-    expect(() =>
-      loadEnv({ ...PROD_ENV, OTP_PROOF_SECRET: PROD_ENV.RATE_LIMIT_HMAC_KEY as string }),
-    ).toThrow(/OTP_PROOF_SECRET.*must differ/);
-    expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
-  });
-
   it('keeps the email code key optional outside production', () => {
     expect(
       loadEnv({ ...BASE_ENV, EMAIL_CODE_HMAC_KEY: undefined }).EMAIL_CODE_HMAC_KEY,
@@ -400,12 +353,7 @@ describe('loadEnv', () => {
   });
 
   it('never allows the email code key to double as another secret', () => {
-    const otherSecrets = [
-      'AUDIT_HMAC_KEY',
-      'RATE_LIMIT_HMAC_KEY',
-      'OTP_PROOF_SECRET',
-      'ACCESS_TOKEN_SECRET',
-    ] as const;
+    const otherSecrets = ['AUDIT_HMAC_KEY', 'RATE_LIMIT_HMAC_KEY', 'ACCESS_TOKEN_SECRET'] as const;
 
     for (const name of otherSecrets) {
       expect(() => loadEnv({ ...PROD_ENV, EMAIL_CODE_HMAC_KEY: PROD_ENV[name] as string })).toThrow(
@@ -471,7 +419,7 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...PROD_ENV, AUDIT_HMAC_KEY: PROD_TOTP_ENC_KEY })).toThrow(
       /TOTP_ENC_KEY.*must differ/,
     );
-    expect(() => loadEnv({ ...PROD_ENV, OTP_PROOF_SECRET: PROD_TOTP_ENC_KEY })).toThrow(
+    expect(() => loadEnv({ ...PROD_ENV, RATE_LIMIT_HMAC_KEY: PROD_TOTP_ENC_KEY })).toThrow(
       /TOTP_ENC_KEY.*must differ/,
     );
   });
@@ -613,13 +561,6 @@ describe('loadEnv', () => {
     }
   });
 
-  it('caps OTP sends per hour with a conservative default', () => {
-    expect(loadEnv({ ...BASE_ENV }).OTP_GLOBAL_SENDS_PER_HOUR).toBe(500);
-    expect(
-      loadEnv({ ...BASE_ENV, OTP_GLOBAL_SENDS_PER_HOUR: '25' }).OTP_GLOBAL_SENDS_PER_HOUR,
-    ).toBe(25);
-  });
-
   it('defaults session lifetimes to short access tokens and bounded sessions', () => {
     const env = loadEnv({ ...BASE_ENV });
 
@@ -695,11 +636,6 @@ describe('loadEnv', () => {
   it('rejects a fake CAPTCHA provider in production', () => {
     expect(() => loadEnv({ ...PROD_ENV, CAPTCHA_PROVIDER: 'fake' })).toThrow(/CAPTCHA_PROVIDER/);
     expect(() => loadEnv({ ...PROD_ENV, CAPTCHA_PROVIDER: 'turnstile' })).not.toThrow();
-  });
-
-  it('does not require OTP_PROVIDER in production (phone routes are disabled)', () => {
-    expect(loadEnv({ ...PROD_ENV, OTP_PROVIDER: undefined }).OTP_PROVIDER).toBe('fake');
-    expect(() => loadEnv({ ...PROD_ENV, OTP_PROVIDER: 'fake' })).not.toThrow();
   });
 
   it('requires TLS for database URLs in production', () => {

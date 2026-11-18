@@ -31,6 +31,37 @@ export interface AdminUserRecord {
   readonly status: 'ACTIVE' | 'BLOCKED';
 }
 
+/** Already validated: the service applies the defaults before the store sees it. */
+export interface AdminUserListQuery {
+  readonly page: number;
+  readonly pageSize: number;
+  readonly role?: Role;
+  /** True keeps only the blocked accounts, false only the active ones. */
+  readonly blocked?: boolean;
+  /** Normalised before it reaches the store, and matched exactly. */
+  readonly email?: string;
+}
+
+/**
+ * One row of `GET /admin/users`. The allowlist is the point: the page is meant
+ * for a human scanning accounts, so it carries the name, the address and the
+ * access facts - never a password hash, a phone number or a second-factor state.
+ */
+export interface AdminUserListRecord {
+  readonly id: string;
+  readonly username: string;
+  readonly email: string | null;
+  readonly role: Role;
+  readonly status: 'ACTIVE' | 'BLOCKED';
+  readonly createdAt: Date;
+}
+
+export interface AdminUserListPage {
+  readonly rows: readonly AdminUserListRecord[];
+  /** Rows matching the filter before the page cut; the caller needs it to page. */
+  readonly total: number;
+}
+
 /**
  * What the guard needs from one live session.
  *
@@ -126,22 +157,6 @@ export interface RotateRefreshTokenInput {
   readonly refreshTtlMs: number;
 }
 
-export interface ChangePhoneInput {
-  readonly userId: string;
-  /** Already proved by a `phone_change_new` proof; never echoed from a body. */
-  readonly phone: string;
-  /** Session that asked for the change: the only one left active afterwards. */
-  readonly keepSessionId: string | null;
-  readonly now: Date;
-}
-
-export type ChangePhoneResult =
-  | { readonly outcome: 'changed'; readonly revokedSessions: number }
-  /** Somebody else owns the number; the unique index decides, not a racy read. */
-  | { readonly outcome: 'conflict' }
-  /** The account vanished between the proofs and the update. */
-  | { readonly outcome: 'not_found' };
-
 export type RotateRefreshTokenResult =
   | {
       readonly outcome: 'rotated';
@@ -167,16 +182,18 @@ export type RotateRefreshTokenResult =
 export interface SessionRepository {
   /** Case-insensitive, so `Ivan` cannot shadow `ivan`. */
   isUsernameTaken(username: string): Promise<boolean>;
-  findUserByPhone(phoneE164: string): Promise<AccountRecord | null>;
   findUserByEmail(email: string): Promise<EmailAccountRecord | null>;
   updatePasswordHash(userId: string, hash: string): Promise<void>;
   isKnownDevice(userId: string, deviceKeyHash: string): Promise<boolean>;
-  /** Current phone of one account, or null when the user is gone. */
-  findPhoneByUserId(userId: string): Promise<string | null>;
-  /** Username of one account. Used as the TOTP label, never the phone. */
+  /** Username of one account. Used as the TOTP label. */
   findUsernameByUserId(userId: string): Promise<string | null>;
   /** Administrative view of one account, or null when the id owns no row. */
   findUserById(userId: string): Promise<AdminUserRecord | null>;
+  /**
+   * One page of accounts, oldest first. Filters are applied inside the store,
+   * so a page is a slice of the filtered set, never of an unfiltered read.
+   */
+  listAccounts(query: AdminUserListQuery): Promise<AdminUserListPage>;
   /**
    * Self-description behind `GET /auth/me`, or null when the account is gone.
    * One query: the profile flag is decided by the database, not by a second
@@ -224,12 +241,6 @@ export interface SessionRepository {
     reason: string,
     now: Date,
   ): Promise<void>;
-  /**
-   * Moves the account to a new number and revokes every other session of that
-   * user in one transaction. `conflict` and `not_found` are both reported as the
-   * same generic rejection by the caller.
-   */
-  changePhone(input: ChangePhoneInput): Promise<ChangePhoneResult>;
   /** Active sessions of one user, most recently used first. */
   listActiveSessions(userId: string, now: Date): Promise<SessionSummaryRecord[]>;
   /** Returns the owning user id, or null when the token is unknown. */

@@ -1,11 +1,12 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import { ProofTokenService, type ProofNonceStore } from '../src/auth/otp/proof-token';
 import { Role } from '../src/auth/roles';
 import { REFRESH_COOKIE_NAME } from '../src/auth/token/refresh-token';
 import type { RateLimitDecision, RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import { signInByEmail, signUpByEmail } from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
  * Staff session policy over HTTP, with no database and no Redis.
@@ -21,26 +22,14 @@ const DAY = 86_400_000;
 const STAFF_HOURS = 2;
 const STAFF_IDLE_MINUTES = 30;
 
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-}
-
 /** The explicit limiter is out of scope here: always admit. */
 class PermissiveRateLimit {
   async consume(): Promise<RateLimitDecision> {
+    return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
+  }
+
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
     return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
   }
 
@@ -76,7 +65,6 @@ const GENERIC_UNAUTHORIZED = { error: 'invalid_credentials' };
 describe('Staff session policy over HTTP (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
-  let proofs: ProofTokenService;
   let sequence = 0;
 
   const server = () => request(app.getHttpServer());
@@ -90,11 +78,9 @@ describe('Staff session policy over HTTP (e2e)', () => {
   ): Promise<{ userId: string; sessionId: string; cookie: string }> {
     sequence += 1;
     const username = `lifetime_user_${sequence}`;
-    const phone = `+1415777${String(1_000 + sequence).padStart(4, '0')}`;
+    const email = `lifetime_user_${sequence}@example.com`;
 
-    const registered = await server()
-      .post('/auth/register')
-      .send({ proof: await proofs.issue(phone, 'register'), username });
+    const registered = await signUpByEmail(app, { email, username });
 
     expect(registered.status).toBe(200);
 
@@ -104,9 +90,7 @@ describe('Staff session policy over HTTP (e2e)', () => {
 
     sessions.setUserRole(stored.id, { role });
 
-    const loggedIn = await server()
-      .post('/auth/login')
-      .send({ proof: await proofs.issue(phone, 'login') });
+    const loggedIn = await signInByEmail(app, { email, username });
 
     expect(loggedIn.status).toBe(200);
 
@@ -145,11 +129,10 @@ describe('Staff session policy over HTTP (e2e)', () => {
       },
       {
         sessionRepository: sessions,
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: new PermissiveRateLimit() as unknown as RateLimitService,
       },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   afterAll(async () => {

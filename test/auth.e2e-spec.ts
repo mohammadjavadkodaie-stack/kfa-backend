@@ -1,48 +1,29 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import {
-  ProofTokenService,
-  type ProofNonceStore,
-  type ProofPurpose,
-} from '../src/auth/otp/proof-token';
+import { PasswordService } from '../src/auth/password/password.service';
 import { REFRESH_COOKIE_NAME, hashRefreshToken } from '../src/auth/token/refresh-token';
 import type { RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
+import {
+  TEST_ACCOUNT_PASSWORD,
+  issueEmailProof,
+  signInByEmail,
+  signUpByEmail,
+} from './helpers/email-account';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
  * Session lifecycle over HTTP, with every external dependency replaced:
- * the sessions live in memory, proofs are minted in-process and the explicit
- * limiter always allows. What is left under test is the contract itself -
- * status codes, the cookie and the fact that the JSON body never carries the
- * refresh token.
+ * the sessions live in memory, email proofs are minted in-process and the
+ * explicit limiter always allows. What is left under test is the contract
+ * itself - status codes, the cookie and the fact that the JSON body never
+ * carries the refresh token.
  */
 
-const PHONE = '+14155552671';
-const UNKNOWN_PHONE = '+14155550000';
+const EMAIL = 'ivan@example.com';
+const UNKNOWN_EMAIL = 'nobody@example.com';
 const USERNAME = 'ivan';
-
-/** Nonce store stand-in: `ProofTokenService` keeps its real signing logic. */
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { phone: string; expiresAt: number }>();
-
-  async put(jti: string, phoneE164: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { phone: phoneE164, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.phone;
-  }
-
-  clear(): void {
-    this.nonces.clear();
-  }
-}
 
 /** Fixed decision, so a test can exhaust a budget without hitting a store. */
 function rateLimitStub(allowed: boolean, retryAfterSeconds = 42): RateLimitService {
@@ -50,6 +31,7 @@ function rateLimitStub(allowed: boolean, retryAfterSeconds = 42): RateLimitServi
 
   return {
     consume: (): Promise<typeof decision> => Promise.resolve(decision),
+    peek: (): Promise<typeof decision> => Promise.resolve(decision),
     reset: (): Promise<void> => Promise.resolve(),
   } as unknown as RateLimitService;
 }
@@ -92,47 +74,32 @@ const GENERIC_UNAUTHORIZED = { error: 'invalid_credentials' };
 describe('Auth HTTP contract (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
-  let nonces: InMemoryNonceStore;
-  let proofs: ProofTokenService;
+  let nonces: InMemoryProofNonceStore;
 
   const server = () => request(app.getHttpServer());
 
-  const mintProof = (phone: string = PHONE, purpose: ProofPurpose = 'register') =>
-    proofs.issue(phone, purpose);
-
-  const register = async (username: string = USERNAME, phone: string = PHONE) => {
-    const response = await server()
-      .post('/auth/register')
-      .send({ proof: await mintProof(phone, 'register'), username });
-
-    return response;
-  };
+  const register = async (username: string = USERNAME, email: string = EMAIL) =>
+    signUpByEmail(app, { email, username });
 
   /** Same, but the caller expects a 200: keeps the assertions readable. */
-  const registerOk = async (username: string = USERNAME, phone: string = PHONE) => {
-    const response = await register(username, phone);
+  const registerOk = async (username: string = USERNAME, email: string = EMAIL) => {
+    const response = await register(username, email);
 
     expect(response.status).toBe(200);
 
     return response;
   };
 
-  const login = async (phone: string = PHONE) => {
-    const response = await server()
-      .post('/auth/login')
-      .send({ proof: await mintProof(phone, 'login') });
-
-    return response;
-  };
+  const login = async (email: string = EMAIL, username: string = USERNAME) =>
+    signInByEmail(app, { email, username });
 
   beforeAll(async () => {
     sessions = new InMemorySessionRepository();
-    nonces = new InMemoryNonceStore();
+    nonces = new InMemoryProofNonceStore();
     app = await createTestApp(
       {},
       { sessionRepository: sessions, proofNonceStore: nonces, rateLimit: rateLimitStub(true) },
     );
-    proofs = app.get(ProofTokenService);
   });
 
   beforeEach(() => {
@@ -147,7 +114,7 @@ describe('Auth HTTP contract (e2e)', () => {
     await app.close();
   });
 
-  describe('POST /auth/register', () => {
+  describe('POST /auth/signup', () => {
     it('creates the account, sets the cookie and returns only the access token', async () => {
       const response = await register();
 
@@ -175,10 +142,10 @@ describe('Auth HTTP contract (e2e)', () => {
         .expect(200);
     });
 
-    it('answers 409 for a phone that already has an account', async () => {
+    it('answers 409 for an email that already has an account', async () => {
       await registerOk();
 
-      const response = await register('other_name', PHONE);
+      const response = await register('other_name', EMAIL);
 
       expect(response.status).toBe(409);
       expect(response.body).toEqual({ error: 'unavailable' });
@@ -188,7 +155,7 @@ describe('Auth HTTP contract (e2e)', () => {
     it('answers 409 for a username that only differs in case', async () => {
       await registerOk();
 
-      const response = await register('IVAN', UNKNOWN_PHONE);
+      const response = await register('IVAN', UNKNOWN_EMAIL);
 
       expect(response.status).toBe(409);
       expect(response.body).toEqual({ error: 'unavailable' });
@@ -196,8 +163,13 @@ describe('Auth HTTP contract (e2e)', () => {
 
     it('rejects an unexpected field with the generic envelope', async () => {
       const response = await server()
-        .post('/auth/register')
-        .send({ proof: await mintProof(), username: USERNAME, isAdmin: true });
+        .post('/auth/signup')
+        .send({
+          proof: await issueEmailProof(app, EMAIL, 'register'),
+          username: USERNAME,
+          password: TEST_ACCOUNT_PASSWORD,
+          isAdmin: true,
+        });
 
       expect(response.status).toBe(400);
       expect(response.body).toEqual({
@@ -210,8 +182,8 @@ describe('Auth HTTP contract (e2e)', () => {
 
     it('answers 401 for a proof that does not verify', async () => {
       const response = await server()
-        .post('/auth/register')
-        .send({ proof: 'not-a-proof', username: USERNAME });
+        .post('/auth/signup')
+        .send({ proof: 'not-a-proof', username: USERNAME, password: TEST_ACCOUNT_PASSWORD });
 
       expect(response.status).toBe(401);
       expect(response.body).toEqual(GENERIC_UNAUTHORIZED);
@@ -219,7 +191,7 @@ describe('Auth HTTP contract (e2e)', () => {
     });
   });
 
-  describe('POST /auth/login', () => {
+  describe('POST /auth/signin', () => {
     it('opens a second session for an existing account', async () => {
       const first = await registerOk();
       const response = await login();
@@ -230,26 +202,38 @@ describe('Auth HTTP contract (e2e)', () => {
       expect(sessions.sessions.size).toBe(2);
     });
 
-    it('answers the same 401 for an unknown number and a stale proof', async () => {
-      const unknownNumber = await login(UNKNOWN_PHONE);
-      const staleProof = await server().post('/auth/login').send({ proof: 'not-a-proof' });
+    it('answers the same 401 for an unknown email and a stale proof', async () => {
+      const unknownEmail = await login(UNKNOWN_EMAIL);
+      const staleProof = await server().post('/auth/signin').send({
+        email: EMAIL,
+        password: TEST_ACCOUNT_PASSWORD,
+        proof: 'not-a-proof',
+      });
 
-      expect(unknownNumber.status).toBe(401);
+      expect(unknownEmail.status).toBe(401);
       expect(staleProof.status).toBe(401);
-      expect(unknownNumber.body).toEqual(GENERIC_UNAUTHORIZED);
-      expect(staleProof.body).toEqual(unknownNumber.body);
+      expect(unknownEmail.body).toEqual(GENERIC_UNAUTHORIZED);
+      expect(staleProof.body).toEqual(unknownEmail.body);
     });
 
     it('refuses a proof minted for another action', async () => {
       await registerOk();
 
-      // A register proof cannot be replayed as a login, and vice versa.
+      // A register proof cannot be replayed as a signin, and vice versa.
       const registerAsLogin = await server()
-        .post('/auth/login')
-        .send({ proof: await mintProof(PHONE, 'register') });
+        .post('/auth/signin')
+        .send({
+          email: EMAIL,
+          password: TEST_ACCOUNT_PASSWORD,
+          proof: await issueEmailProof(app, EMAIL, 'register'),
+        });
       const loginAsRegister = await server()
-        .post('/auth/register')
-        .send({ proof: await mintProof(UNKNOWN_PHONE, 'login'), username: 'other_name' });
+        .post('/auth/signup')
+        .send({
+          proof: await issueEmailProof(app, UNKNOWN_EMAIL, 'login_device'),
+          username: 'other_name',
+          password: TEST_ACCOUNT_PASSWORD,
+        });
 
       expect(registerAsLogin.status).toBe(401);
       expect(registerAsLogin.body).toEqual(GENERIC_UNAUTHORIZED);
@@ -263,7 +247,13 @@ describe('Auth HTTP contract (e2e)', () => {
     });
 
     it('answers 401 - not 403 - for a blocked account', async () => {
-      sessions.seedUser({ phone: PHONE, username: USERNAME, status: 'BLOCKED' });
+      sessions.seedUser({
+        phone: null,
+        email: EMAIL,
+        passwordHash: await app.get(PasswordService).hash(TEST_ACCOUNT_PASSWORD),
+        username: USERNAME,
+        status: 'BLOCKED',
+      });
 
       const response = await login();
 
@@ -362,9 +352,9 @@ describe('Auth HTTP contract (e2e)', () => {
 
     it('rejects a cross-site fetch without an Origin header', async () => {
       await server()
-        .post('/auth/register')
+        .post('/auth/signup')
         .set('Sec-Fetch-Site', 'cross-site')
-        .send({ proof: await mintProof(), username: USERNAME })
+        .send({ proof: await issueEmailProof(app, EMAIL, 'register'), username: USERNAME })
         .expect(403);
     });
   });
@@ -378,7 +368,7 @@ describe('Auth rate limiting (e2e)', () => {
       {},
       {
         sessionRepository: new InMemorySessionRepository(),
-        proofNonceStore: new InMemoryNonceStore(),
+        proofNonceStore: new InMemoryProofNonceStore(),
         rateLimit: rateLimitStub(false, 42),
       },
     );
@@ -392,8 +382,14 @@ describe('Auth rate limiting (e2e)', () => {
 
   it('answers 429 with Retry-After for every endpoint', async () => {
     const responses = [
-      await server().post('/auth/register').send({ proof: 'proof', username: USERNAME }),
-      await server().post('/auth/login').send({ proof: 'proof' }),
+      await server().post('/auth/signup').send({
+        proof: 'proof',
+        username: USERNAME,
+        password: TEST_ACCOUNT_PASSWORD,
+      }),
+      await server()
+        .post('/auth/signin')
+        .send({ email: EMAIL, password: TEST_ACCOUNT_PASSWORD, proof: 'proof' }),
       await server().post('/auth/refresh'),
       await server().post('/auth/logout'),
     ];

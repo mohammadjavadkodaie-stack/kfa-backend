@@ -20,9 +20,6 @@ export const AUDIT_HMAC_KEY_MIN_LENGTH = 32;
 /** Minimum accepted length of the rate-limit identifier HMAC key. */
 export const RATE_LIMIT_HMAC_KEY_MIN_LENGTH = 32;
 
-/** Minimum accepted length of the OTP proof-token HMAC secret. */
-export const OTP_PROOF_SECRET_MIN_LENGTH = 32;
-
 /** Minimum accepted length of the email code HMAC key. */
 export const EMAIL_CODE_HMAC_KEY_MIN_LENGTH = 32;
 
@@ -282,7 +279,6 @@ export const envSchema = z
       .min(BODY_LIMIT_BYTES_MIN)
       .max(BODY_LIMIT_BYTES_MAX)
       .default(100 * 1024),
-    OTP_PROVIDER: z.string().min(1).default('fake'),
     /** Captcha verifier: fake is development/test only, production needs turnstile. */
     CAPTCHA_PROVIDER: z.enum(['fake', 'turnstile']).default('fake'),
     /** Cloudflare Turnstile secret; required when the real verifier is selected. */
@@ -347,24 +343,10 @@ export const envSchema = z
       .optional(),
 
     /**
-     * HMAC secret for the short-lived OTP proof token (Stage 2.3 consumes it).
-     * Must be independent from the other HMAC keys so a leak of one does not
-     * forge the other.
-     */
-    OTP_PROOF_SECRET: z
-      .string()
-      .min(
-        OTP_PROOF_SECRET_MIN_LENGTH,
-        `must be at least ${OTP_PROOF_SECRET_MIN_LENGTH} characters`,
-      )
-      .max(1024, 'must be at most 1024 characters')
-      .optional(),
-
-    /**
      * HMAC key for hashed email codes (the email identity flow). Optional
-     * outside production, exactly like OTP_PROOF_SECRET, so a local checkout can
-     * boot without one; production requires it. It must be independent from
-     * every other secret so one leak cannot forge another value.
+     * outside production, so a local checkout can boot without one; production
+     * requires it. It must be independent from every other secret so one leak
+     * cannot forge another value.
      */
     EMAIL_CODE_HMAC_KEY: z
       .string()
@@ -524,9 +506,6 @@ export const envSchema = z
     /** INSTREAM port of that daemon; 3310 is the clamd default. */
     CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).optional(),
 
-    /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
-    OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
-
     /** Lifetime of one email code. Short by design, with room for slow delivery. */
     EMAIL_CODE_TTL_SECONDS: z.coerce.number().int().min(300).max(900).default(600),
 
@@ -573,26 +552,12 @@ export const envSchema = z
   .superRefine((env, ctx) => {
     if (
       env.ACCESS_TOKEN_SECRET !== undefined &&
-      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.OTP_PROOF_SECRET].includes(
-        env.ACCESS_TOKEN_SECRET,
-      )
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY].includes(env.ACCESS_TOKEN_SECRET)
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['ACCESS_TOKEN_SECRET'],
-        message: 'must differ from the audit, rate-limit and proof secrets',
-      });
-    }
-
-    if (
-      env.OTP_PROOF_SECRET !== undefined &&
-      (env.OTP_PROOF_SECRET === env.AUDIT_HMAC_KEY ||
-        env.OTP_PROOF_SECRET === env.RATE_LIMIT_HMAC_KEY)
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['OTP_PROOF_SECRET'],
-        message: 'must differ from the audit and rate-limit HMAC keys',
+        message: 'must differ from the audit and rate-limit secrets',
       });
     }
 
@@ -600,28 +565,25 @@ export const envSchema = z
     // that already signs (or encrypts) something else.
     if (
       env.EMAIL_CODE_HMAC_KEY !== undefined &&
-      [
-        env.AUDIT_HMAC_KEY,
-        env.RATE_LIMIT_HMAC_KEY,
-        env.OTP_PROOF_SECRET,
-        env.ACCESS_TOKEN_SECRET,
-      ].includes(env.EMAIL_CODE_HMAC_KEY)
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.ACCESS_TOKEN_SECRET].includes(
+        env.EMAIL_CODE_HMAC_KEY,
+      )
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['EMAIL_CODE_HMAC_KEY'],
-        message: 'must differ from the audit, rate-limit, proof and access-token secrets',
+        message: 'must differ from the audit, rate-limit and access-token secrets',
       });
     }
 
     if (
       env.TOTP_ENC_KEY !== undefined &&
-      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.OTP_PROOF_SECRET].includes(env.TOTP_ENC_KEY)
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY].includes(env.TOTP_ENC_KEY)
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['TOTP_ENC_KEY'],
-        message: 'must differ from the audit, rate-limit and proof secrets',
+        message: 'must differ from the audit and rate-limit secrets',
       });
     }
 
@@ -630,17 +592,14 @@ export const envSchema = z
     // value would then forge two kinds of token.
     if (
       env.DOCUMENT_VIEW_TOKEN_SECRET !== undefined &&
-      [
-        env.AUDIT_HMAC_KEY,
-        env.RATE_LIMIT_HMAC_KEY,
-        env.OTP_PROOF_SECRET,
-        env.ACCESS_TOKEN_SECRET,
-      ].includes(env.DOCUMENT_VIEW_TOKEN_SECRET)
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.ACCESS_TOKEN_SECRET].includes(
+        env.DOCUMENT_VIEW_TOKEN_SECRET,
+      )
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['DOCUMENT_VIEW_TOKEN_SECRET'],
-        message: 'must differ from the audit, rate-limit, proof and access-token secrets',
+        message: 'must differ from the audit, rate-limit and access-token secrets',
       });
     }
 
@@ -781,14 +740,6 @@ export const envSchema = z
       });
     }
 
-    if (env.OTP_PROOF_SECRET === undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['OTP_PROOF_SECRET'],
-        message: 'is required in production',
-      });
-    }
-
     if (env.EMAIL_CODE_HMAC_KEY === undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -840,9 +791,6 @@ export const envSchema = z
       });
     }
 
-    // OTP_PROVIDER is deliberately not checked here: the phone/OTP identity
-    // flow is disabled in production (its routes answer a generic 404), so a
-    // production process configures no SMS adapter and never dials one.
     if (env.CAPTCHA_PROVIDER !== 'turnstile') {
       ctx.addIssue({
         code: 'custom',

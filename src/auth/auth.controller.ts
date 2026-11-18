@@ -1,5 +1,4 @@
 import {
-  Body,
   ConflictException,
   Controller,
   Delete,
@@ -38,7 +37,7 @@ import {
 } from './token/refresh-token';
 import { AllowWithoutSecondFactor } from './totp/staff-gate.guard';
 
-/** What a client sees after register/login/refresh. The cookie is not echoed. */
+/** What a client sees after a refresh. The cookie is not echoed. */
 export interface SessionResponseBody {
   // No user id and no session id: the access token already carries both.
   readonly accessToken: string;
@@ -112,59 +111,6 @@ function writeRejection(response: Response, status: 401 | 409): AuthErrorBody {
 @UseGuards(OriginCheckGuard)
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
-
-  @Public()
-  @Post('register')
-  @HttpCode(HttpStatus.OK)
-  async register(
-    @Body() body: unknown,
-    @Req() request: Request,
-    @Res({ passthrough: true }) response: Response,
-  ): Promise<SessionResponseBody | AuthErrorBody | ErrorResponseBody> {
-    let result: AuthResult;
-
-    try {
-      result = await this.auth.register(body, toContext(request));
-    } catch (error) {
-      const status = rejectionStatus(error);
-
-      if (status === null) throw error;
-
-      return writeRejection(response, status);
-    }
-
-    if (result.outcome === 'throttled') {
-      return writeTooManyRequests(response, request, result.retryAfterSeconds);
-    }
-
-    return this.attachRefreshCookie(response, result.credentials);
-  }
-
-  @Public()
-  @Post('login')
-  @HttpCode(HttpStatus.OK)
-  async login(
-    @Body() body: unknown,
-    @Req() request: Request,
-    @Res({ passthrough: true }) response: Response,
-  ): Promise<SessionResponseBody | AuthErrorBody | ErrorResponseBody> {
-    let result: AuthResult;
-
-    try {
-      result = await this.auth.login(body, toContext(request));
-    } catch (error) {
-      // An unknown number, a blocked account and a stale proof look the same.
-      if (rejectionStatus(error) === null) throw error;
-
-      return writeRejection(response, 401);
-    }
-
-    if (result.outcome === 'throttled') {
-      return writeTooManyRequests(response, request, result.retryAfterSeconds);
-    }
-
-    return this.attachRefreshCookie(response, result.credentials);
-  }
 
   @Public()
   @Post('refresh')

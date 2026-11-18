@@ -2,12 +2,12 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { EmailProofService } from '../src/auth/email/email-proof';
 import { InMemorySessionRepository } from '../src/auth/in-memory-session.repository';
-import type { ProofNonceStore } from '../src/auth/otp/proof-token';
 import { REFRESH_COOKIE_NAME } from '../src/auth/token/refresh-token';
 import type { RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { FakeRateLimit } from './helpers/auth-service-harness';
 import { createTestApp } from './helpers/create-test-app';
 import { EMAIL_TEST_CODE, createEmailHarness, type EmailHarness } from './helpers/email-harness';
+import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 
 /**
  * The email identity flow over HTTP: `POST /auth/email/start`, `/auth/email/verify`,
@@ -77,27 +77,6 @@ function createAuditPrisma(): { prisma: object; rows: AuditRow[] } {
 }
 
 /** Nonce store stand-in: `EmailProofService` keeps its real signing logic. */
-class InMemoryNonceStore implements ProofNonceStore {
-  private readonly nonces = new Map<string, { email: string; expiresAt: number }>();
-
-  async put(jti: string, email: string, ttlSeconds: number): Promise<boolean> {
-    this.nonces.set(jti, { email, expiresAt: Date.now() + ttlSeconds * 1_000 });
-
-    return true;
-  }
-
-  async take(jti: string): Promise<string | null> {
-    const stored = this.nonces.get(jti);
-    this.nonces.delete(jti);
-
-    return stored === undefined || stored.expiresAt <= Date.now() ? null : stored.email;
-  }
-
-  clear(): void {
-    this.nonces.clear();
-  }
-}
-
 function setCookies(response: request.Response): string[] {
   const header: unknown = response.headers['set-cookie'];
 
@@ -127,7 +106,7 @@ describe('Email auth HTTP contract (e2e)', () => {
   let app: NestExpressApplication;
   let sessions: InMemorySessionRepository;
   let limits: FakeRateLimit;
-  let nonces: InMemoryNonceStore;
+  let nonces: InMemoryProofNonceStore;
   let email: EmailHarness;
   let proofs: EmailProofService;
   let auditRows: AuditRow[];
@@ -207,7 +186,7 @@ describe('Email auth HTTP contract (e2e)', () => {
   beforeAll(async () => {
     sessions = new InMemorySessionRepository();
     limits = new FakeRateLimit();
-    nonces = new InMemoryNonceStore();
+    nonces = new InMemoryProofNonceStore();
     email = createEmailHarness();
     const audit = createAuditPrisma();
     auditRows = audit.rows;
