@@ -74,3 +74,14 @@ BEGIN
     END IF;
 END
 $$;
+
+-- Billing tables: read and write, never DELETE. Payment terms are frozen by a
+-- trigger in the billing migration. The migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.subscriptions') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.subscriptions, public.payments, public.webhook_events FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.subscriptions, public.payments, public.webhook_events TO kfa_app';
+    END IF;
+END
+$$;

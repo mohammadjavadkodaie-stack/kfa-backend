@@ -113,6 +113,7 @@ model User {
   athleteProfile   AthleteProfile?
   documents        IdentityDocument[]
   notifications    Notification[]
+  subscriptions    Subscription[]
   @@map("users")
 }
 
@@ -286,4 +287,83 @@ model Notification {
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, readAt])
   @@map("notifications")
+}
+
+enum SubscriptionStatus {
+  NONE
+  PENDING
+  ACTIVE
+  EXPIRED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  NOWPAYMENTS
+  PAYPAL
+}
+
+enum PaymentStatus {
+  CREATED
+  PENDING
+  CONFIRMED
+  FAILED
+  REFUNDED
+  CHARGEBACK
+}
+
+/// One subscription per user and competition period. The runtime role has no
+/// DELETE privilege on this table.
+model Subscription {
+  id        String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String             @map("user_id") @db.Uuid
+  periodKey String             @map("period_key")
+  status    SubscriptionStatus @default(NONE)
+  startsAt  DateTime?          @map("starts_at") @db.Timestamptz(6)
+  expiresAt DateTime?          @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments  Payment[]
+
+  @@unique([userId, periodKey])
+  @@index([userId])
+  @@map("subscriptions")
+}
+
+/// A provider payment against a subscription. The expected terms and provider
+/// identifiers are immutable after insert (enforced by a migration trigger).
+model Payment {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  subscriptionId    String          @map("subscription_id") @db.Uuid
+  provider          PaymentProvider
+  providerPaymentId String          @map("provider_payment_id")
+  expectedAmount    Decimal         @map("expected_amount") @db.Decimal(18, 6)
+  expectedCurrency  String          @map("expected_currency")
+  expectedNetwork   String?         @map("expected_network")
+  paidAmount        Decimal?        @map("paid_amount") @db.Decimal(18, 6)
+  status            PaymentStatus   @default(CREATED)
+  confirmedAt       DateTime?       @map("confirmed_at") @db.Timestamptz(6)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  subscription      Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, providerPaymentId])
+  @@index([subscriptionId])
+  @@map("payments")
+}
+
+/// Webhook idempotency record. Only the payload digest is stored - never the
+/// raw body, headers or secrets.
+model WebhookEvent {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider       PaymentProvider
+  eventId        String          @map("event_id")
+  payloadHash    String          @map("payload_hash")
+  signatureValid Boolean         @map("signature_valid")
+  receivedAt     DateTime        @default(now()) @map("received_at") @db.Timestamptz(6)
+  processedAt    DateTime?       @map("processed_at") @db.Timestamptz(6)
+  outcome        String?
+
+  @@unique([provider, eventId])
+  @@map("webhook_events")
 }
