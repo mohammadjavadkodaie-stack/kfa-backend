@@ -84,7 +84,9 @@ describeWithDatabase('billing webhooks', () => {
     const event = paid(seeded.payment.providerPaymentId);
     event.valid = false;
     expect((await send(event)).accepted).toBe(false);
-    expect(await prisma.webhookEvent.count()).toBe(0);
+    // Scoped to this event: earlier runs may leave rows behind, because the
+    // runtime role cannot delete from webhook_events.
+    expect(await prisma.webhookEvent.count({ where: { eventId: event.eventId } })).toBe(0);
     expect(
       (await prisma.subscription.findUnique({ where: { id: seeded.subscription.id } }))?.status,
     ).toBe('NONE');
