@@ -1,13 +1,27 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { PaymentProvider } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
-import type { WebhookHeaders, WebhookVerifier } from './webhook-verifier';
+import { WEBHOOK_VERIFIERS } from './billing.tokens';
+import type { NormalizedEvent, WebhookHeaders, WebhookVerifier } from './webhook-verifier';
 
 export type WebhookVerifiers =
   ReadonlyMap<string, WebhookVerifier> | Readonly<Record<string, WebhookVerifier>>;
+
+/**
+ * What the caller may tell the provider.
+ *
+ * `accepted` is true once the delivery is stored, even when it changed nothing
+ * (a replay, an unknown payment, a guarded transition). `knownProvider` is false
+ * when no verifier is configured, so nothing was read and the route can answer
+ * as if it did not exist.
+ */
+export type WebhookOutcome = {
+  readonly accepted: boolean;
+  readonly knownProvider: boolean;
+};
 
 function verifierFor(verifiers: WebhookVerifiers, provider: string): WebhookVerifier | undefined {
   if (verifiers instanceof Map) return verifiers.get(provider);
@@ -19,6 +33,7 @@ export class BillingWebhookService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    @Inject(WEBHOOK_VERIFIERS)
     private readonly verifiers: WebhookVerifiers,
   ) {}
 
@@ -26,13 +41,13 @@ export class BillingWebhookService {
     provider: string,
     rawBody: Buffer,
     headers: WebhookHeaders,
-  ): Promise<{ accepted: boolean }> {
+  ): Promise<WebhookOutcome> {
     const verifier = verifierFor(this.verifiers, provider);
-    if (verifier === undefined) return { accepted: false };
-    const event = verifier.verify(rawBody, headers);
+    if (verifier === undefined) return { accepted: false, knownProvider: false };
+    const event = await verifier.verify(rawBody, headers);
     if (event === null) {
       await this.audit.record({ action: 'billing.webhook.rejected', metadata: { provider } });
-      return { accepted: false };
+      return { accepted: false, knownProvider: true };
     }
 
     const payloadHash = createHash('sha256').update(rawBody).digest('hex');
@@ -81,13 +96,13 @@ export class BillingWebhookService {
         data: { processedAt: new Date(), outcome },
       });
     });
-    return { accepted: true };
+    return { accepted: true, knownProvider: true };
   }
 
   private async applyEvent(
     tx: Prisma.TransactionClient,
     provider: string,
-    event: NonNullable<ReturnType<WebhookVerifier['verify']>>,
+    event: NormalizedEvent,
     payment: {
       id: string;
       subscriptionId: string;
@@ -97,6 +112,21 @@ export class BillingWebhookService {
       expectedNetwork: string | null;
     },
   ): Promise<string> {
+    // A verified event this service does not model: store it so the provider
+    // stops resending, and change nothing else.
+    if (event.kind === 'IGNORED') {
+      await tx.webhookEvent.update({
+        where: {
+          provider_eventId: {
+            provider: provider as PaymentProvider,
+            eventId: event.eventId,
+          },
+        },
+        data: { processedAt: new Date(), outcome: 'ignored_event' },
+      });
+      return 'ignored_event';
+    }
+
     if (event.kind === 'PAID') {
       const paidAmount =
         event.paidAmount === undefined ? null : new Prisma.Decimal(event.paidAmount);

@@ -548,6 +548,36 @@ export const envSchema = z
 
     /** Active sessions kept per user; a login beyond it drops the oldest one. */
     SESSIONS_MAX_PER_USER: z.coerce.number().int().min(1).max(50).default(10),
+
+    /**
+     * Billing (stage 1.3). Every key here is optional: without them the checkout
+     * answers a generic 503 and no provider webhook is accepted at all, so a
+     * half-configured deployment can never sell a subscription it cannot confirm.
+     * The keys of one provider are all-or-nothing (see the superRefine below).
+     */
+    NOWPAYMENTS_API_KEY: z.string().min(8).max(256).optional(),
+    NOWPAYMENTS_IPN_SECRET: z.string().min(16).max(256).optional(),
+    NOWPAYMENTS_API_BASE: z
+      .string()
+      .regex(/^https:\/\/[a-z0-9.-]{1,253}$/u, 'must be an https origin without a path')
+      .default('https://api.nowpayments.io'),
+    PAYPAL_CLIENT_ID: z.string().min(8).max(256).optional(),
+    PAYPAL_CLIENT_SECRET: z.string().min(8).max(256).optional(),
+    PAYPAL_WEBHOOK_ID: z.string().min(8).max(256).optional(),
+    /** Only the two real PayPal hosts: an arbitrary base URL would be an SSRF hole. */
+    PAYPAL_API_BASE: z
+      .enum(['https://api-m.sandbox.paypal.com', 'https://api-m.paypal.com'])
+      .default('https://api-m.sandbox.paypal.com'),
+    /** Public origin that reaches this API, used for the provider callback. */
+    BILLING_WEBHOOK_PUBLIC_URL: z
+      .string()
+      .regex(/^https:\/\/[^\s]{4,300}$/u, 'must be an absolute https URL')
+      .optional(),
+    /** Where the hosted page returns the athlete; never taken from the client. */
+    BILLING_RETURN_URL: z
+      .string()
+      .regex(/^https:\/\/[^\s]{4,300}$/u, 'must be an absolute https URL')
+      .optional(),
   })
   .superRefine((env, ctx) => {
     if (
@@ -684,6 +714,46 @@ export const envSchema = z
         path: ['STAFF_SESSION_IDLE_MINUTES'],
         message: 'must not exceed STAFF_SESSION_ABSOLUTE_HOURS',
       });
+    }
+
+    // A provider is either fully configured or absent: half of it would boot and
+    // then fail on the first checkout, which is the worst moment to find out.
+    const providerGroups = [
+      ['NOWPAYMENTS_API_KEY', 'NOWPAYMENTS_IPN_SECRET'],
+      ['PAYPAL_CLIENT_ID', 'PAYPAL_CLIENT_SECRET', 'PAYPAL_WEBHOOK_ID'],
+    ] as const;
+
+    for (const group of providerGroups) {
+      const setCount = group.filter((name) => env[name] !== undefined).length;
+
+      if (setCount > 0 && setCount < group.length) {
+        for (const name of group) {
+          if (env[name] === undefined) {
+            ctx.addIssue({
+              code: 'custom',
+              path: [name],
+              message: 'must be set together with the other keys of this provider',
+            });
+          }
+        }
+      }
+    }
+
+    // Both addresses are needed by whichever provider is configured: one to be
+    // called back on, one to return the athlete to.
+    const anyProviderConfigured =
+      env.NOWPAYMENTS_API_KEY !== undefined || env.PAYPAL_CLIENT_ID !== undefined;
+
+    if (anyProviderConfigured) {
+      for (const name of ['BILLING_WEBHOOK_PUBLIC_URL', 'BILLING_RETURN_URL'] as const) {
+        if (env[name] === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message: 'is required once a payment provider is configured',
+          });
+        }
+      }
     }
 
     if (env.NODE_ENV !== 'production') {

@@ -13,10 +13,10 @@ type Event = NormalizedEvent & { valid?: boolean };
 class FakeVerifier implements WebhookVerifier {
   readonly provider = 'NOWPAYMENTS';
   constructor(private readonly events: Map<string, Event>) {}
-  verify(
+  async verify(
     _rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
-  ): NormalizedEvent | null {
+  ): Promise<NormalizedEvent | null> {
     const event = this.events.get(String(headers.event));
     return event?.valid === false ? null : (event ?? null);
   }

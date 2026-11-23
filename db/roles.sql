@@ -80,8 +80,8 @@ $$;
 DO $$
 BEGIN
     IF to_regclass('public.subscriptions') IS NOT NULL THEN
-        EXECUTE 'REVOKE ALL ON TABLE public.subscriptions, public.payments, public.webhook_events FROM PUBLIC, kfa_app';
-        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.subscriptions, public.payments, public.webhook_events TO kfa_app';
+        EXECUTE 'REVOKE ALL ON TABLE public.subscriptions, public.payments, public.webhook_events, public.billing_plans FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.subscriptions, public.payments, public.webhook_events, public.billing_plans TO kfa_app';
     END IF;
 END
 $$;

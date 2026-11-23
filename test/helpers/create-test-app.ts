@@ -13,6 +13,7 @@ import { EMAIL_PROVIDER, type EmailProvider } from '../../src/auth/email/email.p
 import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/proof/proof-nonce.store';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
 import { TOTP_REPOSITORY, type TotpRepository } from '../../src/auth/totp/totp.repository';
+import { WEBHOOK_VERIFIERS, type WebhookVerifiers } from '../../src/billing/billing.tokens';
 import { ENV } from '../../src/config/config.module';
 import type { Env } from '../../src/config/env';
 import { PrismaService } from '../../src/database/prisma.service';
@@ -75,6 +76,8 @@ export interface CreateTestAppOptions {
   readonly documentStorage?: DocumentStorage;
   /** A fake daemon verdict for the ingest pipeline, instead of the refusing default. */
   readonly virusScanner?: VirusScanner;
+  /** Fake provider verifiers, so the webhook route runs without a real signature. */
+  readonly webhookVerifiers?: WebhookVerifiers;
 }
 
 /**
@@ -156,6 +159,10 @@ export async function createTestApp(
 
   if (options.virusScanner !== undefined) {
     builder = builder.overrideProvider(VIRUS_SCANNER).useValue(options.virusScanner);
+  }
+
+  if (options.webhookVerifiers !== undefined) {
+    builder = builder.overrideProvider(WEBHOOK_VERIFIERS).useValue(options.webhookVerifiers);
   }
 
   const moduleRef = await builder.compile();

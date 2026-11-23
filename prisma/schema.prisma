@@ -367,3 +367,18 @@ model WebhookEvent {
   @@unique([provider, eventId])
   @@map("webhook_events")
 }
+
+/// The priced offer the checkout sells. A row is never deleted and the price is
+/// kept as a decimal, so no floating-point value ever describes money.
+model BillingPlan {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code       String   @unique
+  periodKey  String   @map("period_key")
+  priceUsd   Decimal  @map("price_usd") @db.Decimal(18, 6)
+  periodDays Int      @map("period_days")
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("billing_plans")
+}
