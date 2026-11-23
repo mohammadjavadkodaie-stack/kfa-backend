@@ -48,6 +48,15 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   EMAIL_FROM: 'KFA <no-reply@example.com>',
 };
 
+/** The settings a live PayPal deployment needs, all together. */
+const PAYPAL_ENV: NodeJS.ProcessEnv = {
+  PAYPAL_CLIENT_ID: 'unit-test-paypal-client-id',
+  PAYPAL_CLIENT_SECRET: 'unit-test-paypal-client-secret',
+  PAYPAL_WEBHOOK_ID: 'unit-test-paypal-webhook-id',
+  BILLING_WEBHOOK_PUBLIC_URL: 'https://api.example.com',
+  BILLING_RETURN_URL: 'https://app.example.com/en/account/subscription/return',
+};
+
 /** A complete object store configuration: MinIO in development, S3 elsewhere. */
 const S3_ENV: NodeJS.ProcessEnv = {
   S3_ENDPOINT: 'https://minio.internal:9000',
@@ -134,6 +143,11 @@ const INVALID_CASES: Array<[string, NodeJS.ProcessEnv]> = [
     { ...BASE_ENV, TOTP_ENC_KEY: Buffer.alloc(31, 7).toString('base64url') },
   ],
   ['a missing TOTP_ENC_KEY in production', { ...PROD_ENV, TOTP_ENC_KEY: undefined }],
+  [
+    'a PayPal sandbox base URL in production',
+    { ...PROD_ENV, ...PAYPAL_ENV, PAYPAL_API_BASE: 'https://api-m.sandbox.paypal.com' },
+  ],
+  ['a half-configured PayPal provider', { ...BASE_ENV, PAYPAL_CLIENT_ID: 'only-the-id' }],
   [
     'a DOCUMENT_MASTER_KEY of the wrong decoded length',
     { ...BASE_ENV, DOCUMENT_MASTER_KEY: Buffer.alloc(31, 7).toString('base64') },

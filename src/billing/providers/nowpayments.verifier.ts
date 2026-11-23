@@ -1,19 +1,29 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { NormalizedEvent, WebhookHeaders, WebhookVerifier } from '../webhook-verifier';
+import type {
+  NormalizedEvent,
+  Verification,
+  WebhookHeaders,
+  WebhookVerifier,
+} from '../webhook-verifier';
 import { readWebhookHeader } from '../webhook-verifier';
 
 const SIGNATURE_HEADER = 'x-nowpayments-sig';
 
-/** NOWPayments status -> our kind. A status we do not model is stored, ignored. */
+/**
+ * NOWPayments status -> our kind.
+ *
+ * `partially_paid` is pending, not failed: the invoice stays open, the athlete
+ * may send the rest, and the later `finished` event is what activates the
+ * subscription. A status outside this table is stored and ignored.
+ */
 const KINDS: Readonly<Record<string, NormalizedEvent['kind']>> = {
   waiting: 'PENDING',
   confirming: 'PENDING',
   sending: 'PENDING',
+  partially_paid: 'PENDING',
   finished: 'PAID',
   failed: 'FAILED',
   expired: 'FAILED',
-  // An underpayment is never a completed payment: same refusal as a wrong amount.
-  partially_paid: 'FAILED',
   refunded: 'REFUNDED',
 };
 
@@ -53,14 +63,18 @@ export class NowPaymentsVerifier implements WebhookVerifier {
 
   constructor(private readonly ipnSecret: string) {}
 
-  async verify(rawBody: Buffer, headers: WebhookHeaders): Promise<NormalizedEvent | null> {
+  async verify(rawBody: Buffer, headers: WebhookHeaders): Promise<Verification> {
     const signature = readWebhookHeader(headers, SIGNATURE_HEADER);
     const expected = nowPaymentsSignature(rawBody, this.ipnSecret);
 
-    if (signature === null || expected === null) return null;
-    if (!sameHex(signature, expected)) return null;
+    // A local HMAC is decisive in both directions: no network is involved, so
+    // this provider has no "cannot decide" case.
+    if (signature === null || expected === null) return { status: 'invalid' };
+    if (!sameHex(signature, expected)) return { status: 'invalid' };
 
-    return normalize(rawBody);
+    const event = normalize(rawBody);
+
+    return event === null ? { status: 'invalid' } : { status: 'event', event };
   }
 }
 
@@ -69,6 +83,25 @@ function sameHex(given: string, expected: string): boolean {
   const right = Buffer.from(expected, 'utf8');
 
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+/**
+ * The API sends `actually_paid` as a string today, and as a number often enough
+ * that both have to be accepted. NaN, Infinity and a negative value are not
+ * amounts: they are dropped, and the service then refuses to activate anything
+ * for a payment whose size it cannot read.
+ */
+export function readPaidAmount(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return /^\d+(?:\.\d+)?$/u.test(value) ? value : undefined;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value < 1e9) {
+    // Fixed notation: String(1e-7) would be an exponent, which is not a decimal.
+    return value.toFixed(6);
+  }
+
+  return undefined;
 }
 
 function normalize(rawBody: Buffer): NormalizedEvent | null {
@@ -89,7 +122,7 @@ function normalize(rawBody: Buffer): NormalizedEvent | null {
   const payCurrency = (
     typeof payload.pay_currency === 'string' ? payload.pay_currency : ''
   ).toLowerCase();
-  const paid = typeof payload.actually_paid === 'string' ? payload.actually_paid : undefined;
+  const paid = readPaidAmount(payload.actually_paid);
 
   return {
     // A status is one event: the same invoice reporting "finished" twice is one

@@ -266,6 +266,12 @@ const s3EndpointSchema = z
   })
   .transform((value) => value.trim());
 
+/**
+ * The only live PayPal host, and the only one a production deployment may use:
+ * a sandbox order would look complete while no money ever arrives.
+ */
+export const PAYPAL_LIVE_API_BASE = 'https://api-m.paypal.com';
+
 export const envSchema = z
   .object({
     NODE_ENV: z.enum(NODE_ENVS).default('development'),
@@ -823,6 +829,14 @@ export const envSchema = z
         code: 'custom',
         path: ['TOTP_ENC_KEY'],
         message: 'is required in production',
+      });
+    }
+
+    if (env.PAYPAL_CLIENT_ID !== undefined && env.PAYPAL_API_BASE !== PAYPAL_LIVE_API_BASE) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['PAYPAL_API_BASE'],
+        message: `must be ${PAYPAL_LIVE_API_BASE} in production`,
       });
     }
 

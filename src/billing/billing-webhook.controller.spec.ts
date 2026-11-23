@@ -32,7 +32,7 @@ class FakeRateLimit {
 
 class FakeWebhooks {
   readonly calls: { provider: string; rawBody: Buffer; headers: WebhookHeaders }[] = [];
-  outcome: WebhookOutcome = { accepted: true, knownProvider: true };
+  outcome: WebhookOutcome = { accepted: true, knownProvider: true, retryLater: false };
 
   async handle(
     provider: string,
@@ -134,7 +134,7 @@ describe('BillingWebhookController', () => {
 
   it('answers 404 when no verifier is configured for the provider', async () => {
     const webhooks = new FakeWebhooks();
-    webhooks.outcome = { accepted: false, knownProvider: false };
+    webhooks.outcome = { accepted: false, knownProvider: false, retryLater: false };
     const { controller: subject } = controller(webhooks);
 
     await expect(
@@ -172,7 +172,7 @@ describe('BillingWebhookController', () => {
 
   it('reports a forged signature as handled, so the provider stops resending it', async () => {
     const webhooks = new FakeWebhooks();
-    webhooks.outcome = { accepted: false, knownProvider: true };
+    webhooks.outcome = { accepted: false, knownProvider: true, retryLater: false };
     const { controller: subject } = controller(webhooks);
 
     await expect(

@@ -54,12 +54,15 @@ describe('PayPalWebhookVerifier', () => {
     const { verifier: subject, api } = verifier();
 
     await expect(subject.verify(body(event()), HEADERS)).resolves.toEqual({
-      eventId: 'WH-EVENT-1',
-      providerPaymentId: 'ORDER-1',
-      kind: 'PAID',
-      paidAmount: '4.20',
-      currency: 'USD',
-      network: null,
+      status: 'event',
+      event: {
+        eventId: 'WH-EVENT-1',
+        providerPaymentId: 'ORDER-1',
+        kind: 'PAID',
+        paidAmount: '4.20',
+        currency: 'USD',
+        network: null,
+      },
     });
     expect(api.calls).toEqual([
       {
@@ -73,21 +76,25 @@ describe('PayPalWebhookVerifier', () => {
     const api = new FakeApi();
     api.status = 'FAILURE';
 
-    await expect(verifier(api).verifier.verify(body(event()), HEADERS)).resolves.toBeNull();
+    await expect(verifier(api).verifier.verify(body(event()), HEADERS)).resolves.toEqual({
+      status: 'invalid',
+    });
   });
 
-  it('refuses when the verification call itself fails', async () => {
+  it('asks for a retry when PayPal cannot be reached', async () => {
     const api = new FakeApi();
     api.fails = true;
 
-    await expect(verifier(api).verifier.verify(body(event()), HEADERS)).resolves.toBeNull();
+    await expect(verifier(api).verifier.verify(body(event()), HEADERS)).resolves.toEqual({
+      status: 'unavailable',
+    });
   });
 
   it('refuses before calling PayPal when a signature header is missing', async () => {
     const { verifier: subject, api } = verifier();
     const { 'paypal-transmission-sig': _dropped, ...partial } = HEADERS;
 
-    await expect(subject.verify(body(event()), partial)).resolves.toBeNull();
+    await expect(subject.verify(body(event()), partial)).resolves.toEqual({ status: 'invalid' });
     expect(api.calls).toHaveLength(0);
   });
 
@@ -96,7 +103,8 @@ describe('PayPalWebhookVerifier', () => {
     const refunded = event({ event_type: 'PAYMENT.CAPTURE.REFUNDED' });
 
     await expect(subject.verify(body(refunded), HEADERS)).resolves.toMatchObject({
-      kind: 'REFUNDED',
+      status: 'event',
+      event: { kind: 'REFUNDED' },
     });
   });
 
@@ -104,13 +112,16 @@ describe('PayPalWebhookVerifier', () => {
     const { verifier: subject } = verifier();
     const other = event({ event_type: 'CHECKOUT.ORDER.APPROVED' });
 
-    await expect(subject.verify(body(other), HEADERS)).resolves.toMatchObject({ kind: 'IGNORED' });
+    await expect(subject.verify(body(other), HEADERS)).resolves.toMatchObject({
+      status: 'event',
+      event: { kind: 'IGNORED' },
+    });
   });
 
   it('refuses an event that names no order at all', async () => {
     const { verifier: subject } = verifier();
     const orphan = event({ resource: { id: 'CAPTURE-1', amount: { value: '4.20' } } });
 
-    await expect(subject.verify(body(orphan), HEADERS)).resolves.toBeNull();
+    await expect(subject.verify(body(orphan), HEADERS)).resolves.toEqual({ status: 'invalid' });
   });
 });

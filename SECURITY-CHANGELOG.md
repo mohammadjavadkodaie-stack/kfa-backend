@@ -3,6 +3,19 @@
 Short, newest first. Every entry is a control that is in the code; the last
 section lists proposals that still need an owner decision.
 
+## 2026-11-23 - stage 1.1b, payment delivery hardened
+
+- A delivery is now one of three things: valid, forged, or "could not decide".
+  The verifier says which, so an unreachable PayPal API answers **503** (the
+  provider retries) while a bad signature stays a handled 2xx with nothing
+  stored. A network blip can no longer look like a payment that never happened.
+- `actually_paid` is read as a string or a number; NaN, Infinity and negative
+  values are dropped, so an unreadable amount can never pass the amount check.
+- `partially_paid` is **pending**, not failed: the invoice stays open, the rest
+  can arrive, and only a `finished` event activates the subscription.
+- In production, `PAYPAL_API_BASE` must be the live host; boot refuses a sandbox
+  base URL, so a deployment cannot take orders that never move money.
+
 ## 2026-11-22 - stage 1.3/1.4, checkout, price and provider adapters
 
 - The price is a row (`billing_plans`), seeded at 4.20 USD with a one-year

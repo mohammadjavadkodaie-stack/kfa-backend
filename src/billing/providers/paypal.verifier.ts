@@ -1,4 +1,9 @@
-import type { NormalizedEvent, WebhookHeaders, WebhookVerifier } from '../webhook-verifier';
+import type {
+  NormalizedEvent,
+  Verification,
+  WebhookHeaders,
+  WebhookVerifier,
+} from '../webhook-verifier';
 import { readWebhookHeader } from '../webhook-verifier';
 import type { PayPalApi } from './paypal.api';
 
@@ -27,9 +32,14 @@ interface VerificationReply {
 
 /**
  * PayPal does not hand out a local signing secret: the signature is confirmed by
- * their own API, with the headers and the event body. Anything other than
- * `SUCCESS` - including a timeout - refuses the delivery, so a network failure
- * can never be mistaken for a valid payment.
+ * their own API, with the headers and the event body.
+ *
+ * Three outcomes, kept apart on purpose:
+ * - `SUCCESS` -> the event;
+ * - a clear `FAILURE` -> invalid, answered with 2xx so a forged payload is not
+ *   resent forever;
+ * - any error on the way there (timeout, 5xx, unreadable body) -> unavailable,
+ *   so the provider retries. A network blip must never look like a bad signature.
  */
 export class PayPalWebhookVerifier implements WebhookVerifier {
   readonly provider = 'PAYPAL';
@@ -39,10 +49,10 @@ export class PayPalWebhookVerifier implements WebhookVerifier {
     private readonly webhookId: string,
   ) {}
 
-  async verify(rawBody: Buffer, headers: WebhookHeaders): Promise<NormalizedEvent | null> {
+  async verify(rawBody: Buffer, headers: WebhookHeaders): Promise<Verification> {
     const values = SIGNATURE_HEADERS.map((name) => readWebhookHeader(headers, name));
 
-    if (values.some((value) => value === null)) return null;
+    if (values.some((value) => value === null)) return { status: 'invalid' };
 
     const [transmissionId, transmissionTime, certUrl, authAlgo, transmissionSig] = values as [
       string,
@@ -57,7 +67,7 @@ export class PayPalWebhookVerifier implements WebhookVerifier {
     try {
       event = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
     } catch {
-      return null;
+      return { status: 'invalid' };
     }
 
     let reply: VerificationReply;
@@ -76,10 +86,14 @@ export class PayPalWebhookVerifier implements WebhookVerifier {
         },
       });
     } catch {
-      return null;
+      return { status: 'unavailable' };
     }
 
-    return reply.verification_status === 'SUCCESS' ? normalize(event) : null;
+    if (reply.verification_status !== 'SUCCESS') return { status: 'invalid' };
+
+    const normalized = normalize(event);
+
+    return normalized === null ? { status: 'invalid' } : { status: 'event', event: normalized };
   }
 }
 

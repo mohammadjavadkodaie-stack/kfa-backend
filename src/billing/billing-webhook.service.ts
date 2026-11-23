@@ -21,6 +21,8 @@ export type WebhookVerifiers =
 export type WebhookOutcome = {
   readonly accepted: boolean;
   readonly knownProvider: boolean;
+  /** True when the delivery must be retried by the provider (a generic 503). */
+  readonly retryLater: boolean;
 };
 
 function verifierFor(verifiers: WebhookVerifiers, provider: string): WebhookVerifier | undefined {
@@ -43,13 +45,25 @@ export class BillingWebhookService {
     headers: WebhookHeaders,
   ): Promise<WebhookOutcome> {
     const verifier = verifierFor(this.verifiers, provider);
-    if (verifier === undefined) return { accepted: false, knownProvider: false };
-    const event = await verifier.verify(rawBody, headers);
-    if (event === null) {
-      await this.audit.record({ action: 'billing.webhook.rejected', metadata: { provider } });
-      return { accepted: false, knownProvider: true };
+    if (verifier === undefined) {
+      return { accepted: false, knownProvider: false, retryLater: false };
     }
 
+    const verification = await verifier.verify(rawBody, headers);
+
+    // The verifier could not decide: nothing is stored, and the provider is told
+    // to send the delivery again instead of being handed a 2xx for a payment it
+    // may well have taken.
+    if (verification.status === 'unavailable') {
+      return { accepted: false, knownProvider: true, retryLater: true };
+    }
+
+    if (verification.status === 'invalid') {
+      await this.audit.record({ action: 'billing.webhook.rejected', metadata: { provider } });
+      return { accepted: false, knownProvider: true, retryLater: false };
+    }
+
+    const event = verification.event;
     const payloadHash = createHash('sha256').update(rawBody).digest('hex');
     await this.prisma.$transaction(async (tx) => {
       const inserted = await tx.webhookEvent.createMany({
@@ -96,7 +110,7 @@ export class BillingWebhookService {
         data: { processedAt: new Date(), outcome },
       });
     });
-    return { accepted: true, knownProvider: true };
+    return { accepted: true, knownProvider: true, retryLater: false };
   }
 
   private async applyEvent(

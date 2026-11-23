@@ -8,6 +8,7 @@ import {
   Post,
   Req,
   Res,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { Public } from '../common/decorators/public.decorator';
@@ -85,6 +86,10 @@ export class BillingWebhookController {
     // misconfiguration then shows up as a delivery the provider keeps retrying,
     // instead of a 2xx that silently drops payments.
     if (!outcome.knownProvider) throw new NotFoundException();
+
+    // The verifier could not reach PayPal (or its own clock): ask for the same
+    // delivery again. Answering 2xx here would drop a payment nobody confirmed.
+    if (outcome.retryLater) throw new ServiceUnavailableException();
 
     // A forged signature is stored as nothing and audited; the provider gets a
     // handled answer so it does not resend the same bad payload forever.
