@@ -14,6 +14,7 @@ const SCRIPT_ENV: Record<string, string> = {
   ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
   DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
   EMAIL_PROVIDER: 'fake',
+  APP_ORIGINS: 'https://app.test.invalid',
 };
 
 /** Sets env values for the duration of `run`, restoring the previous ones. */
