@@ -48,3 +48,19 @@ regexes = [
   # The upload spec's second fixture is the fixed, fake UUID it names OTHER_KEY.
   '''(?i)\bOTHER_KEY\b["'`]?\s*(?:=>|=|:)\s*["'`]?[0-9a-f-]{36}''',
 ]
+
+# Test fixtures: the matches here are fake values written into specs and e2e
+# helpers (dummy keys, placeholder provider tokens), not credentials. Scoped to
+# generic-api-key only, so every other rule (private keys, AWS, provider tokens,
+# ...) still applies to these same paths; no non-test source is covered.
+[[allowlists]]
+description = 'Fake fixtures in spec/e2e test files: suppressed for generic-api-key only'
+targetRules = ["generic-api-key"]
+paths = [
+  # Unit and integration specs at any depth, plus their e2e variant.
+  '''\.spec\.ts$''',
+  '''\.e2e-spec\.ts$''',
+  # Everything in the e2e/tooling test tree.
+  '''(?:^|/)test/''',
+]
+
