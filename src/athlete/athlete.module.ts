@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
+import { BillingModule } from '../billing/billing.module';
 import { AthleteController } from './athlete.controller';
 import { AthleteService } from './athlete.service';
 import { CLOCK, SYSTEM_CLOCK } from './profile/athlete-age';
@@ -9,7 +10,7 @@ import { PrismaAthleteProfileRepository } from './profile/prisma-athlete-profile
 
 @Module({
   // AuthModule supplies the one ownership check; AuditModule the append-only trail.
-  imports: [AuthModule, AuditModule],
+  imports: [AuthModule, AuditModule, BillingModule],
   controllers: [AthleteController],
   providers: [
     AthleteService,

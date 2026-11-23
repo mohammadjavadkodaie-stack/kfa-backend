@@ -3,6 +3,7 @@ import { Role } from '../src/auth/roles';
 import { STEPUP_WINDOW_MS, STEP_UP_REQUIRED_KEY } from '../src/auth/totp/step-up.guard';
 import { StaffReviewController } from '../src/staff-review/staff-review.controller';
 import type { AdminAccount } from './helpers/admin-harness';
+import { STAFF_REVIEW_AUDIT_ACTIONS } from '../src/staff-review/staff-review.service';
 import {
   createStaffReviewHarness,
   profileBody,
@@ -40,6 +41,7 @@ const QUEUE_ITEM_FIELDS = [
   'profileId',
   'reviewStatus',
   'submittedAt',
+  'subscriptionStatus',
 ];
 
 /** The fields a detail page promises; the account behind the profile stays out. */
@@ -60,6 +62,7 @@ const DETAIL_FIELDS = [
   'reviewStatus',
   'reviewedAt',
   'submittedAt',
+  'subscriptionStatus',
   'weightKg',
 ];
 
@@ -146,6 +149,7 @@ describe('Staff review routes (e2e)', () => {
             legalFirstName: 'Ada',
             legalLastName: 'Lovelace',
             nationality: 'PK',
+            subscriptionStatus: 'NONE',
           },
           {
             profileId: newer,
@@ -155,6 +159,7 @@ describe('Staff review routes (e2e)', () => {
             legalFirstName: 'Ada',
             legalLastName: 'Lovelace',
             nationality: 'PK',
+            subscriptionStatus: 'NONE',
           },
         ],
         nextCursor: null,
@@ -236,6 +241,7 @@ describe('Staff review routes (e2e)', () => {
         weightKg: 41,
         heightCm: 152,
         isMinor: true,
+        subscriptionStatus: 'ACTIVE',
         documents: [
           {
             id: expect.any(String),
@@ -434,6 +440,79 @@ describe('Staff review routes (e2e)', () => {
 
       expect(response.status).toBe(401);
       expect(response.body).toEqual({ ...UNAUTHORIZED, requestId: expect.any(String) });
+    });
+  });
+
+  describe('the subscription gate on approvals', () => {
+    it('approves a paid account with no acknowledgement and an empty trail note', async () => {
+      const { account } = await harness.submittedAthlete();
+
+      const response = await harness.post(approve(account.userId), staff.token);
+
+      expect(response.status).toBe(200);
+      expect(
+        harness.rows(STAFF_REVIEW_AUDIT_ACTIONS.APPROVED, account.userId)[0]?.metadata,
+      ).toEqual({});
+    });
+
+    it('refuses an unpaid approval without the acknowledgement, and writes nothing', async () => {
+      const { account } = await harness.submittedAthlete();
+      harness.billing.clear(account.userId);
+
+      const response = await harness.post(approve(account.userId), staff.token);
+
+      expect(response.status).toBe(409);
+      expect(response.body).toEqual({ ...CONFLICT, requestId: expect.any(String) });
+      expect(harness.rows(STAFF_REVIEW_AUDIT_ACTIONS.APPROVED, account.userId)).toHaveLength(0);
+    });
+
+    it('approves an unpaid account with the acknowledgement, and says so in the trail', async () => {
+      const { account } = await harness.submittedAthlete();
+      harness.billing.clear(account.userId);
+
+      const response = await harness.post(approve(account.userId), staff.token, {
+        acknowledgeNoSubscription: true,
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ reviewStatus: 'APPROVED', reviewedAt: expect.any(String) });
+      expect(
+        harness.rows(STAFF_REVIEW_AUDIT_ACTIONS.APPROVED, account.userId)[0]?.metadata,
+      ).toEqual({ subscriptionOverride: true });
+    });
+
+    it('refuses an acknowledgement that is not a boolean', async () => {
+      const { account } = await harness.submittedAthlete();
+
+      const response = await harness.post(approve(account.userId), staff.token, {
+        acknowledgeNoSubscription: 'yes',
+      });
+
+      expect(response.status).toBe(400);
+      expect(harness.rows(STAFF_REVIEW_AUDIT_ACTIONS.APPROVED, account.userId)).toHaveLength(0);
+    });
+
+    it('rejects an unpaid account without any acknowledgement', async () => {
+      const { account } = await harness.submittedAthlete();
+      harness.billing.clear(account.userId);
+
+      const response = await harness.post(reject(account.userId), staff.token, {
+        reason: 'the photo is blurry',
+      });
+
+      expect(response.status).toBe(200);
+      expect(harness.rows(STAFF_REVIEW_AUDIT_ACTIONS.REJECTED, account.userId)).toHaveLength(1);
+    });
+
+    it('rejects a paid account all the same', async () => {
+      const { account } = await harness.submittedAthlete();
+
+      const response = await harness.post(reject(account.userId), staff.token, {
+        reason: 'the city is wrong',
+      });
+
+      expect(response.status).toBe(200);
+      expect(harness.rows(STAFF_REVIEW_AUDIT_ACTIONS.REJECTED, account.userId)).toHaveLength(1);
     });
   });
 });

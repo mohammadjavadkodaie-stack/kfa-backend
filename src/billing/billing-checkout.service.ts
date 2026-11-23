@@ -9,6 +9,7 @@ import { chargeFor, type BillingPlan, type BillingPlanRepository } from './billi
 import { BILLING_PLAN_REPOSITORY, BILLING_STORE, PAYMENT_SESSION_CLIENTS } from './billing.tokens';
 import type { BillingStore, SubscriptionRow } from './billing.store';
 import type { PaymentSessionClients } from './payment-session';
+import { effectiveSubscriptionStatus } from './subscription-status.service';
 
 /** One row of the price list, exactly as the site shows it. */
 export interface PlanView {
@@ -77,7 +78,7 @@ export class BillingCheckoutService {
     }
 
     return {
-      status: effectiveStatus(row),
+      status: effectiveSubscriptionStatus(row),
       periodKey: row.periodKey,
       startsAt: row.startsAt?.toISOString() ?? null,
       expiresAt: row.expiresAt?.toISOString() ?? null,
@@ -103,7 +104,7 @@ export class BillingCheckoutService {
     const subscription = await this.subscriptionForPeriod(actor.id, plan.periodKey);
 
     // Already covered for this period: a second payment would buy nothing.
-    if (effectiveStatus(subscription) === 'ACTIVE') throw new ConflictException();
+    if (effectiveSubscriptionStatus(subscription) === 'ACTIVE') throw new ConflictException();
 
     // Opaque and unique per attempt, so a delivery can be traced back to it.
     const reference = randomBytes(16).toString('hex');
@@ -174,15 +175,6 @@ export class BillingCheckoutService {
 
     return plan;
   }
-}
-
-/** A subscription that ran out reads as EXPIRED; the column is left alone. */
-function effectiveStatus(row: SubscriptionRow): SubscriptionStatus {
-  if (row.status === 'ACTIVE' && row.expiresAt !== null && row.expiresAt.getTime() <= Date.now()) {
-    return 'EXPIRED';
-  }
-
-  return row.status;
 }
 
 function toPlanView(plan: BillingPlan): PlanView {

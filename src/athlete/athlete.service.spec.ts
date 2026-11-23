@@ -13,7 +13,8 @@ import type { AccessPolicyContext } from '../auth/policy/access-policy.service';
 import { ResourceOwnershipService } from '../auth/policy/resource-ownership.service';
 import { Role } from '../auth/roles';
 import type { PrismaService } from '../database/prisma.service';
-import { ATHLETE_AUDIT_ACTIONS, AthleteService } from './athlete.service';
+import { SubscriptionStatusService } from '../billing/subscription-status.service';
+import { ATHLETE_AUDIT_ACTIONS, AthleteService, subscriptionRequiredFor } from './athlete.service';
 import type {
   AthleteProfileInput,
   AthleteProfileRecord,
@@ -217,7 +218,11 @@ class QuietLogger {
   }
 }
 
-function createService(audit: FakeAudit = new FakeAudit(), profiles = new RecordingProfiles()) {
+function createService(
+  audit: FakeAudit = new FakeAudit(),
+  profiles = new RecordingProfiles(),
+  paid = true,
+) {
   const logger = new QuietLogger();
   const prisma = new FakePrisma(profiles);
   const ownership = new ResourceOwnershipService(
@@ -231,6 +236,12 @@ function createService(audit: FakeAudit = new FakeAudit(), profiles = new Record
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
     () => NOW,
+    // Paid unless a test says otherwise; the unpaid gate has its own test.
+    {
+      isActive: async () => paid,
+      statusOf: async () => (paid ? 'ACTIVE' : 'NONE'),
+      statusesOf: async () => new Map(),
+    } as unknown as SubscriptionStatusService,
   );
 
   return { service, audit, profiles, logger, prisma };
@@ -398,11 +409,26 @@ describe('AthleteService', () => {
       'nationality',
       'reviewStatus',
       'submittedAt',
+      'subscriptionRequired',
       'updatedAt',
       'weightKg',
     ]);
     expect(view.updatedAt).toBe('2026-01-02T00:00:00.000Z');
     expect(JSON.stringify(view)).not.toContain(USER_ID);
+  });
+
+  it('marks only an unpaid pending resume subscriptionRequired', async () => {
+    const { service, profiles } = createService(undefined, undefined, false);
+
+    profiles.rows.set(USER_ID, { ...record(), reviewStatus: 'PENDING', submittedAt: NOW });
+
+    await expect(service.readProfile(actor, CONTEXT)).resolves.toMatchObject({
+      subscriptionRequired: true,
+    });
+
+    expect(subscriptionRequiredFor('PENDING', false)).toBe(true);
+    expect(subscriptionRequiredFor('PENDING', true)).toBe(false);
+    expect(subscriptionRequiredFor('APPROVED', false)).toBe(false);
   });
 
   it('submits a draft profile and answers pending with the timestamp', async () => {

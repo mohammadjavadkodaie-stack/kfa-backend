@@ -1,6 +1,8 @@
+import { BadRequestException } from '@nestjs/common';
 import { Transform, Type, type TransformFnParams } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Max, Min } from 'class-validator';
 import type { ReviewStatus } from '../athlete/profile/athlete-profile.repository';
+import { z } from 'zod';
 
 /**
  * The three states a submitted profile can sit in. DRAFT is deliberately absent:
@@ -70,6 +72,27 @@ export class RejectReviewDto {
   @IsString()
   @Length(1, MAX_REJECTION_REASON_LENGTH)
   reason!: string;
+}
+
+/**
+ * The only thing an approval may carry: an explicit acknowledgement that the
+ * account has no active subscription. zod is the whole gate here - the body is
+ * nothing but an optional flag, and a misspelled key must not silently read as
+ * "no acknowledgement", so unknown keys are refused.
+ */
+export const approveReviewSchema = z.strictObject({
+  acknowledgeNoSubscription: z.boolean().optional(),
+});
+
+export type ApproveReviewInput = z.infer<typeof approveReviewSchema>;
+
+/** The wire gate: a body outside the schema is the generic 400. */
+export function parseApproveReview(body: unknown): ApproveReviewInput {
+  const parsed = approveReviewSchema.safeParse(body ?? {});
+
+  if (!parsed.success) throw new BadRequestException();
+
+  return parsed.data;
 }
 
 /** Maps the query to the input the service takes, without the DTO's optionals. */

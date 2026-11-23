@@ -8,6 +8,7 @@ import { BillingCheckoutService } from './billing-checkout.service';
 import { BillingController } from './billing.controller';
 import { BillingWebhookController } from './billing-webhook.controller';
 import { BillingWebhookService } from './billing-webhook.service';
+import { SubscriptionStatusService } from './subscription-status.service';
 import {
   BILLING_PLAN_REPOSITORY,
   BILLING_STORE,
@@ -83,6 +84,9 @@ const BILLING_PROVIDERS = Symbol('BILLING_PROVIDERS');
   providers: [
     BillingWebhookService,
     BillingCheckoutService,
+    // One reader of "what does this account have now?"; exported so the athlete
+    // read and the review gate reuse the same EXPIRED rule.
+    SubscriptionStatusService,
     { provide: BILLING_PLAN_REPOSITORY, useClass: PrismaBillingPlanRepository },
     { provide: BILLING_STORE, useClass: PrismaBillingStore },
     {
@@ -101,5 +105,6 @@ const BILLING_PROVIDERS = Symbol('BILLING_PROVIDERS');
       useFactory: (providers: BillingProviders): PaymentSessionClients => providers.sessions,
     },
   ],
+  exports: [SubscriptionStatusService],
 })
 export class BillingModule {}
