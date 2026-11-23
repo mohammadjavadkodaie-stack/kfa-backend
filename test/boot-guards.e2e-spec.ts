@@ -10,11 +10,9 @@ import { REDIS_CLIENT } from '../src/rate-limit/redis-throttler.storage';
 import { applyTestEnv } from './helpers/test-env';
 
 /**
- * Production boots only with the real CAPTCHA and email providers, and without
- * any OTP provider at all: the phone identity flow is disabled there (its
- * routes answer a generic 404), so `OTP_PROVIDER` is neither set nor required.
- * Every production case still sets non-fake CAPTCHA and email providers, so
- * each case fails for exactly the reason it asserts.
+ * Production boots only with the real CAPTCHA and email providers. Every
+ * production case still sets non-fake CAPTCHA and email providers, so each
+ * case fails for exactly the reason it asserts.
  */
 const PROD_PROVIDER_ENV = {
   CAPTCHA_PROVIDER: 'turnstile',
@@ -122,28 +120,12 @@ describe('Boot guards (e2e)', () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('Invalid environment configuration');
     expect((error as Error).message).toContain('REDIS_URL');
-    expect((error as Error).message).not.toContain('OTP_PROVIDER');
     expect((error as Error).message).not.toContain('CAPTCHA_PROVIDER');
   });
 
-  it('boots in production without an OTP provider (phone routes are disabled)', async () => {
+  it('answers a generic 404 for the removed phone routes in production', async () => {
     applyTestEnv({
       ...PROD_PROVIDER_ENV,
-      OTP_PROVIDER: undefined,
-      NODE_ENV: 'production',
-      DATABASE_URL: 'postgresql://kfa_app:test-only@db.internal:5432/kfa?sslmode=require',
-      REDIS_URL: 'rediss://:test-only@redis.internal:6380/0',
-    });
-
-    // The Redis client is built with `lazyConnect`, so a compile opens no
-    // connection; compiling is exactly what a production deploy does first.
-    await expect(compileApp()).resolves.toBeUndefined();
-  });
-
-  it('answers a generic 404 for the disabled phone/OTP routes in production', async () => {
-    applyTestEnv({
-      ...PROD_PROVIDER_ENV,
-      OTP_PROVIDER: undefined,
       NODE_ENV: 'production',
       DATABASE_URL: 'postgresql://kfa_app:test-only@db.internal:5432/kfa?sslmode=require',
       REDIS_URL: 'rediss://:test-only@redis.internal:6380/0',
@@ -172,7 +154,6 @@ describe('Boot guards (e2e)', () => {
   it('keeps email, session and token routes live in production', async () => {
     applyTestEnv({
       ...PROD_PROVIDER_ENV,
-      OTP_PROVIDER: undefined,
       NODE_ENV: 'production',
       DATABASE_URL: 'postgresql://kfa_app:test-only@db.internal:5432/kfa?sslmode=require',
       REDIS_URL: 'rediss://:test-only@redis.internal:6380/0',

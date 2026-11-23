@@ -2,7 +2,7 @@ import { Inject, Injectable, NotFoundException, ServiceUnavailableException } fr
 import { timingSafeEqual } from 'node:crypto';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../../audit/audit.service';
-import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../auth/otp/proof-token';
+import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../auth/proof/proof-nonce.store';
 import type { PolicySubject } from '../../auth/policy/access-policy';
 import { parseRole } from '../../auth/roles';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../auth/session.repository';

@@ -41,6 +41,30 @@ export interface RawBodyOptions {
   readonly mediaTypes: readonly string[];
   /** Largest body accepted, in bytes. */
   readonly limitBytes: number;
+  /**
+   * Marks the request as already read, so a parser mounted after this one does
+   * not read the same stream a second time (which would leave the request
+   * hanging). Only a route that takes its body raw sets this.
+   */
+  readonly markBodyParsed?: boolean;
+}
+
+/**
+ * A request the raw reader filled: `body` holds the bytes, and `rawBody` is the
+ * same buffer under the name a signature check reads.
+ *
+ * A type alias rather than an interface on purpose: plain `Request` from Express
+ * declares `body` as required, and an interface may not narrow that to optional.
+ */
+export type RawBodyRequest = Request & { rawBody?: Buffer };
+
+/**
+ * body-parser's own "already read" flag. It is the only public way to tell the
+ * JSON parser to stand down for a request another reader consumed; setting it is
+ * how the webhook route and the global parser share one stream.
+ */
+interface ParsedBodyMarker {
+  _body?: boolean;
 }
 
 /** `image/png; charset=binary` and `IMAGE/PNG` are the same media type. */
@@ -62,6 +86,7 @@ export function mediaTypeEssence(header: string | undefined): string {
 export function createRawBodyMiddleware({
   mediaTypes,
   limitBytes,
+  markBodyParsed = false,
 }: RawBodyOptions): RequestHandler {
   // Twice the limit is the point where reading the rest is no longer a courtesy.
   const drainThreshold = limitBytes * 2;
@@ -106,7 +131,15 @@ export function createRawBodyMiddleware({
         return;
       }
 
-      (request as { body?: unknown }).body = Buffer.concat(chunks, size);
+      const body = Buffer.concat(chunks, size);
+      const target = request as RawBodyRequest & ParsedBodyMarker;
+
+      target.body = body;
+      // The exact bytes, for a signature that covers them.
+      target.rawBody = body;
+
+      if (markBodyParsed) target._body = true;
+
       next();
     };
 

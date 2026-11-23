@@ -10,9 +10,10 @@ import {
 import { AuthModule } from '../../src/auth/auth.module';
 import { EMAIL_CODE_STORE, type EmailCodeStore } from '../../src/auth/email/email-code.store';
 import { EMAIL_PROVIDER, type EmailProvider } from '../../src/auth/email/email.provider';
-import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/otp/proof-token';
+import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/proof/proof-nonce.store';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
 import { TOTP_REPOSITORY, type TotpRepository } from '../../src/auth/totp/totp.repository';
+import { WEBHOOK_VERIFIERS, type WebhookVerifiers } from '../../src/billing/billing.tokens';
 import { ENV } from '../../src/config/config.module';
 import type { Env } from '../../src/config/env';
 import { PrismaService } from '../../src/database/prisma.service';
@@ -23,6 +24,10 @@ import {
   IDENTITY_DOCUMENT_REPOSITORY,
   type IdentityDocumentRepository,
 } from '../../src/documents/records/identity-document.repository';
+import {
+  NOTIFICATION_REPOSITORY,
+  type NotificationRepository,
+} from '../../src/notifications/notification.repository';
 import { RateLimitService } from '../../src/rate-limit/rate-limit.service';
 import {
   STAFF_REVIEW_REPOSITORY,
@@ -51,7 +56,7 @@ export interface CreateTestAppOptions {
   readonly sessionRepository?: SessionRepository;
   /** In-memory second-factor store, so the TOTP endpoints run without PostgreSQL. */
   readonly totpRepository?: TotpRepository;
-  /** Lets `ProofTokenService` keep nonces without Redis. */
+  /** Lets the email proof service keep nonces without Redis. */
   readonly proofNonceStore?: ProofNonceStore;
   /** In-memory one-time codes, so the email flow runs without Redis. */
   readonly emailCodeStore?: EmailCodeStore;
@@ -65,10 +70,14 @@ export interface CreateTestAppOptions {
   readonly staffReviewRepository?: StaffReviewRepository;
   /** In-memory document rows, so the upload route runs without PostgreSQL. */
   readonly identityDocumentRepository?: IdentityDocumentRepository;
+  /** In-memory inbox rows, so the notification routes run without PostgreSQL. */
+  readonly notificationRepository?: NotificationRepository;
   /** In-memory object store, so no suite reaches a bucket. */
   readonly documentStorage?: DocumentStorage;
   /** A fake daemon verdict for the ingest pipeline, instead of the refusing default. */
   readonly virusScanner?: VirusScanner;
+  /** Fake provider verifiers, so the webhook route runs without a real signature. */
+  readonly webhookVerifiers?: WebhookVerifiers;
 }
 
 /**
@@ -138,12 +147,22 @@ export async function createTestApp(
       .useValue(options.identityDocumentRepository);
   }
 
+  if (options.notificationRepository !== undefined) {
+    builder = builder
+      .overrideProvider(NOTIFICATION_REPOSITORY)
+      .useValue(options.notificationRepository);
+  }
+
   if (options.documentStorage !== undefined) {
     builder = builder.overrideProvider(DOCUMENT_STORAGE).useValue(options.documentStorage);
   }
 
   if (options.virusScanner !== undefined) {
     builder = builder.overrideProvider(VIRUS_SCANNER).useValue(options.virusScanner);
+  }
+
+  if (options.webhookVerifiers !== undefined) {
+    builder = builder.overrideProvider(WEBHOOK_VERIFIERS).useValue(options.webhookVerifiers);
   }
 
   const moduleRef = await builder.compile();

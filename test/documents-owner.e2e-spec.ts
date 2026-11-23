@@ -109,6 +109,11 @@ class RefusingOwnerLimit {
       : { allowed: true, remaining: 99, retryAfterSeconds: 0 };
   }
 
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
+    return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
+  }
+
   async reset(): Promise<void> {}
 }
 

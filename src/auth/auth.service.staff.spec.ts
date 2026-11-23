@@ -1,14 +1,15 @@
 import { UnauthorizedException } from '@nestjs/common';
 import {
-  LOGIN_BODY,
   TEST_CONTEXT,
+  TEST_EMAIL,
   TEST_NOW,
-  TEST_PHONE,
+  TEST_PASSWORD_HASH,
   TEST_USERNAME,
   auditedActions,
   cookieContext,
   createHarness,
   issued,
+  loginFixture,
 } from '../../test/helpers/auth-service-harness';
 import { Role } from './roles';
 
@@ -23,9 +24,15 @@ function clock(offsetMs: number): void {
 
 function loginAs(role: Role) {
   const harness = createHarness();
-  harness.sessions.seedUser({ phone: TEST_PHONE, username: TEST_USERNAME, role });
+  const user = harness.sessions.seedUser({
+    phone: null,
+    email: TEST_EMAIL,
+    passwordHash: TEST_PASSWORD_HASH,
+    username: TEST_USERNAME,
+    role,
+  });
 
-  return harness.service.login(LOGIN_BODY, TEST_CONTEXT).then((result) => ({
+  return loginFixture(harness, { id: user.id, role }, TEST_CONTEXT).then((result) => ({
     harness,
     credentials: issued(result),
   }));

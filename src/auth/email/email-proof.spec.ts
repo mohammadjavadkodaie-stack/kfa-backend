@@ -1,6 +1,6 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { EmailProofService } from './email-proof';
-import { ProofTokenService, type ProofNonceStore } from '../otp/proof-token';
+import type { ProofNonceStore } from '../proof/proof-nonce.store';
 
 class MemoryNonceStore implements ProofNonceStore {
   readonly values = new Map<string, string>();
@@ -20,7 +20,6 @@ class MemoryNonceStore implements ProofNonceStore {
 }
 
 const KEY = 'unit-test-email-code-hmac-key-0123456789';
-const PHONE_SECRET = 'unit-test-otp-proof-secret-0123456789abcdef';
 const EMAIL = ' User@Example.com ';
 const NOW = 1_000_000;
 
@@ -128,30 +127,6 @@ describe('EmailProofService', () => {
 
     await expect(
       service.consumeEmailProof({ proof, purpose: 'register', nowMs: NOW + 1_000 }),
-    ).resolves.toBeNull();
-  });
-
-  it('refuses a legacy phone proof token', async () => {
-    const phoneProof = new ProofTokenService(
-      { OTP_PROOF_SECRET: PHONE_SECRET },
-      new MemoryNonceStore(),
-    );
-    const phoneToken = await phoneProof.issue('+14155552671', 'register', NOW);
-
-    await expect(
-      createService().consumeEmailProof({ proof: phoneToken, purpose: 'register' }),
-    ).resolves.toBeNull();
-  });
-
-  it('is refused by the phone verifier', async () => {
-    const phoneProof = new ProofTokenService(
-      { OTP_PROOF_SECRET: PHONE_SECRET },
-      new MemoryNonceStore(),
-    );
-    const emailToken = await issue(createService());
-
-    await expect(
-      phoneProof.verifyAndConsumeProof(emailToken, 'register', NOW + 1_000),
     ).resolves.toBeNull();
   });
 

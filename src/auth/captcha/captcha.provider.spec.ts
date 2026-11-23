@@ -8,7 +8,6 @@ const DEV_ENV_WITHOUT_CAPTCHA: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgresql://kfa_app:dev-secret@127.0.0.1:5432/kfa?schema=public',
   AUDIT_HMAC_KEY: 'unit-test-audit-hmac-key-0123456789',
   RATE_LIMIT_HMAC_KEY: 'unit-test-rate-limit-hmac-key-0123456789',
-  OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789abcdef',
   ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
   DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
   EMAIL_CODE_HMAC_KEY: 'unit-test-email-code-hmac-key-0123456789',

@@ -16,7 +16,6 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   NODE_ENV: 'production',
   DATABASE_URL: 'postgresql://kfa_app:unit-test@db.internal:5432/kfa?sslmode=require',
   REDIS_URL: 'rediss://:unit-test-redis-password@redis.internal:6380/0',
-  OTP_PROOF_SECRET: 'unit-test-otp-proof-secret-0123456789',
   // Required from stage 2.3a on; without it production refuses to boot.
   ACCESS_TOKEN_SECRET: 'unit-test-access-token-secret-0123456789abcdef',
   // Fake base64url of 32 bytes; also required from stage 3.2a on.
@@ -25,7 +24,6 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   DOCUMENT_MASTER_KEY: 'a2ZhLXRlc3Qtb25seS1kb2N1bWVudC1tYXN0ZXIta2U=',
   // Required from stage 4.4a on; it signs the single-use document view links.
   DOCUMENT_VIEW_TOKEN_SECRET: 'unit-test-view-token-secret-0123456789abcdef',
-  OTP_PROVIDER: 'twilio',
   CAPTCHA_PROVIDER: 'turnstile',
   TURNSTILE_SECRET_KEY: 'unit-test-turnstile-secret-0123456789',
   TURNSTILE_EXPECTED_HOSTNAME: 'app.example',

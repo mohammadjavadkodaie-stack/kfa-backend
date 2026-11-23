@@ -2,7 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ENV } from '../../config/config.module';
 import type { Env } from '../../config/env';
-import { PROOF_NONCE_STORE, type ProofNonceStore } from '../otp/proof-token';
+import { PROOF_NONCE_STORE, type ProofNonceStore } from '../proof/proof-nonce.store';
 import { normalizeEmail } from './email';
 import { type EmailCodePurpose } from './email.provider';
 import { deriveEmailProofKey } from './email-keys';

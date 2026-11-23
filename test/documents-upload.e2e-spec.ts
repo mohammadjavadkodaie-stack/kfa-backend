@@ -99,6 +99,11 @@ class RefusingUploadLimit {
       : { allowed: true, remaining: 99, retryAfterSeconds: 0 };
   }
 
+  /** The read-only variant: reports the same budget without billing a hit. */
+  async peek(): Promise<RateLimitDecision> {
+    return { allowed: true, remaining: 99, retryAfterSeconds: 0 };
+  }
+
   async reset(): Promise<void> {}
 }
 
@@ -443,7 +448,11 @@ describe('Document upload route (e2e)', () => {
     expect(scanner.received).toHaveLength(scans);
 
     // The global limit is untouched: every other route still stops at 1 KiB.
-    const json = await harness.post('/auth/login', undefined, { proof: 'x'.repeat(2_000) });
+    const json = await harness.post('/auth/signin', undefined, {
+      email: 'probe@example.test',
+      password: 'x'.repeat(2_000),
+      proof: 'proof',
+    });
 
     expect(json.status).toBe(413);
     expect(json.body).toEqual({ ...PAYLOAD_TOO_LARGE, requestId: expect.any(String) });

@@ -14,12 +14,11 @@ import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../../audit/audit.service';
 import { Roles } from '../decorators/roles.decorator';
 import type { AuthenticatedRequest, RequestPrincipal } from '../guards/auth.guard';
-import { parseBody } from '../otp/otp.schema';
 import { Role } from '../roles';
 import { SESSION_REPOSITORY, type SessionRepository } from '../session.repository';
 import { AllowWithoutSecondFactor } from './staff-gate.guard';
 import { RequireStepUp, STEPUP_WINDOW_MS } from './step-up.guard';
-import { totpCodeSchema, totpEnrollSchema } from './totp.schema';
+import { parseBody, totpCodeSchema, totpEnrollSchema } from './totp.schema';
 import { TotpService, type TotpStatus } from './totp.service';
 
 /** Once only: the authenticator app or password manager holds it afterwards. */

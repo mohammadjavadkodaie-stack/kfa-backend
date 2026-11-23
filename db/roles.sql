@@ -59,3 +59,29 @@ BEGIN
     END IF;
 END
 $$;
+
+-- notifications: the runtime role reads its own rows and appends new ones, and
+-- may only ever stamp read_at. No DELETE - a notification is not a
+-- client-managed row; a purge path, if wanted, is a later feature. The
+-- migration applies the same grants (guarded on the role existing), so either
+-- execution order is safe.
+DO $$
+BEGIN
+    IF to_regclass('public.notifications') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.notifications FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT ON TABLE public.notifications TO kfa_app';
+        EXECUTE 'GRANT UPDATE ("read_at") ON TABLE public.notifications TO kfa_app';
+    END IF;
+END
+$$;
+
+-- Billing tables: read and write, never DELETE. Payment terms are frozen by a
+-- trigger in the billing migration. The migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.subscriptions') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.subscriptions, public.payments, public.webhook_events, public.billing_plans FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.subscriptions, public.payments, public.webhook_events, public.billing_plans TO kfa_app';
+    END IF;
+END
+$$;

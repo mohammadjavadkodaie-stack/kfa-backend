@@ -4,6 +4,10 @@ import {
   type EmailProvider,
   type ReviewResultStatus,
 } from '../auth/email/email.provider';
+import {
+  REVIEW_DECISION_INBOX,
+  type ReviewDecisionInbox,
+} from '../notifications/notifications.service';
 
 /**
  * What a decision sends: one address, the outcome, and the reviewer's reason on
@@ -19,8 +23,20 @@ export interface ReviewResultNotification {
   readonly reason: string | null;
 }
 
+/** What the in-site leg carries: the owner of the inbox row, and the outcome. */
+export interface ReviewInSiteResult {
+  readonly userId: string;
+  readonly status: ReviewResultStatus;
+}
+
 export interface ReviewResultNotifier {
   sendResult(input: ReviewResultNotification): Promise<void>;
+  /**
+   * The in-site leg: one inbox row for the athlete, independent of the email.
+   * Optional so a transport that only carries email can still satisfy the
+   * interface; the caller then simply skips the inbox.
+   */
+  recordInSite?(input: ReviewInSiteResult): Promise<void>;
 }
 
 /** DI token so the transport fake can be swapped in tests. */
@@ -33,7 +49,10 @@ export const REVIEW_RESULT_NOTIFIER = Symbol('REVIEW_RESULT_NOTIFIER');
  */
 @Injectable()
 export class EmailReviewResultNotifier implements ReviewResultNotifier {
-  constructor(@Inject(EMAIL_PROVIDER) private readonly email: EmailProvider) {}
+  constructor(
+    @Inject(EMAIL_PROVIDER) private readonly email: EmailProvider,
+    @Inject(REVIEW_DECISION_INBOX) private readonly inbox: ReviewDecisionInbox,
+  ) {}
 
   async sendResult(input: ReviewResultNotification): Promise<void> {
     await this.email.sendReviewResult({
@@ -41,5 +60,10 @@ export class EmailReviewResultNotifier implements ReviewResultNotifier {
       status: input.status,
       reason: input.reason,
     });
+  }
+
+  /** Delegates to the notifications module, which owns the inbox rows. */
+  recordInSite(input: ReviewInSiteResult): Promise<void> {
+    return this.inbox.recordDecision(input.userId, input.status);
   }
 }

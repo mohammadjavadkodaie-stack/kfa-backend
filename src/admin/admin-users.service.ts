@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   ForbiddenException,
   Inject,
@@ -10,10 +11,15 @@ import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
 import { AccessAction, type PolicySubject } from '../auth/policy/access-policy';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
-import { Role } from '../auth/roles';
-import { SESSION_REPOSITORY, type SessionRepository } from '../auth/session.repository';
+import { isStaffRole, Role } from '../auth/roles';
+import {
+  SESSION_REPOSITORY,
+  type AdminUserListPage,
+  type SessionRepository,
+} from '../auth/session.repository';
 import { TOTP_REPOSITORY, type TotpRepository } from '../auth/totp/totp.repository';
 import { isUuid } from '../common/middleware/request-id.middleware';
+import type { AdminUsersFilter } from './admin-users.dto';
 import { OWNER_NOTIFIER, type OwnerNotifier } from './owner-notifier';
 
 /** Audit names for the actions this module performs; the set is closed. */
@@ -23,9 +29,31 @@ export const ADMIN_AUDIT_ACTIONS = {
   ADMIN_GRANT: 'admin.admin.grant',
   ADMIN_REVOKE: 'admin.admin.revoke',
   TOTP_RESET: 'admin.totp.reset',
+  /** The only read in the set: it records who looked, not what changed. */
+  USERS_LIST: 'admin.users.list',
 } as const;
 
 export type AdminAuditAction = (typeof ADMIN_AUDIT_ACTIONS)[keyof typeof ADMIN_AUDIT_ACTIONS];
+
+/**
+ * One row of `GET /admin/users`: an allowlist, and no hash, phone or
+ * second-factor state ever crosses it.
+ */
+export interface AdminUserView {
+  readonly id: string;
+  readonly username: string;
+  readonly email: string | null;
+  readonly role: Role;
+  readonly status: 'ACTIVE' | 'BLOCKED';
+  readonly createdAt: string;
+}
+
+export interface AdminUsersPageView {
+  readonly users: readonly AdminUserView[];
+  readonly page: number;
+  readonly pageSize: number;
+  readonly total: number;
+}
 
 /** A target read from storage; a request body can never supply these values. */
 export interface AdminTarget {
@@ -46,6 +74,14 @@ const TARGET_NOT_FOUND: LoadTargetResult = Object.freeze({ found: false });
 
 const AUDIT_TARGET_TYPE = 'user';
 const REVOCATION_REASON = 'admin_action';
+
+/**
+ * A search term reaches the trail as a hash: the trail never carries the
+ * address itself, only the fact that somebody searched for one and which.
+ */
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
 
 /**
  * Shared helpers for the administrative user endpoints, plus the state
@@ -87,6 +123,77 @@ export class AdminUsersService {
     if (target === null) return REFUSED;
 
     return this.policy.decide(actor, { action }, target).allowed ? ALLOWED : REFUSED;
+  }
+
+  /**
+   * One page of accounts, oldest first. There is no target row, so the policy
+   * is not asked: the staff role is the whole rule, and the route's markers
+   * already say so - the check here is the belt to those braces.
+   *
+   * The response is built from the allowlist and nothing else: the repository
+   * never reads a hash, a phone number or the second-factor state, so no later
+   * edit to the query can leak one into the page.
+   */
+  async list(
+    actor: PolicySubject,
+    filter: AdminUsersFilter,
+    requestId: string,
+  ): Promise<AdminUsersPageView> {
+    if (!isStaffRole(actor.role)) throw new ForbiddenException();
+
+    const page = await this.sessions.listAccounts(filter);
+
+    await this.recordListAudit(actor, filter, page, requestId);
+
+    return {
+      users: page.rows.map((row) => ({
+        id: row.id,
+        username: row.username,
+        email: row.email,
+        role: row.role,
+        status: row.status,
+        createdAt: row.createdAt.toISOString(),
+      })),
+      page: filter.page,
+      pageSize: filter.pageSize,
+      total: page.total,
+    };
+  }
+
+  /**
+   * One trail row per listing: who asked, what narrowed the page and how much
+   * it held. Fail closed like the detail read in the review queue - a listing
+   * nobody can account for is not served.
+   */
+  private async recordListAudit(
+    actor: PolicySubject,
+    filter: AdminUsersFilter,
+    page: AdminUserListPage,
+    requestId: string,
+  ): Promise<void> {
+    const action = ADMIN_AUDIT_ACTIONS.USERS_LIST;
+
+    try {
+      await this.audit.record({
+        action,
+        actorId: actor.id,
+        actorRole: String(actor.role),
+        requestId,
+        metadata: {
+          page: filter.page,
+          pageSize: filter.pageSize,
+          role: filter.role ?? null,
+          blocked: filter.blocked ?? null,
+          addressFilterSha256: filter.email === undefined ? null : sha256Hex(filter.email),
+          results: page.rows.length,
+          total: page.total,
+        },
+      });
+    } catch {
+      this.logger.warn({ requestId, action }, 'admin audit failed');
+
+      throw new ServiceUnavailableException();
+    }
   }
 
   /**

@@ -4,7 +4,6 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { PinoLogger } from 'nestjs-pino';
 import { AuthService, type AuthRequestContext } from '../../src/auth/auth.service';
 import { PrismaSessionRepository } from '../../src/auth/prisma-session.repository';
-import type { ProofTokenService } from '../../src/auth/otp/proof-token';
 import { Role } from '../../src/auth/roles';
 import {
   generateRefreshToken,
@@ -38,10 +37,8 @@ const ACCESS_TOKEN_SECRET = 'db-test-access-token-secret-0123456789abcdef';
 
 const hash = () => randomBytes(32).toString('hex');
 
-function phone(): string {
-  return `+1415${randomUUID()
-    .replace(/[^0-9]/g, '7')
-    .slice(0, 7)}`;
+function email(): string {
+  return `idle_${randomUUID().replaceAll('-', '')}@example.test`;
 }
 
 function username(): string {
@@ -85,8 +82,7 @@ describeWithDatabase('staff idle timeout (PostgreSQL)', () => {
         SESSIONS_MAX_PER_USER: 10,
       },
       sessions,
-      // `refresh` reads neither the proof nor the throttle, so both stay fakes.
-      {} as ProofTokenService,
+      // `refresh` reads neither the code store nor the throttle, so both are fakes.
       new PermissiveRateLimit() as unknown as RateLimitService,
       createTestAuditService(prisma),
       new QuietLogger() as unknown as PinoLogger,
@@ -114,7 +110,7 @@ describeWithDatabase('staff idle timeout (PostgreSQL)', () => {
     const token = generateRefreshToken();
 
     await prisma.user.create({
-      data: { id: userId, phone: phone(), username: username(), role, phoneVerifiedAt: now },
+      data: { id: userId, email: email(), username: username(), role, emailVerifiedAt: now },
     });
     seededUsers.push(userId);
 

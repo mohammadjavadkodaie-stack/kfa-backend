@@ -16,9 +16,7 @@ export const TEST_ENV = {
   DATABASE_URL: 'postgresql://kfa_app:test-only-password@127.0.0.1:5432/kfa_test?schema=public',
   AUDIT_HMAC_KEY: 'test-only-audit-hmac-key-0123456789',
   RATE_LIMIT_HMAC_KEY: 'test-only-rate-limit-hmac-key-0123456789',
-  /** Fixed, fake key for OTP proof tokens; tests must never depend on a real secret. */
-  OTP_PROOF_SECRET: 'test-only-otp-proof-secret-0123456789abcdef',
-  /** Fake email-code HMAC key: long enough for the production rule, distinct from every other secret. */
+  /** Fake HMAC key for the hashed email codes; distinct from every other secret. */
   EMAIL_CODE_HMAC_KEY: 'test-only-email-code-hmac-key-0123456789',
   /** Fake access-token secret; production-only validation is covered by env.spec. */
   ACCESS_TOKEN_SECRET: 'test-only-access-token-secret-0123456789abcdef',
@@ -35,22 +33,20 @@ export const TEST_ENV = {
   STAFF_SESSION_IDLE_MINUTES: '30',
   /** Low enough for a suite to reach the cap without a long login loop. */
   SESSIONS_MAX_PER_USER: '10',
-  /** Small enough to hit the deployment cap in a test, large enough to be realistic. */
-  OTP_GLOBAL_SENDS_PER_HOUR: '500',
   /** Email code lifetime and attempt budget; tests override these to hit the limits. */
   EMAIL_CODE_TTL_SECONDS: '600',
   EMAIL_CODE_MAX_ATTEMPTS: '5',
+  /** Small enough to hit the deployment cap in a test, large enough to be realistic. */
   EMAIL_GLOBAL_SENDS_PER_HOUR: '500',
   /** Email transport: tests use the silent fake adapter. */
   EMAIL_PROVIDER: 'fake',
   RESEND_API_KEY: undefined,
   EMAIL_FROM: undefined,
   /**
-   * The fake providers are the only ones wired up so far, and production
-   * additionally requires non-fake values. Keeping both keys here means
+   * The fake captcha provider is the only one wired up so far, and production
+   * additionally requires a non-fake value. Keeping the key here means
    * `applyTestEnv()` also resets a value leaked from a production-env test.
    */
-  OTP_PROVIDER: 'fake',
   CAPTCHA_PROVIDER: 'fake',
   /**
    * Unset by default: no test dials Redis unless it explicitly asks for it (the

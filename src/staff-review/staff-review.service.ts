@@ -398,6 +398,23 @@ export class StaffReviewService {
     reason: string | null,
     context: AccessPolicyContext,
   ): Promise<void> {
+    // The in-site row goes first: an athlete with no address on file still
+    // finds the decision in the app. Best effort like the email - a failure is
+    // a warning with the request id and the outcome, never a person, and never
+    // a rollback: the decision already happened and the reviewer has to see it.
+    const recordInSite = this.notifier.recordInSite;
+
+    if (recordInSite !== undefined) {
+      try {
+        await recordInSite.call(this.notifier, { userId: profileId, status });
+      } catch {
+        this.logger.warn(
+          { requestId: context.requestId, profileId, status },
+          'review decision in-site notification failed',
+        );
+      }
+    }
+
     let recipient: ReviewRecipient | null;
 
     try {

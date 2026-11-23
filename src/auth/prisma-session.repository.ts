@@ -2,12 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { parseRole, Role } from './roles';
 import type {
-  AccountRecord,
   EmailAccountRecord,
   ActiveSessionRecord,
+  AdminUserListPage,
+  AdminUserListQuery,
+  AdminUserListRecord,
   AdminUserRecord,
-  ChangePhoneInput,
-  ChangePhoneResult,
   CreateAccountInput,
   CreateEmailAccountInput,
   CreateEmailAccountResult,
@@ -59,18 +59,61 @@ export class PrismaSessionRepository implements SessionRepository {
     return existing !== null;
   }
 
-  async findUserByPhone(phoneE164: string): Promise<AccountRecord | null> {
-    const user = await this.prisma.user.findUnique({
-      where: { phone: phoneE164 },
-      select: { id: true, status: true, role: true },
-    });
+  /**
+   * One page of accounts, oldest first. The filter mirrors the stored columns;
+   * the address arrives already normalised, so the search hits the same
+   * spelling the auth flow writes. Only the six allowlisted columns are
+   * selected, so the page cannot grow a hash or a phone number by accident.
+   */
+  async listAccounts(query: AdminUserListQuery): Promise<AdminUserListPage> {
+    const where = {
+      ...(query.role === undefined ? {} : { role: PRISMA_ROLE[query.role] }),
+      ...(query.blocked === undefined
+        ? {}
+        : { status: query.blocked ? ('BLOCKED' as const) : ('ACTIVE' as const) }),
+      ...(query.email === undefined ? {} : { email: query.email }),
+    };
 
-    if (user === null) return null;
+    const [rows, total] = await this.prisma.$transaction(async (tx) =>
+      Promise.all([
+        tx.user.findMany({
+          where,
+          select: {
+            id: true,
+            username: true,
+            email: true,
+            role: true,
+            status: true,
+            createdAt: true,
+          },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          skip: (query.page - 1) * query.pageSize,
+          take: query.pageSize,
+        }),
+        tx.user.count({ where }),
+      ]),
+    );
 
-    // Same fail-closed rule as the guard: an unknown role owns no session.
-    const role = parseRole(user.role);
+    const users: AdminUserListRecord[] = [];
 
-    return role === null ? null : { id: user.id, status: user.status, role };
+    for (const row of rows) {
+      // A stored value outside the enum cannot be read back through Prisma;
+      // fail closed instead of listing an account with a guessed access level.
+      const role = parseRole(row.role);
+
+      if (role === null) continue;
+
+      users.push({
+        id: row.id,
+        username: row.username,
+        email: row.email,
+        role,
+        status: row.status,
+        createdAt: row.createdAt,
+      });
+    }
+
+    return { rows: users, total };
   }
 
   async findUserByEmail(email: string): Promise<EmailAccountRecord | null> {
@@ -100,15 +143,6 @@ export class PrismaSessionRepository implements SessionRepository {
       select: { id: true },
     });
     return device !== null;
-  }
-
-  async findPhoneByUserId(userId: string): Promise<string | null> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { phone: true },
-    });
-
-    return user === null ? null : user.phone;
   }
 
   async findUsernameByUserId(userId: string): Promise<string | null> {
@@ -492,44 +526,6 @@ export class PrismaSessionRepository implements SessionRepository {
         data: { revokedAt: now },
       });
     });
-  }
-
-  /**
-   * Writes the new number first, so a taken number is refused by the unique
-   * index instead of a read that a concurrent registration would invalidate.
-   * The session revocations share the transaction: a failure anywhere leaves
-   * the account on its old number.
-   */
-  async changePhone(input: ChangePhoneInput): Promise<ChangePhoneResult> {
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        const updated = await tx.user.updateMany({
-          where: { id: input.userId },
-          data: { phone: input.phone, phoneVerifiedAt: input.now },
-        });
-
-        if (updated.count === 0) return { outcome: 'not_found' };
-
-        // Every session but the one that asked, plus their refresh tokens: a
-        // stolen session must not survive the change meant to lock it out.
-        const others = input.keepSessionId === null ? {} : { id: { not: input.keepSessionId } };
-
-        const sessions = await tx.session.updateMany({
-          where: { userId: input.userId, ...others, revokedAt: null },
-          data: { revokedAt: input.now, revokedReason: 'phone_changed' },
-        });
-
-        await tx.refreshToken.updateMany({
-          where: { revokedAt: null, session: { userId: input.userId, ...others } },
-          data: { revokedAt: input.now },
-        });
-
-        return { outcome: 'changed', revokedSessions: sessions.count };
-      });
-    } catch (error) {
-      if (isUniqueViolation(error)) return { outcome: 'conflict' };
-      throw error;
-    }
   }
 
   async revokeSessionByRefreshTokenHash(

@@ -20,9 +20,6 @@ export const AUDIT_HMAC_KEY_MIN_LENGTH = 32;
 /** Minimum accepted length of the rate-limit identifier HMAC key. */
 export const RATE_LIMIT_HMAC_KEY_MIN_LENGTH = 32;
 
-/** Minimum accepted length of the OTP proof-token HMAC secret. */
-export const OTP_PROOF_SECRET_MIN_LENGTH = 32;
-
 /** Minimum accepted length of the email code HMAC key. */
 export const EMAIL_CODE_HMAC_KEY_MIN_LENGTH = 32;
 
@@ -282,7 +279,6 @@ export const envSchema = z
       .min(BODY_LIMIT_BYTES_MIN)
       .max(BODY_LIMIT_BYTES_MAX)
       .default(100 * 1024),
-    OTP_PROVIDER: z.string().min(1).default('fake'),
     /** Captcha verifier: fake is development/test only, production needs turnstile. */
     CAPTCHA_PROVIDER: z.enum(['fake', 'turnstile']).default('fake'),
     /** Cloudflare Turnstile secret; required when the real verifier is selected. */
@@ -347,24 +343,10 @@ export const envSchema = z
       .optional(),
 
     /**
-     * HMAC secret for the short-lived OTP proof token (Stage 2.3 consumes it).
-     * Must be independent from the other HMAC keys so a leak of one does not
-     * forge the other.
-     */
-    OTP_PROOF_SECRET: z
-      .string()
-      .min(
-        OTP_PROOF_SECRET_MIN_LENGTH,
-        `must be at least ${OTP_PROOF_SECRET_MIN_LENGTH} characters`,
-      )
-      .max(1024, 'must be at most 1024 characters')
-      .optional(),
-
-    /**
      * HMAC key for hashed email codes (the email identity flow). Optional
-     * outside production, exactly like OTP_PROOF_SECRET, so a local checkout can
-     * boot without one; production requires it. It must be independent from
-     * every other secret so one leak cannot forge another value.
+     * outside production, so a local checkout can boot without one; production
+     * requires it. It must be independent from every other secret so one leak
+     * cannot forge another value.
      */
     EMAIL_CODE_HMAC_KEY: z
       .string()
@@ -524,9 +506,6 @@ export const envSchema = z
     /** INSTREAM port of that daemon; 3310 is the clamd default. */
     CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).optional(),
 
-    /** Hard cap on OTP sends per hour across all phones (protects the provider bill). */
-    OTP_GLOBAL_SENDS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).default(500),
-
     /** Lifetime of one email code. Short by design, with room for slow delivery. */
     EMAIL_CODE_TTL_SECONDS: z.coerce.number().int().min(300).max(900).default(600),
 
@@ -569,30 +548,46 @@ export const envSchema = z
 
     /** Active sessions kept per user; a login beyond it drops the oldest one. */
     SESSIONS_MAX_PER_USER: z.coerce.number().int().min(1).max(50).default(10),
+
+    /**
+     * Billing (stage 1.3). Every key here is optional: without them the checkout
+     * answers a generic 503 and no provider webhook is accepted at all, so a
+     * half-configured deployment can never sell a subscription it cannot confirm.
+     * The keys of one provider are all-or-nothing (see the superRefine below).
+     */
+    NOWPAYMENTS_API_KEY: z.string().min(8).max(256).optional(),
+    NOWPAYMENTS_IPN_SECRET: z.string().min(16).max(256).optional(),
+    NOWPAYMENTS_API_BASE: z
+      .string()
+      .regex(/^https:\/\/[a-z0-9.-]{1,253}$/u, 'must be an https origin without a path')
+      .default('https://api.nowpayments.io'),
+    PAYPAL_CLIENT_ID: z.string().min(8).max(256).optional(),
+    PAYPAL_CLIENT_SECRET: z.string().min(8).max(256).optional(),
+    PAYPAL_WEBHOOK_ID: z.string().min(8).max(256).optional(),
+    /** Only the two real PayPal hosts: an arbitrary base URL would be an SSRF hole. */
+    PAYPAL_API_BASE: z
+      .enum(['https://api-m.sandbox.paypal.com', 'https://api-m.paypal.com'])
+      .default('https://api-m.sandbox.paypal.com'),
+    /** Public origin that reaches this API, used for the provider callback. */
+    BILLING_WEBHOOK_PUBLIC_URL: z
+      .string()
+      .regex(/^https:\/\/[^\s]{4,300}$/u, 'must be an absolute https URL')
+      .optional(),
+    /** Where the hosted page returns the athlete; never taken from the client. */
+    BILLING_RETURN_URL: z
+      .string()
+      .regex(/^https:\/\/[^\s]{4,300}$/u, 'must be an absolute https URL')
+      .optional(),
   })
   .superRefine((env, ctx) => {
     if (
       env.ACCESS_TOKEN_SECRET !== undefined &&
-      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.OTP_PROOF_SECRET].includes(
-        env.ACCESS_TOKEN_SECRET,
-      )
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY].includes(env.ACCESS_TOKEN_SECRET)
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['ACCESS_TOKEN_SECRET'],
-        message: 'must differ from the audit, rate-limit and proof secrets',
-      });
-    }
-
-    if (
-      env.OTP_PROOF_SECRET !== undefined &&
-      (env.OTP_PROOF_SECRET === env.AUDIT_HMAC_KEY ||
-        env.OTP_PROOF_SECRET === env.RATE_LIMIT_HMAC_KEY)
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['OTP_PROOF_SECRET'],
-        message: 'must differ from the audit and rate-limit HMAC keys',
+        message: 'must differ from the audit and rate-limit secrets',
       });
     }
 
@@ -600,28 +595,25 @@ export const envSchema = z
     // that already signs (or encrypts) something else.
     if (
       env.EMAIL_CODE_HMAC_KEY !== undefined &&
-      [
-        env.AUDIT_HMAC_KEY,
-        env.RATE_LIMIT_HMAC_KEY,
-        env.OTP_PROOF_SECRET,
-        env.ACCESS_TOKEN_SECRET,
-      ].includes(env.EMAIL_CODE_HMAC_KEY)
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.ACCESS_TOKEN_SECRET].includes(
+        env.EMAIL_CODE_HMAC_KEY,
+      )
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['EMAIL_CODE_HMAC_KEY'],
-        message: 'must differ from the audit, rate-limit, proof and access-token secrets',
+        message: 'must differ from the audit, rate-limit and access-token secrets',
       });
     }
 
     if (
       env.TOTP_ENC_KEY !== undefined &&
-      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.OTP_PROOF_SECRET].includes(env.TOTP_ENC_KEY)
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY].includes(env.TOTP_ENC_KEY)
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['TOTP_ENC_KEY'],
-        message: 'must differ from the audit, rate-limit and proof secrets',
+        message: 'must differ from the audit and rate-limit secrets',
       });
     }
 
@@ -630,17 +622,14 @@ export const envSchema = z
     // value would then forge two kinds of token.
     if (
       env.DOCUMENT_VIEW_TOKEN_SECRET !== undefined &&
-      [
-        env.AUDIT_HMAC_KEY,
-        env.RATE_LIMIT_HMAC_KEY,
-        env.OTP_PROOF_SECRET,
-        env.ACCESS_TOKEN_SECRET,
-      ].includes(env.DOCUMENT_VIEW_TOKEN_SECRET)
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY, env.ACCESS_TOKEN_SECRET].includes(
+        env.DOCUMENT_VIEW_TOKEN_SECRET,
+      )
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['DOCUMENT_VIEW_TOKEN_SECRET'],
-        message: 'must differ from the audit, rate-limit, proof and access-token secrets',
+        message: 'must differ from the audit, rate-limit and access-token secrets',
       });
     }
 
@@ -727,6 +716,46 @@ export const envSchema = z
       });
     }
 
+    // A provider is either fully configured or absent: half of it would boot and
+    // then fail on the first checkout, which is the worst moment to find out.
+    const providerGroups = [
+      ['NOWPAYMENTS_API_KEY', 'NOWPAYMENTS_IPN_SECRET'],
+      ['PAYPAL_CLIENT_ID', 'PAYPAL_CLIENT_SECRET', 'PAYPAL_WEBHOOK_ID'],
+    ] as const;
+
+    for (const group of providerGroups) {
+      const setCount = group.filter((name) => env[name] !== undefined).length;
+
+      if (setCount > 0 && setCount < group.length) {
+        for (const name of group) {
+          if (env[name] === undefined) {
+            ctx.addIssue({
+              code: 'custom',
+              path: [name],
+              message: 'must be set together with the other keys of this provider',
+            });
+          }
+        }
+      }
+    }
+
+    // Both addresses are needed by whichever provider is configured: one to be
+    // called back on, one to return the athlete to.
+    const anyProviderConfigured =
+      env.NOWPAYMENTS_API_KEY !== undefined || env.PAYPAL_CLIENT_ID !== undefined;
+
+    if (anyProviderConfigured) {
+      for (const name of ['BILLING_WEBHOOK_PUBLIC_URL', 'BILLING_RETURN_URL'] as const) {
+        if (env[name] === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [name],
+            message: 'is required once a payment provider is configured',
+          });
+        }
+      }
+    }
+
     if (env.NODE_ENV !== 'production') {
       return;
     }
@@ -777,14 +806,6 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['RATE_LIMIT_HMAC_KEY'],
-        message: 'is required in production',
-      });
-    }
-
-    if (env.OTP_PROOF_SECRET === undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['OTP_PROOF_SECRET'],
         message: 'is required in production',
       });
     }
@@ -840,9 +861,6 @@ export const envSchema = z
       });
     }
 
-    // OTP_PROVIDER is deliberately not checked here: the phone/OTP identity
-    // flow is disabled in production (its routes answer a generic 404), so a
-    // production process configures no SMS adapter and never dials one.
     if (env.CAPTCHA_PROVIDER !== 'turnstile') {
       ctx.addIssue({
         code: 'custom',

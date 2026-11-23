@@ -265,7 +265,7 @@ describe('buildPinoParams', () => {
     const request = serializers.req({
       id: 'request-id-1234',
       method: 'POST',
-      url: '/auth/login?token=super-secret-token',
+      url: '/auth/signin?token=super-secret-token',
       ip: '203.0.113.9',
       socket: { remoteAddress: '203.0.113.9' },
       body: { password: 'p@ssw0rd' },
@@ -274,7 +274,7 @@ describe('buildPinoParams', () => {
     expect(request).toEqual({
       id: 'request-id-1234',
       method: 'POST',
-      url: '/auth/login',
+      url: '/auth/signin',
       remoteAddress: '203.0.113.9',
     });
     expect(serializers.res({ statusCode: 401 })).toEqual({ statusCode: 401 });

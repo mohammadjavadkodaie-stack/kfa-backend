@@ -7,6 +7,10 @@ import { REQUEST_ID_HEADER, requestIdMiddleware } from './common/middleware/requ
 import { createBodyParserErrorHandler } from './common/middleware/body-parser-error.middleware';
 import { createRawBodyMiddleware } from './common/middleware/raw-body.middleware';
 import {
+  BILLING_WEBHOOK_MAX_BODY_BYTES,
+  BILLING_WEBHOOK_PATH,
+} from './billing/billing-webhook.controller';
+import {
   DOCUMENT_UPLOAD_MEDIA_TYPES,
   DOCUMENT_UPLOAD_PATH,
 } from './documents/document-upload.controller';
@@ -28,8 +32,9 @@ export const CORS_MAX_AGE_SECONDS = 600;
  * HTTP hardening shared by `main.ts` and the tests.
  *
  * Middleware order is intentional:
- * request id -> helmet -> CORS -> body parsers (JSON, urlencoded, and the raw
- * parser bound to the document upload route) -> body-parser error mapper.
+ * request id -> helmet -> CORS -> the raw reader bound to the webhook route ->
+ * body parsers (JSON, urlencoded, and the raw parser bound to the document
+ * upload route) -> body-parser error mapper.
  */
 export function configureApp(app: NestExpressApplication, env: Env): void {
   app.disable('x-powered-by');
@@ -46,6 +51,19 @@ export function configureApp(app: NestExpressApplication, env: Env): void {
     maxAge: CORS_MAX_AGE_SECONDS,
     optionsSuccessStatus: 204,
   });
+
+  // The webhook route takes its body as raw JSON, so it gets its own reader in
+  // front of the JSON parser: the bytes a provider signed are kept exactly, and
+  // the request is marked so the JSON parser does not read the stream again.
+  // The cap is smaller than the global one because a notification is small.
+  app.use(
+    `/${BILLING_WEBHOOK_PATH}`,
+    createRawBodyMiddleware({
+      mediaTypes: ['application/json'],
+      limitBytes: BILLING_WEBHOOK_MAX_BODY_BYTES,
+      markBodyParsed: true,
+    }),
+  );
 
   app.useBodyParser('json', { limit: env.BODY_LIMIT_BYTES });
   app.useBodyParser('urlencoded', { extended: false, limit: env.BODY_LIMIT_BYTES });
