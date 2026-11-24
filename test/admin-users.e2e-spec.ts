@@ -22,6 +22,13 @@ const SECOND_FACTOR_REQUIRED = { ...FORBIDDEN, code: 'second_factor_required' } 
 const STEP_UP_REQUIRED = { ...FORBIDDEN, code: 'step_up_required' } as const;
 const NOT_FOUND = { statusCode: 404, message: 'Not Found' } as const;
 
+/**
+ * Both moderation routes require a plain-text reason. Sending a valid one keeps
+ * every refusal below answered by the guard or the policy under test, never by
+ * the new body gate.
+ */
+const MODERATION_BODY = { reason: 'e2e moderation test' } as const;
+
 /** The explicit limiter is out of scope here: always admit. */
 class PermissiveRateLimit {
   async consume(): Promise<RateLimitDecision> {
@@ -169,7 +176,7 @@ describe('Admin block and unblock (e2e)', () => {
     const admin = await signUp(Role.ADMIN);
     const user = await signUp(Role.USER);
 
-    const refused = await post(`/admin/users/${user.userId}/block`, admin.token);
+    const refused = await post(`/admin/users/${user.userId}/block`, admin.token, MODERATION_BODY);
 
     expect(refused.status).toBe(403);
     expect(refused.body).toEqual({ ...SECOND_FACTOR_REQUIRED, requestId: expect.any(String) });
@@ -185,7 +192,7 @@ describe('Admin block and unblock (e2e)', () => {
     // Old enough that the staff gate is open but the action is not.
     session.stepupAt = new Date(Date.now() - STEPUP_WINDOW_MS - 1_000);
 
-    const refused = await post(`/admin/users/${user.userId}/block`, admin.token);
+    const refused = await post(`/admin/users/${user.userId}/block`, admin.token, MODERATION_BODY);
 
     expect(refused.status).toBe(403);
     expect(refused.body).toEqual({ ...STEP_UP_REQUIRED, requestId: expect.any(String) });
@@ -198,7 +205,11 @@ describe('Admin block and unblock (e2e)', () => {
     const bodies: unknown[] = [];
 
     for (const account of [member, athlete]) {
-      const refused = await post(`/admin/users/${target.userId}/block`, account.token);
+      const refused = await post(
+        `/admin/users/${target.userId}/block`,
+        account.token,
+        MODERATION_BODY,
+      );
 
       expect(refused.status).toBe(403);
       bodies.push({ ...(refused.body as object), requestId: '-' });
@@ -215,7 +226,7 @@ describe('Admin block and unblock (e2e)', () => {
 
     expect(second.status).toBe(200);
 
-    const blocked = await post(`/admin/users/${user.userId}/block`, admin.token);
+    const blocked = await post(`/admin/users/${user.userId}/block`, admin.token, MODERATION_BODY);
 
     expect(blocked.status).toBe(204);
     expect((await get('/test/protected', user.token)).status).toBe(401);
@@ -242,8 +253,12 @@ describe('Admin block and unblock (e2e)', () => {
     const admin = await signUp(Role.ADMIN, true);
     const user = await signUp(Role.USER);
 
-    expect((await post(`/admin/users/${user.userId}/block`, admin.token)).status).toBe(204);
-    expect((await post(`/admin/users/${user.userId}/block`, admin.token)).status).toBe(204);
+    expect(
+      (await post(`/admin/users/${user.userId}/block`, admin.token, MODERATION_BODY)).status,
+    ).toBe(204);
+    expect(
+      (await post(`/admin/users/${user.userId}/block`, admin.token, MODERATION_BODY)).status,
+    ).toBe(204);
     expect(rows('admin.user.block', user.userId)).toHaveLength(1);
   });
 
@@ -251,9 +266,15 @@ describe('Admin block and unblock (e2e)', () => {
     const admin = await signUp(Role.ADMIN, true);
     const user = await signUp(Role.USER);
 
-    expect((await post(`/admin/users/${user.userId}/block`, admin.token)).status).toBe(204);
+    expect(
+      (await post(`/admin/users/${user.userId}/block`, admin.token, MODERATION_BODY)).status,
+    ).toBe(204);
 
-    const unblocked = await post(`/admin/users/${user.userId}/unblock`, admin.token);
+    const unblocked = await post(
+      `/admin/users/${user.userId}/unblock`,
+      admin.token,
+      MODERATION_BODY,
+    );
 
     expect(unblocked.status).toBe(204);
     expect(rows('admin.user.unblock', user.userId)).toHaveLength(1);
@@ -267,7 +288,9 @@ describe('Admin block and unblock (e2e)', () => {
     expect((await get('/test/protected', token)).status).toBe(200);
 
     // Repeating the unblock changes nothing and records nothing.
-    expect((await post(`/admin/users/${user.userId}/unblock`, admin.token)).status).toBe(204);
+    expect(
+      (await post(`/admin/users/${user.userId}/unblock`, admin.token, MODERATION_BODY)).status,
+    ).toBe(204);
     expect(rows('admin.user.unblock', user.userId)).toHaveLength(1);
   });
 
@@ -275,8 +298,16 @@ describe('Admin block and unblock (e2e)', () => {
     const admin = await signUp(Role.ADMIN, true);
     const owner = await signUp(Role.OWNER);
 
-    const ownerAttempt = await post(`/admin/users/${owner.userId}/block`, admin.token);
-    const selfAttempt = await post(`/admin/users/${admin.userId}/block`, admin.token);
+    const ownerAttempt = await post(
+      `/admin/users/${owner.userId}/block`,
+      admin.token,
+      MODERATION_BODY,
+    );
+    const selfAttempt = await post(
+      `/admin/users/${admin.userId}/block`,
+      admin.token,
+      MODERATION_BODY,
+    );
 
     expect(ownerAttempt.status).toBe(403);
     expect(selfAttempt.status).toBe(403);
@@ -295,8 +326,8 @@ describe('Admin block and unblock (e2e)', () => {
   it('answers a malformed id exactly like an unknown one', async () => {
     const admin = await signUp(Role.ADMIN, true);
 
-    const unknown = await post(`/admin/users/${randomUUID()}/block`, admin.token);
-    const malformed = await post('/admin/users/not-a-uuid/block', admin.token);
+    const unknown = await post(`/admin/users/${randomUUID()}/block`, admin.token, MODERATION_BODY);
+    const malformed = await post('/admin/users/not-a-uuid/block', admin.token, MODERATION_BODY);
 
     expect(unknown.status).toBe(404);
     expect(unknown.body).toEqual({ ...NOT_FOUND, requestId: expect.any(String) });

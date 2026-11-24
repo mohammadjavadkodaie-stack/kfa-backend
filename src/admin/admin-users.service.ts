@@ -7,6 +7,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
 import { AccessAction, type PolicySubject } from '../auth/policy/access-policy';
@@ -19,6 +20,7 @@ import {
 } from '../auth/session.repository';
 import { TOTP_REPOSITORY, type TotpRepository } from '../auth/totp/totp.repository';
 import { isUuid } from '../common/middleware/request-id.middleware';
+import { PrismaService } from '../database/prisma.service';
 import type { AdminUsersFilter } from './admin-users.dto';
 import { OWNER_NOTIFIER, type OwnerNotifier } from './owner-notifier';
 
@@ -97,6 +99,8 @@ export class AdminUsersService {
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
     @Inject(OWNER_NOTIFIER) private readonly notifier: OwnerNotifier,
+    // The moderation rows and their audit trail share one transaction.
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
@@ -197,22 +201,24 @@ export class AdminUsersService {
   }
 
   /**
-   * Block: block first, revoke second, record third.
+   * Block: revoke first, then block and record in one transaction.
    *
-   * The revocation runs even when the account was already blocked, so a retry
-   * finishes a revocation that failed earlier: a blocked account whose sessions
-   * still work is exactly the state this endpoint exists to prevent.
+   * The revocation runs before the state change and even when the account was
+   * already blocked, so a retry finishes a revocation that failed earlier: a
+   * blocked account whose sessions still work is exactly the state this
+   * endpoint exists to prevent. A revocation that fails therefore leaves the
+   * account as it was and records nothing - the action did not happen.
+   *
+   * The compare-and-set and its audit row share one transaction, so a trail
+   * that cannot be written rolls the block back. The required `reason` is part
+   * of that row and of nothing else: no response, log or message carries it.
    */
-  async block(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+  async block(actor: PolicySubject, id: string, requestId: string, reason: string): Promise<void> {
     const target = await this.permittedTarget(AccessAction.USER_BLOCK, actor, id);
-
-    const changed = await this.sessions.setStatusIf(target.id, 'ACTIVE', 'BLOCKED');
 
     try {
       await this.revokeAllSessionsOrFail(target.id);
     } catch {
-      // The block is not rolled back: a retry repeats the revocation. Nothing
-      // is recorded, so the log cannot show a block that left a session open.
       this.logger.warn(
         { requestId, action: ADMIN_AUDIT_ACTIONS.USER_BLOCK },
         'admin session revoke failed',
@@ -221,28 +227,48 @@ export class AdminUsersService {
       throw new InternalServerErrorException();
     }
 
-    // An account that was already blocked has nothing new to record.
-    if (!changed) return;
+    await this.prisma.$transaction(async (tx) => {
+      const changed = await this.sessions.setStatusIf(target.id, 'ACTIVE', 'BLOCKED', tx);
 
-    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.USER_BLOCK, actor.id, target.id, requestId, {
-      from: 'ACTIVE',
-      to: 'BLOCKED',
+      // An account that was already blocked has nothing new to record.
+      if (!changed) return;
+
+      await this.recordSuccess(
+        ADMIN_AUDIT_ACTIONS.USER_BLOCK,
+        actor.id,
+        target.id,
+        requestId,
+        { targetUserId: target.id, reason },
+        tx,
+      );
     });
   }
 
   /**
-   * Unblock: the account can sign in again, the sessions it lost stay lost.
+   * Unblock: the account can sign in again, the sessions it lost stay lost, and
+   * the transition joins its audit row in one transaction like the block does.
    */
-  async unblock(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+  async unblock(
+    actor: PolicySubject,
+    id: string,
+    requestId: string,
+    reason: string,
+  ): Promise<void> {
     const target = await this.permittedTarget(AccessAction.USER_UNBLOCK, actor, id);
 
-    const changed = await this.sessions.setStatusIf(target.id, 'BLOCKED', 'ACTIVE');
+    await this.prisma.$transaction(async (tx) => {
+      const changed = await this.sessions.setStatusIf(target.id, 'BLOCKED', 'ACTIVE', tx);
 
-    if (!changed) return;
+      if (!changed) return;
 
-    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.USER_UNBLOCK, actor.id, target.id, requestId, {
-      from: 'BLOCKED',
-      to: 'ACTIVE',
+      await this.recordSuccess(
+        ADMIN_AUDIT_ACTIONS.USER_UNBLOCK,
+        actor.id,
+        target.id,
+        requestId,
+        { targetUserId: target.id, reason },
+        tx,
+      );
     });
   }
 
@@ -508,6 +534,9 @@ export class AdminUsersService {
    * Fail closed: an action that cannot be recorded did not happen. This is the
    * rule the required OTP audits already follow, so the caller must not report
    * success after this throws.
+   *
+   * A caller that owns a transaction passes it as `tx`, so the row joins the
+   * change it describes and a failure rolls that change back with it.
    */
   async recordSuccess(
     action: AdminAuditAction,
@@ -515,17 +544,22 @@ export class AdminUsersService {
     targetId: string,
     requestId: string,
     extraMeta: Record<string, unknown> = {},
+    tx?: Prisma.TransactionClient,
   ): Promise<void> {
     try {
-      await this.audit.record({
-        action,
-        actorId,
-        targetType: AUDIT_TARGET_TYPE,
-        targetId,
-        requestId,
-        // Callers pass counts and roles at most: never a phone number or a name.
-        metadata: extraMeta,
-      });
+      await this.audit.record(
+        {
+          action,
+          actorId,
+          targetType: AUDIT_TARGET_TYPE,
+          targetId,
+          requestId,
+          // Callers pass counts, roles and moderation reasons at most: never a
+          // phone number or a name.
+          metadata: extraMeta,
+        },
+        tx,
+      );
     } catch {
       this.logger.warn({ requestId, action }, 'admin audit failed');
 

@@ -8,6 +8,7 @@ import type { PolicySubject } from '../auth/policy/access-policy';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
 import { Role } from '../auth/roles';
 import { InMemoryTotpRepository } from '../auth/totp/in-memory-totp.repository';
+import type { PrismaService } from '../database/prisma.service';
 import { AdminUsersQueryDto, toAdminUsersFilter } from './admin-users.dto';
 import { ADMIN_AUDIT_ACTIONS, AdminUsersService } from './admin-users.service';
 import { LogOwnerNotifier } from './owner-notifier';
@@ -53,6 +54,13 @@ class FailingAudit extends FakeAudit {
   }
 }
 
+/** The list path reads rows; it must never open a moderation transaction. */
+class NoTransactions {
+  $transaction(): never {
+    throw new Error('the list must not open a transaction');
+  }
+}
+
 function createHarness(audit: FakeAudit = new FakeAudit()) {
   const sessions = new InMemorySessionRepository();
   const logger = new RecordingLogger();
@@ -67,6 +75,7 @@ function createHarness(audit: FakeAudit = new FakeAudit()) {
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
     new LogOwnerNotifier(logger as unknown as PinoLogger),
+    new NoTransactions() as unknown as PrismaService,
   );
 
   return { service, sessions, audit, logger };

@@ -6,6 +6,7 @@
  * Prisma one used by the API and an in-memory fake used by the unit tests.
  */
 
+import type { Prisma } from '@prisma/client';
 import type { Role } from './roles';
 
 /** DI token so the Prisma implementation can be swapped for the fake. */
@@ -203,11 +204,15 @@ export interface SessionRepository {
   /**
    * Compare-and-set on the status: one statement with the expected value in the
    * predicate, so two callers holding the same expectation cannot both win.
+   *
+   * A caller that already owns a transaction passes it as `tx`, so the status
+   * change commits or rolls back together with the audit row that describes it.
    */
   setStatusIf(
     userId: string,
     expectedStatus: 'ACTIVE' | 'BLOCKED',
     newStatus: 'ACTIVE' | 'BLOCKED',
+    tx?: Prisma.TransactionClient,
   ): Promise<boolean>;
   /** Same contract as `setStatusIf`, for the role. */
   setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean>;

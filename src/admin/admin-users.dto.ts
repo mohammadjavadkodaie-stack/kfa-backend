@@ -1,5 +1,7 @@
+import { BadRequestException } from '@nestjs/common';
 import { Transform, Type, type TransformFnParams } from 'class-transformer';
 import { IsEmail, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { z } from 'zod';
 import { normalizeEmail } from '../auth/email/email';
 import { ALL_ROLES, type Role } from '../auth/roles';
 
@@ -10,6 +12,44 @@ export const MAX_ADMIN_USERS_PAGE_SIZE = 100;
 
 /** The only spellings of the blocked filter a request may use. */
 export const ADMIN_USERS_BLOCKED_VALUES = ['true', 'false'] as const;
+
+/** The shortest reason a moderation may carry; anything shorter is no record. */
+export const MIN_MODERATION_REASON_LENGTH = 5;
+/** The longest one the trail will hold. */
+export const MAX_MODERATION_REASON_LENGTH = 500;
+
+/** Control characters (including tab and newline) and the two tag brackets. */
+const NOT_PLAIN_TEXT = /[\u0000-\u001f\u007f<>]/;
+
+/**
+ * The body of `POST /admin/users/:id/block` and `.../unblock`.
+ *
+ * A staff moderation without a recorded reason is not a moderation, so the
+ * body is required and a `strictObject`: an undeclared key - `status`, `id`,
+ * `actorId` - is the generic 400 instead of being silently dropped. The reason
+ * is trimmed, bounded and plain text only: control characters and angle
+ * brackets are refused, because it is written to the audit trail and must not
+ * carry markup or a payload. It is never echoed in a response or a log.
+ */
+export const moderationReasonSchema = z.strictObject({
+  reason: z
+    .string()
+    .trim()
+    .min(MIN_MODERATION_REASON_LENGTH)
+    .max(MAX_MODERATION_REASON_LENGTH)
+    .refine((value) => !NOT_PLAIN_TEXT.test(value)),
+});
+
+export type ModerationReasonWire = z.infer<typeof moderationReasonSchema>;
+
+/** The wire gate: a body outside the schema is the same generic 400 as any DTO. */
+export function parseModerationReason(body: unknown): ModerationReasonWire {
+  const parsed = moderationReasonSchema.safeParse(body);
+
+  if (!parsed.success) throw new BadRequestException();
+
+  return parsed.data;
+}
 
 /**
  * The address filter is folded to its stored spelling on the way in, so a

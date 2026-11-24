@@ -11,6 +11,7 @@ import { AccessAction, type PolicySubject } from '../auth/policy/access-policy';
 import { AccessPolicyService } from '../auth/policy/access-policy.service';
 import { Role } from '../auth/roles';
 import { InMemoryTotpRepository } from '../auth/totp/in-memory-totp.repository';
+import type { PrismaService } from '../database/prisma.service';
 import { ADMIN_AUDIT_ACTIONS, AdminUsersService } from './admin-users.service';
 import { LogOwnerNotifier, type AdminGrantedNotice, type OwnerNotifier } from './owner-notifier';
 
@@ -25,6 +26,8 @@ const BLOCKED_ID = '77777777-7777-4777-8777-777777777777';
 const PHONE = '+14155550123';
 const USERNAME = 'ivan';
 const REQUEST_ID = 'req-admin';
+/** The required moderation reason; it must reach the audit row and nothing else. */
+const REASON = 'abusive messages in the forum';
 
 const OWNER: PolicySubject = { id: OWNER_ID, role: Role.OWNER };
 const ADMIN: PolicySubject = { id: ADMIN_ID, role: Role.ADMIN };
@@ -125,11 +128,41 @@ class LosingSessions extends InMemorySessionRepository {
   }
 }
 
+/**
+ * Stands in for `PrismaService`: one transaction, undone when the callback
+ * throws - the in-process equivalent of the rollback the real client performs.
+ * `client` is what the callback receives, and what the audit fake must record
+ * to prove the row joined the same transaction as the status change.
+ */
+class FakePrisma {
+  readonly client = { transaction: 'fake' };
+  transactions = 0;
+
+  constructor(private readonly sessions: InMemorySessionRepository) {}
+
+  async $transaction<T>(work: (tx: never) => Promise<T>): Promise<T> {
+    const snapshot = [...this.sessions.users].map(([id, user]) => [id, { ...user }] as const);
+
+    this.transactions += 1;
+
+    try {
+      return await work(this.client as never);
+    } catch (error) {
+      this.sessions.users.clear();
+
+      for (const [id, user] of snapshot) this.sessions.users.set(id, user);
+
+      throw error;
+    }
+  }
+}
+
 function createHarness(
   audit: FakeAudit = new FakeAudit(),
   sessions: InMemorySessionRepository = new InMemorySessionRepository(),
   notifier: OwnerNotifier = new LogOwnerNotifier(new RecordingLogger() as unknown as PinoLogger),
   totp: InMemoryTotpRepository = new InMemoryTotpRepository(),
+  prisma: FakePrisma = new FakePrisma(sessions),
 ) {
   const policy = new AccessPolicyService(
     audit as unknown as AuditService,
@@ -143,9 +176,10 @@ function createHarness(
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
     notifier,
+    prisma as unknown as PrismaService,
   );
 
-  return { service, sessions, audit, logger, notifier, totp };
+  return { service, sessions, audit, logger, notifier, totp, prisma };
 }
 
 describe('in-memory CAS', () => {
@@ -354,10 +388,11 @@ function seed(sessions: InMemorySessionRepository): void {
 function moderationHarness(
   sessions: InMemorySessionRepository = new InMemorySessionRepository(),
   audit: FakeAudit = new FakeAudit(),
+  notifier: OwnerNotifier = new RecordingNotifier(),
 ) {
   seed(sessions);
 
-  return createHarness(audit, sessions);
+  return createHarness(audit, sessions, notifier);
 }
 
 async function giveSessions(
@@ -425,11 +460,24 @@ describe('block', () => {
     for (const actor of [OWNER, ADMIN]) {
       const { service, sessions, audit } = moderationHarness();
 
-      await service.block(actor, USER_ID, REQUEST_ID);
+      await service.block(actor, USER_ID, REQUEST_ID, REASON);
 
       expect(sessions.users.get(USER_ID)?.status).toBe('BLOCKED');
       expect(audit.records.map((row) => row.action)).toEqual(['admin.user.block']);
     }
+  });
+
+  it('writes the reason into the audit row of the state-change transaction', async () => {
+    const { service, audit, prisma } = moderationHarness();
+
+    await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
+
+    expect(prisma.transactions).toBe(1);
+    expect(audit.records).toHaveLength(1);
+    // The metadata is the target id and the reason, and nothing else.
+    expect(audit.records[0]?.metadata).toEqual({ targetUserId: USER_ID, reason: REASON });
+    // The row joined the client the status change used, not a transaction of its own.
+    expect(audit.transactions).toEqual([prisma.client]);
   });
 
   it('cuts every session of the target', async () => {
@@ -437,15 +485,15 @@ describe('block', () => {
 
     await giveSessions(sessions, USER_ID, 2);
 
-    await service.block(ADMIN, USER_ID, REQUEST_ID);
+    await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
 
     expect(await sessions.listActiveSessions(USER_ID, new Date())).toEqual([]);
   });
 
-  it('refuses an admin blocking the owner', async () => {
+  it('refuses an admin blocking the owner even with a valid reason', async () => {
     const { service, sessions, audit } = moderationHarness();
 
-    const refused = await refusal(() => service.block(ADMIN, OWNER_ID, REQUEST_ID));
+    const refused = await refusal(() => service.block(ADMIN, OWNER_ID, REQUEST_ID, REASON));
 
     expect(refused.status).toBe(403);
     expect(refused.body).toEqual({ statusCode: 403, message: 'Forbidden' });
@@ -456,14 +504,16 @@ describe('block', () => {
   it('refuses blocking oneself', async () => {
     const { service } = moderationHarness();
 
-    expect((await refusal(() => service.block(ADMIN, ADMIN_ID, REQUEST_ID))).status).toBe(403);
+    expect((await refusal(() => service.block(ADMIN, ADMIN_ID, REQUEST_ID, REASON))).status).toBe(
+      403,
+    );
   });
 
   it('answers a malformed id exactly like an unknown one', async () => {
     const { service } = moderationHarness();
 
-    const unknown = await refusal(() => service.block(ADMIN, UNKNOWN_ID, REQUEST_ID));
-    const malformed = await refusal(() => service.block(ADMIN, 'not-a-uuid', REQUEST_ID));
+    const unknown = await refusal(() => service.block(ADMIN, UNKNOWN_ID, REQUEST_ID, REASON));
+    const malformed = await refusal(() => service.block(ADMIN, 'not-a-uuid', REQUEST_ID, REASON));
 
     expect(unknown.status).toBe(404);
     expect(unknown).toEqual(malformed);
@@ -473,38 +523,54 @@ describe('block', () => {
     const sessions = new RecordingSessions();
     const { service, audit } = moderationHarness(sessions);
 
-    await service.block(ADMIN, USER_ID, REQUEST_ID);
-    await service.block(ADMIN, USER_ID, REQUEST_ID);
+    await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
+    await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
 
     expect(sessions.users.get(USER_ID)?.status).toBe('BLOCKED');
     expect(sessions.revokedAll).toHaveLength(2);
     expect(audit.records).toHaveLength(1);
   });
 
-  it('reports a failed revocation as a generic 500 without a success row', async () => {
+  it('reports a failed revocation as a generic 500 without changing anything', async () => {
     const sessions = new FailingSessions();
     const { service, audit } = moderationHarness(sessions);
 
-    const failed = await refusal(() => service.block(ADMIN, USER_ID, REQUEST_ID));
+    const failed = await refusal(() => service.block(ADMIN, USER_ID, REQUEST_ID, REASON));
 
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ statusCode: 500, message: 'Internal Server Error' });
-    // No rollback: the block stands and the next attempt finishes the revocation.
-    expect(sessions.users.get(USER_ID)?.status).toBe('BLOCKED');
+    // The revocation comes first: a block whose sessions were not cut is no
+    // block at all, so nothing changed and nothing was recorded.
+    expect(sessions.users.get(USER_ID)?.status).toBe('ACTIVE');
     expect(audit.records).toHaveLength(0);
   });
 
-  it('does not report success when the audit row cannot be written', async () => {
-    const { service, audit } = moderationHarness(
+  it('does not persist the block when the audit row cannot be written', async () => {
+    const { service, sessions, audit } = moderationHarness(
       new InMemorySessionRepository(),
       new FailingAudit(),
     );
 
-    await expect(service.block(ADMIN, USER_ID, REQUEST_ID)).rejects.toBeInstanceOf(
+    await expect(service.block(ADMIN, USER_ID, REQUEST_ID, REASON)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
 
     expect(audit.records).toHaveLength(1);
+    // The failed row rolled the status change back with it.
+    expect(sessions.users.get(USER_ID)?.status).toBe('ACTIVE');
+  });
+
+  it('keeps the reason out of the logs and the notification payload', async () => {
+    const notifier = new RecordingNotifier();
+    const { service, logger } = moderationHarness(undefined, undefined, notifier);
+
+    await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
+
+    expect(JSON.stringify(logger.warns) ?? '').not.toContain(REASON);
+    expect(JSON.stringify(logger.infos) ?? '').not.toContain(REASON);
+    // A block notifies nobody; if that ever changes, the notice carries ids only.
+    expect(notifier.notices).toHaveLength(0);
+    expect(JSON.stringify(notifier.notices)).not.toContain(REASON);
   });
 });
 
@@ -513,8 +579,8 @@ describe('unblock', () => {
     for (const actor of [OWNER, ADMIN]) {
       const { service, sessions, audit } = moderationHarness();
 
-      await service.block(ADMIN, USER_ID, REQUEST_ID);
-      await service.unblock(actor, USER_ID, REQUEST_ID);
+      await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
+      await service.unblock(actor, USER_ID, REQUEST_ID, REASON);
 
       expect(sessions.users.get(USER_ID)?.status).toBe('ACTIVE');
       expect(audit.records.map((row) => row.action)).toEqual([
@@ -524,12 +590,26 @@ describe('unblock', () => {
     }
   });
 
+  it('writes the reason into the audit row of the state-change transaction', async () => {
+    const { service, audit, prisma } = moderationHarness();
+
+    await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
+    await service.unblock(ADMIN, USER_ID, REQUEST_ID, 'appeal accepted');
+
+    expect(prisma.transactions).toBe(2);
+    expect(audit.records[1]?.metadata).toEqual({
+      targetUserId: USER_ID,
+      reason: 'appeal accepted',
+    });
+    expect(audit.transactions).toEqual([prisma.client, prisma.client]);
+  });
+
   it('does not restore the sessions that were cut', async () => {
     const { service, sessions } = moderationHarness();
 
     await giveSessions(sessions, USER_ID, 1);
-    await service.block(ADMIN, USER_ID, REQUEST_ID);
-    await service.unblock(ADMIN, USER_ID, REQUEST_ID);
+    await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
+    await service.unblock(ADMIN, USER_ID, REQUEST_ID, REASON);
 
     expect(await sessions.listActiveSessions(USER_ID, new Date())).toEqual([]);
   });
@@ -537,21 +617,44 @@ describe('unblock', () => {
   it('refuses unblocking the owner and oneself', async () => {
     const { service } = moderationHarness();
 
-    expect((await refusal(() => service.unblock(ADMIN, OWNER_ID, REQUEST_ID))).status).toBe(403);
-    expect((await refusal(() => service.unblock(ADMIN, ADMIN_ID, REQUEST_ID))).status).toBe(403);
+    expect((await refusal(() => service.unblock(ADMIN, OWNER_ID, REQUEST_ID, REASON))).status).toBe(
+      403,
+    );
+    expect((await refusal(() => service.unblock(ADMIN, ADMIN_ID, REQUEST_ID, REASON))).status).toBe(
+      403,
+    );
   });
 
   it('records the transition once', async () => {
     const { service, audit } = moderationHarness();
 
-    await service.block(ADMIN, USER_ID, REQUEST_ID);
-    await service.unblock(ADMIN, USER_ID, REQUEST_ID);
-    await service.unblock(ADMIN, USER_ID, REQUEST_ID);
+    await service.block(ADMIN, USER_ID, REQUEST_ID, REASON);
+    await service.unblock(ADMIN, USER_ID, REQUEST_ID, REASON);
+    await service.unblock(ADMIN, USER_ID, REQUEST_ID, REASON);
 
     expect(audit.records.map((row) => row.action)).toEqual([
       'admin.user.block',
       'admin.user.unblock',
     ]);
+  });
+
+  it('does not persist the unblock when the audit row cannot be written', async () => {
+    const sessions = new InMemorySessionRepository();
+    const { service, audit } = moderationHarness(sessions, new FailingAudit());
+
+    sessions.seedUser({
+      id: BLOCKED_ID,
+      phone: '+14155550104',
+      username: 'pavel',
+      status: 'BLOCKED',
+    });
+
+    await expect(service.unblock(ADMIN, BLOCKED_ID, REQUEST_ID, REASON)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+
+    expect(audit.records).toHaveLength(1);
+    expect(sessions.users.get(BLOCKED_ID)?.status).toBe('BLOCKED');
   });
 });
 
