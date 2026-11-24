@@ -12,6 +12,7 @@ import { RolesGuard } from './auth/guards/roles.guard';
 import { StaffGateGuard } from './auth/totp/staff-gate.guard';
 import { StepUpGuard } from './auth/totp/step-up.guard';
 import { BillingModule } from './billing/billing.module';
+import { CompanyModule } from './company/company.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppConfigModule, ENV } from './config/config.module';
 import type { Env } from './config/env';
@@ -43,6 +44,7 @@ import { StaffReviewModule } from './staff-review/staff-review.module';
     StaffReviewModule,
     StaffPhotoReviewModule,
     RankingModule,
+    CompanyModule,
     BillingModule,
     HealthModule,
   ],

@@ -543,3 +543,68 @@ model AthleteRanking {
   @@index([totalPoints(sort: Desc)])
   @@map("athlete_rankings")
 }
+
+enum CompanyKind {
+  ORGANIZER
+  SPONSOR
+  PARTNER
+  OTHER
+}
+
+/// One staff-maintained company profile: the "identity card" of an organizer,
+/// sponsor, partner or other organization.
+///
+/// The columns are split in two on purpose:
+///
+/// - the public face - `slug`, `displayName`, `country`, `kind`, `description`
+///   and `websiteUrl` - is everything a later public read may ever show;
+/// - the legal identity from `legalName` down is staff-only, because a sole
+///   proprietorship's legal name is a natural person's name. No public query
+///   selects these columns, and this route set is `@Roles(ADMIN, OWNER)` only.
+///
+/// `slug` carries a plain unique index, so uniqueness also covers soft-deleted
+/// rows: a retired slug can never be reused to impersonate a company.
+/// `deletedAt` is the only deletion this table has; the row and its trail stay.
+///
+/// Format rules (slug, country, https URL, MERSIS, NACE) are CHECK constraints
+/// in prisma/migrations/20261128120000_company_profile/migration.sql, so a
+/// future caller that skips the DTO still cannot store a malformed value.
+model Company {
+  id                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Lowercase `[a-z0-9-]`, 3-60 characters; immutable after creation.
+  slug                String      @unique @db.VarChar(60)
+  displayName         String      @map("display_name") @db.VarChar(120)
+  /// ISO 3166-1 alpha-2, uppercase.
+  country             String      @db.VarChar(2)
+  kind                CompanyKind
+  /// Public activity summary. Plain text only.
+  description         String?     @db.VarChar(2000)
+  /// https only, no IP literal and no local/private host; bounded at 300.
+  websiteUrl          String?     @map("website_url") @db.VarChar(300)
+
+  // Staff-only from here down: never selected by a public read.
+  legalName           String      @map("legal_name") @db.VarChar(200)
+  tradeRegistryNumber String?     @map("trade_registry_number") @db.VarChar(20)
+  mersisNumber        String?     @map("mersis_number") @db.VarChar(16)
+  taxNumber           String?     @map("tax_number") @db.VarChar(20)
+  taxOffice           String?     @map("tax_office") @db.VarChar(120)
+  chamberName         String?     @map("chamber_name") @db.VarChar(200)
+  chamberRegisteredAt DateTime?   @map("chamber_registered_at") @db.Date
+  /// NACE code as `12.34.56`.
+  naceCode            String?     @map("nace_code") @db.VarChar(8)
+  address             String?     @db.VarChar(500)
+  contactEmail        String?     @map("contact_email") @db.VarChar(254)
+
+  /// Attribution only, like `AuditLog.actorId`: deliberately no foreign key, so
+  /// a staff account change can never cascade into a company row.
+  createdById         String      @map("created_by_id") @db.Uuid
+  updatedById         String      @map("updated_by_id") @db.Uuid
+  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Soft delete: set once, never cleared. NULL means the company is live.
+  deletedAt           DateTime?   @map("deleted_at") @db.Timestamptz(6)
+
+  /// The staff list is newest first and pages by (createdAt, id).
+  @@index([createdAt(sort: Desc), id(sort: Desc)])
+  @@map("companies")
+}

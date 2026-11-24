@@ -136,3 +136,16 @@ BEGIN
 END
 $$;
 
+-- companies (stage 9a): read, add and correct only. A company is never removed
+-- physically - a delete stamps `deleted_at`, and the unique slug index must keep
+-- covering that retired row - so the runtime role gets no DELETE here. The
+-- migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.companies') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.companies FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.companies TO kfa_app';
+    END IF;
+END
+$$;
+
