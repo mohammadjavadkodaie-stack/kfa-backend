@@ -6,6 +6,7 @@
  * API and an in-memory fake used by the unit tests.
  */
 
+import type { Prisma } from '@prisma/client';
 /** DI token so the Prisma implementation can be swapped for the fake. */
 export const TOTP_REPOSITORY = Symbol('TOTP_REPOSITORY');
 
@@ -58,6 +59,9 @@ export interface TotpRepository {
    * Removes the credential and every recovery code of one account together, for
    * the owner-initiated reset. False means the account had no credential, which
    * is the retry case and not a failure.
+   *
+   * A caller that already owns a transaction passes it as `tx`, so the removal
+   * joins the audit row that describes it instead of committing on its own.
    */
-  deleteCredential(userId: string): Promise<boolean>;
+  deleteCredential(userId: string, tx?: Prisma.TransactionClient): Promise<boolean>;
 }

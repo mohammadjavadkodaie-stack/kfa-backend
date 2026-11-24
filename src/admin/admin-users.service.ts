@@ -273,26 +273,29 @@ export class AdminUsersService {
   }
 
   /**
-   * Grant admin: role first, revoke second, notify third, record last.
+   * Grant admin: revoke first, then promote and record in one transaction.
    *
-   * The order carries the guarantees. The new role only applies to a session
-   * created after the revocation, and the row is written after the delivery
-   * attempt so its metadata can state whether the owner was actually told.
+   * The order carries the guarantees. The revocation runs before the role change
+   * and even for a target that is already an admin, so a retry finishes a
+   * revocation that failed earlier: a promoted account whose old sessions work
+   * is the state this endpoint exists to prevent. A revocation that fails
+   * therefore leaves the role as it was and records nothing.
+   *
+   * The compare-and-set and its audit row share one transaction, so a trail that
+   * cannot be written rolls the promotion back. The owner is told only after
+   * that transaction commits, so a rolled-back grant is never announced.
    *
    * A retry after an interrupted grant finds the target already an admin: it
-   * still revokes (a promoted account whose old sessions work is the state this
-   * endpoint exists to prevent) and records nothing, exactly like a repeated
-   * block.
+   * still revokes and records nothing, exactly like a repeated block.
    */
   async grantAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
     const target = await this.grantTarget(actor, id);
-    const granted = await this.promote(target);
 
     try {
       await this.revokeAllSessionsOrFail(target.id);
     } catch {
-      // Same rule as block: the role change is not rolled back, nothing is
-      // recorded, and the next attempt finishes the revocation.
+      // Same rule as block: the role change has not run yet, so nothing changed
+      // and nothing was recorded; the next attempt retries both steps.
       this.logger.warn(
         { requestId, action: ADMIN_AUDIT_ACTIONS.ADMIN_GRANT },
         'admin session revoke failed',
@@ -301,40 +304,57 @@ export class AdminUsersService {
       throw new InternalServerErrorException();
     }
 
+    const granted = await this.prisma.$transaction(async (tx) => {
+      if (!(await this.promote(target, tx))) return false;
+
+      await this.recordSuccess(
+        ADMIN_AUDIT_ACTIONS.ADMIN_GRANT,
+        actor.id,
+        target.id,
+        requestId,
+        {
+          from: target.role,
+          to: Role.ADMIN,
+          // The notice is sent once this row commits; a delivery failure is
+          // logged and leaves the grant in place.
+          notified: true,
+        },
+        tx,
+      );
+
+      return true;
+    });
+
+    // Never for a rolled-back change: there is no privilege to announce.
     if (!granted) return;
 
-    const notified = await this.notifyOwner(actor.id, target.id, requestId);
-
-    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.ADMIN_GRANT, actor.id, target.id, requestId, {
-      from: target.role,
-      to: Role.ADMIN,
-      notified,
-    });
+    await this.notifyOwner(actor.id, target.id, requestId);
   }
 
   /**
-   * Revoke admin: role first, revoke second, record last.
+   * Revoke admin: revoke first, then demote and record in one transaction.
    *
    * Only an account that is an admin right now can be demoted. An id that owns
    * no row, an id that is not a uuid and an account holding any other role all
    * leave through the same generic 403, so the endpoint never states which ids
    * exist or what they hold.
    *
-   * A lost compare-and-set means a parallel revoke demoted the target first:
-   * the revocation still runs, because a session created while the account was
-   * staff is what this endpoint exists to cut, and nothing is recorded for it.
-   * The second factor is a separate permission and is left untouched: the
-   * demotion changes the role and nothing else.
+   * The revocation comes before the demotion, so a failed revocation changes
+   * nothing. The compare-and-set and its audit row share one transaction: a
+   * trail that cannot be written rolls the demotion back. A lost compare-and-set
+   * means a parallel revoke demoted the target first; the revocation was still
+   * ours to finish, and nothing is recorded for it. The second factor is a
+   * separate permission and is left untouched: the demotion changes the role and
+   * nothing else.
    */
   async revokeAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
     const target = await this.adminOnlyTarget(actor, id, AccessAction.ADMIN_REVOKE);
-    const demoted = await this.demote(target);
 
     try {
       await this.revokeAllSessionsOrFail(target.id);
     } catch {
-      // Same rule as the grant: no rollback, nothing recorded, and a target
-      // that is still an admin can be demoted again on the next attempt.
+      // Same rule as block: the demotion has not run yet, so nothing changed and
+      // nothing was recorded; the next attempt retries both steps.
       this.logger.warn(
         { requestId, action: ADMIN_AUDIT_ACTIONS.ADMIN_REVOKE },
         'admin session revoke failed',
@@ -343,32 +363,40 @@ export class AdminUsersService {
       throw new InternalServerErrorException();
     }
 
-    if (!demoted) return;
+    await this.prisma.$transaction(async (tx) => {
+      if (!(await this.demote(target, tx))) return;
 
-    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.ADMIN_REVOKE, actor.id, target.id, requestId, {
-      from: Role.ADMIN,
-      to: Role.USER,
+      await this.recordSuccess(
+        ADMIN_AUDIT_ACTIONS.ADMIN_REVOKE,
+        actor.id,
+        target.id,
+        requestId,
+        { from: Role.ADMIN, to: Role.USER },
+        tx,
+      );
     });
   }
 
   /**
-   * Second-factor reset: delete first, revoke second, record third.
+   * Second-factor reset: revoke first, then delete and record in one
+   * transaction.
    *
-   * The credential and its recovery codes go in one repository transaction. The
-   * revocation runs even when nothing was left to delete, so a retry after a
-   * failed revocation finishes it; only a call that actually removed something
-   * is recorded, exactly like a repeated block. The role stays ADMIN: the staff
-   * gate keeps the account on the second-factor routes until it enrolls again.
+   * The credential, its recovery codes and the audit row share one transaction,
+   * so a trail that cannot be written restores the factor. The revocation runs
+   * before that removal and even when nothing was left to delete, so a retry
+   * after a failed revocation finishes it; a failed revocation therefore changes
+   * nothing. Only a call that actually removed something is recorded, exactly
+   * like a repeated block. The role stays ADMIN: the staff gate keeps the account
+   * on the second-factor routes until it enrolls again.
    */
   async resetTotp(actor: PolicySubject, id: string, requestId: string): Promise<void> {
     const target = await this.adminOnlyTarget(actor, id, AccessAction.TOTP_RESET);
-    const removed = await this.totp.deleteCredential(target.id);
 
     try {
       await this.revokeAllSessionsOrFail(target.id);
     } catch {
-      // Same rule as the other actions: no rollback, nothing recorded, and the
-      // next attempt still revokes what the failed one missed.
+      // Same rule as the other actions: nothing was removed and nothing was
+      // recorded; the next attempt retries both steps.
       this.logger.warn(
         { requestId, action: ADMIN_AUDIT_ACTIONS.TOTP_RESET },
         'admin session revoke failed',
@@ -377,10 +405,17 @@ export class AdminUsersService {
       throw new InternalServerErrorException();
     }
 
-    if (!removed) return;
+    await this.prisma.$transaction(async (tx) => {
+      if (!(await this.totp.deleteCredential(target.id, tx))) return;
 
-    await this.recordSuccess(ADMIN_AUDIT_ACTIONS.TOTP_RESET, actor.id, target.id, requestId, {
-      role: Role.ADMIN,
+      await this.recordSuccess(
+        ADMIN_AUDIT_ACTIONS.TOTP_RESET,
+        actor.id,
+        target.id,
+        requestId,
+        { role: Role.ADMIN },
+        tx,
+      );
     });
   }
 
@@ -439,11 +474,14 @@ export class AdminUsersService {
    * The compare-and-set owns the transition and the stored role is the only
    * expectation accepted, so a request body cannot choose the starting point.
    * False means the target is already an admin and there is nothing to record.
+   *
+   * A caller-owned `tx` makes the role change join that transaction, so it
+   * commits or rolls back with the audit row that describes it.
    */
-  private async promote(target: AdminTarget): Promise<boolean> {
+  private async promote(target: AdminTarget, tx?: Prisma.TransactionClient): Promise<boolean> {
     if (target.role === Role.ADMIN) return false;
 
-    if (await this.sessions.setRoleIf(target.id, target.role, Role.ADMIN)) return true;
+    if (await this.sessions.setRoleIf(target.id, target.role, Role.ADMIN, tx)) return true;
 
     // Lost a race: only a concurrent grant of the same privilege is acceptable.
     const current = await this.loadTarget(target.id);
@@ -487,9 +525,12 @@ export class AdminUsersService {
    * The demotion itself: one compare-and-set from the stored role, so a request
    * body cannot choose the starting point and two revokes cannot both count as
    * the change. False means another revoke got there first.
+   *
+   * A caller-owned `tx` makes the role change join that transaction, so it
+   * commits or rolls back with the audit row that describes it.
    */
-  private async demote(target: AdminTarget): Promise<boolean> {
-    if (await this.sessions.setRoleIf(target.id, Role.ADMIN, Role.USER)) return true;
+  private async demote(target: AdminTarget, tx?: Prisma.TransactionClient): Promise<boolean> {
+    if (await this.sessions.setRoleIf(target.id, Role.ADMIN, Role.USER, tx)) return true;
 
     // Lost the race: a demoted target is the only acceptable outcome here.
     const current = await this.loadTarget(target.id);
@@ -500,8 +541,8 @@ export class AdminUsersService {
   }
 
   /**
-   * Best effort by contract: the grant already happened, so a failed delivery is
-   * logged without ids and reported in the audit metadata, never undone.
+   * Best effort by contract: the grant already committed, so a failed delivery
+   * is logged without ids and never undoes the privilege.
    */
   private async notifyOwner(
     actorId: string,

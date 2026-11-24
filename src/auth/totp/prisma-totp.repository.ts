@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import type { TotpCredentialRecord, TotpRepository } from './totp.repository';
 
@@ -146,18 +147,25 @@ export class PrismaTotpRepository implements TotpRepository {
   /**
    * Both deletes commit together. Codes go first because the credential row may
    * be referenced by them; only that row says whether anything was removed.
+   *
+   * A caller-owned `tx` runs both statements on that client, so the reset joins
+   * the audit row that describes it instead of opening a second transaction.
    */
-  async deleteCredential(userId: string): Promise<boolean> {
-    return this.prisma.$transaction(async (tx) => {
-      await tx.recoveryCode.deleteMany({ where: { userId } });
+  async deleteCredential(userId: string, tx?: Prisma.TransactionClient): Promise<boolean> {
+    if (tx !== undefined) return this.#remove(userId, tx);
 
-      const rows = await tx.$queryRaw<UpdatedRow[]>`
-        DELETE FROM totp_credentials
-         WHERE user_id = ${userId}::uuid
-        RETURNING id
-      `;
+    return this.prisma.$transaction((client) => this.#remove(userId, client));
+  }
 
-      return rows.length === 1;
-    });
+  async #remove(userId: string, client: Prisma.TransactionClient): Promise<boolean> {
+    await client.recoveryCode.deleteMany({ where: { userId } });
+
+    const rows = await client.$queryRaw<UpdatedRow[]>`
+      DELETE FROM totp_credentials
+       WHERE user_id = ${userId}::uuid
+      RETURNING id
+    `;
+
+    return rows.length === 1;
   }
 }

@@ -4,6 +4,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { PinoLogger } from 'nestjs-pino';
+import type { Prisma } from '@prisma/client';
 import { FakeAudit, type AuditRecord } from '../../test/helpers/auth-service-harness';
 import type { AuditService } from '../audit/audit.service';
 import { InMemorySessionRepository } from '../auth/in-memory-session.repository';
@@ -132,16 +133,24 @@ class LosingSessions extends InMemorySessionRepository {
  * Stands in for `PrismaService`: one transaction, undone when the callback
  * throws - the in-process equivalent of the rollback the real client performs.
  * `client` is what the callback receives, and what the audit fake must record
- * to prove the row joined the same transaction as the status change.
+ * to prove the row joined the same transaction as the change. The second
+ * factor is snapshotted too, so a rolled-back removal is restored like a row.
  */
 class FakePrisma {
   readonly client = { transaction: 'fake' };
   transactions = 0;
 
-  constructor(private readonly sessions: InMemorySessionRepository) {}
+  constructor(
+    private readonly sessions: InMemorySessionRepository,
+    private readonly totp: InMemoryTotpRepository = new InMemoryTotpRepository(),
+  ) {}
 
   async $transaction<T>(work: (tx: never) => Promise<T>): Promise<T> {
-    const snapshot = [...this.sessions.users].map(([id, user]) => [id, { ...user }] as const);
+    const users = [...this.sessions.users].map(([id, user]) => [id, { ...user }] as const);
+    const credentials = [...this.totp.credentials].map(([id, row]) => [id, { ...row }] as const);
+    const codes = [...this.totp.recoveryCodes].map(
+      ([id, rows]) => [id, rows.map((row) => ({ ...row }))] as const,
+    );
 
     this.transactions += 1;
 
@@ -150,10 +159,47 @@ class FakePrisma {
     } catch (error) {
       this.sessions.users.clear();
 
-      for (const [id, user] of snapshot) this.sessions.users.set(id, user);
+      for (const [id, user] of users) this.sessions.users.set(id, user);
+
+      this.totp.credentials.clear();
+
+      for (const [id, row] of credentials) this.totp.credentials.set(id, row);
+
+      this.totp.recoveryCodes.clear();
+
+      for (const [id, rows] of codes) this.totp.recoveryCodes.set(id, rows);
 
       throw error;
     }
+  }
+}
+
+/**
+ * Proves the service passes the caller-owned transaction to the repository
+ * call, so the change itself joins the transaction the audit row commits with.
+ */
+class TransactionSessions extends InMemorySessionRepository {
+  readonly txArgs: (Prisma.TransactionClient | undefined)[] = [];
+
+  override async setRoleIf(
+    userId: string,
+    expectedRole: Role,
+    newRole: Role,
+    tx?: Prisma.TransactionClient,
+  ): Promise<boolean> {
+    this.txArgs.push(tx);
+
+    return super.setRoleIf(userId, expectedRole, newRole);
+  }
+}
+
+class TransactionTotp extends InMemoryTotpRepository {
+  readonly txArgs: (Prisma.TransactionClient | undefined)[] = [];
+
+  override async deleteCredential(userId: string, tx?: Prisma.TransactionClient): Promise<boolean> {
+    this.txArgs.push(tx);
+
+    return super.deleteCredential(userId);
   }
 }
 
@@ -162,7 +208,7 @@ function createHarness(
   sessions: InMemorySessionRepository = new InMemorySessionRepository(),
   notifier: OwnerNotifier = new LogOwnerNotifier(new RecordingLogger() as unknown as PinoLogger),
   totp: InMemoryTotpRepository = new InMemoryTotpRepository(),
-  prisma: FakePrisma = new FakePrisma(sessions),
+  prisma: FakePrisma = new FakePrisma(sessions, totp),
 ) {
   const policy = new AccessPolicyService(
     audit as unknown as AuditService,
@@ -443,6 +489,7 @@ function grantHarness(
 function revokeHarness(
   sessions: InMemorySessionRepository = new InMemorySessionRepository(),
   audit: FakeAudit = new FakeAudit(),
+  notifier: OwnerNotifier = new RecordingNotifier(),
 ) {
   seed(sessions);
   sessions.seedUser({
@@ -452,7 +499,7 @@ function revokeHarness(
     role: Role.ADMIN,
   });
 
-  return createHarness(audit, sessions);
+  return createHarness(audit, sessions, notifier);
 }
 
 describe('block', () => {
@@ -675,7 +722,7 @@ describe('grant admin', () => {
   });
 
   it('refuses an admin actor', async () => {
-    const { service, sessions, audit } = grantHarness();
+    const { service, sessions, audit, prisma } = grantHarness();
 
     const refused = await refusal(() => service.grantAdmin(ADMIN, USER_ID, REQUEST_ID));
 
@@ -683,6 +730,8 @@ describe('grant admin', () => {
     expect(refused.body).toEqual({ statusCode: 403, message: 'Forbidden' });
     expect(sessions.users.get(USER_ID)?.role).toBe(Role.USER);
     expect(audit.records).toHaveLength(0);
+    // A refusal happens before any side effect, so no transaction is opened.
+    expect(prisma.transactions).toBe(0);
   });
 
   it('refuses the owner as a target', async () => {
@@ -757,7 +806,7 @@ describe('grant admin', () => {
     expect(JSON.stringify(notice)).not.toContain('+14155550102');
   });
 
-  it('keeps the grant when the notification fails', async () => {
+  it('keeps the committed grant when the notification fails afterwards', async () => {
     const notifier = new FailingNotifier();
     const { service, sessions, audit, logger } = grantHarness(
       new InMemorySessionRepository(),
@@ -769,31 +818,65 @@ describe('grant admin', () => {
 
     expect(notifier.calls).toBe(1);
     expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
+    // The row is written before the notice goes out, so it states that the
+    // committed grant carries one; a failed delivery is logged, not rewritten.
     expect(audit.records[0]?.metadata).toEqual({
       from: Role.USER,
       to: Role.ADMIN,
-      notified: false,
+      notified: true,
     });
     expect(logger.warns.map((call) => call.message)).toEqual(['owner notify failed']);
   });
 
+  it('writes the role change and its audit row in one transaction', async () => {
+    const sessions = new TransactionSessions();
+    const { service, audit, prisma } = grantHarness(sessions);
+
+    await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
+
+    expect(prisma.transactions).toBe(1);
+    // The change itself joined the transaction: the repository saw its client.
+    expect(sessions.txArgs).toEqual([prisma.client]);
+    // And so did the row, instead of opening a transaction of its own.
+    expect(audit.transactions).toEqual([prisma.client]);
+  });
+
+  it('writes no contact data into the audit row', async () => {
+    const { service, audit } = grantHarness();
+
+    await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
+
+    const recorded = JSON.stringify(audit.records[0]?.metadata) ?? '';
+
+    expect(audit.records[0]?.metadata).toEqual({
+      from: Role.USER,
+      to: Role.ADMIN,
+      notified: true,
+    });
+    expect(recorded).not.toContain(USERNAME);
+    expect(recorded).not.toContain(PHONE);
+  });
+
   it('reports a failed revocation as a generic 500 without a success row', async () => {
+    const notifier = new RecordingNotifier();
     const { service, sessions, audit } = grantHarness(
       new FailingSessions(),
       new FakeAudit(),
-      new RecordingNotifier(),
+      notifier,
     );
 
     const failed = await refusal(() => service.grantAdmin(OWNER, USER_ID, REQUEST_ID));
 
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ statusCode: 500, message: 'Internal Server Error' });
-    // No rollback: the role change stands and the next attempt finishes the job.
-    expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
+    // The revocation comes first: the role never changed, nothing was recorded
+    // and the owner was not told.
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.USER);
     expect(audit.records).toHaveLength(0);
+    expect(notifier.notices).toHaveLength(0);
   });
 
-  it('finishes an interrupted grant on the next attempt', async () => {
+  it('finishes the grant on the next attempt after a failed revocation', async () => {
     const notifier = new RecordingNotifier();
     const sessions = new FlakySessions();
     const { service, audit } = grantHarness(sessions, new FakeAudit(), notifier);
@@ -803,28 +886,38 @@ describe('grant admin', () => {
       InternalServerErrorException,
     );
 
+    // The interrupted attempt changed nothing and announced nothing.
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.USER);
+    expect(audit.records).toHaveLength(0);
+    expect(notifier.notices).toHaveLength(0);
+
     await service.grantAdmin(OWNER, USER_ID, REQUEST_ID);
 
     expect(sessions.revocations).toBe(2);
     expect(await sessions.listActiveSessions(USER_ID, new Date())).toEqual([]);
-    // The interrupted attempt recorded nothing, the retry has nothing new to add.
-    expect(audit.records).toHaveLength(0);
-    expect(notifier.notices).toHaveLength(0);
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
+    expect(audit.records).toHaveLength(1);
+    expect(notifier.notices).toHaveLength(1);
   });
 
-  it('does not report success when the audit row cannot be written', async () => {
-    const { service, sessions, audit } = grantHarness(
+  it('does not persist the grant when the audit row cannot be written', async () => {
+    const notifier = new RecordingNotifier();
+    const { service, sessions, audit, prisma } = grantHarness(
       new InMemorySessionRepository(),
       new FailingAudit(),
-      new RecordingNotifier(),
+      notifier,
     );
 
     await expect(service.grantAdmin(OWNER, USER_ID, REQUEST_ID)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
 
-    expect(sessions.users.get(USER_ID)?.role).toBe(Role.ADMIN);
+    // The failed row rolled the role change back with it, and a rolled-back
+    // grant announces nothing.
+    expect(sessions.users.get(USER_ID)?.role).toBe(Role.USER);
     expect(audit.records).toHaveLength(1);
+    expect(notifier.notices).toHaveLength(0);
+    expect(prisma.transactions).toBe(1);
   });
 });
 
@@ -837,6 +930,9 @@ describe('revoke admin', () => {
     expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
     expect(audit.records.map((row) => row.action)).toEqual([ADMIN_AUDIT_ACTIONS.ADMIN_REVOKE]);
     expect(audit.records[0]?.metadata).toEqual({ from: Role.ADMIN, to: Role.USER });
+    // The row carries the two roles and nothing a client sent.
+    expect(JSON.stringify(audit.records[0]?.metadata)).not.toContain(USERNAME);
+    expect(JSON.stringify(audit.records[0]?.metadata)).not.toContain(PHONE);
   });
 
   it('leaves the rest of the account alone', async () => {
@@ -906,29 +1002,48 @@ describe('revoke admin', () => {
   });
 
   it('reports a failed revocation as a generic 500 without a success row', async () => {
-    const { service, sessions, audit } = revokeHarness(new FailingSessions());
+    const notifier = new RecordingNotifier();
+    const { service, sessions, audit } = revokeHarness(new FailingSessions(), undefined, notifier);
 
     const failed = await refusal(() => service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID));
 
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ statusCode: 500, message: 'Internal Server Error' });
-    // No rollback: the demotion stands and nothing claims a finished revoke.
-    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
+    // The revocation comes first: the role never changed, nothing was recorded
+    // and the target still holds staff duties.
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.ADMIN);
     expect(audit.records).toHaveLength(0);
+    expect(notifier.notices).toHaveLength(0);
   });
 
-  it('does not report success when the audit row cannot be written', async () => {
-    const { service, sessions, audit } = revokeHarness(
+  it('writes the demotion and its audit row in one transaction', async () => {
+    const sessions = new TransactionSessions();
+    const { service, audit, prisma } = revokeHarness(sessions);
+
+    await service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID);
+
+    expect(prisma.transactions).toBe(1);
+    expect(sessions.txArgs).toEqual([prisma.client]);
+    expect(audit.transactions).toEqual([prisma.client]);
+  });
+
+  it('does not persist the demotion when the audit row cannot be written', async () => {
+    const notifier = new RecordingNotifier();
+    const { service, sessions, audit, prisma } = revokeHarness(
       new InMemorySessionRepository(),
       new FailingAudit(),
+      notifier,
     );
 
     await expect(service.revokeAdmin(OWNER, ADMIN_ID, REQUEST_ID)).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
 
-    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.USER);
+    // The failed row rolled the demotion back with it.
+    expect(sessions.users.get(ADMIN_ID)?.role).toBe(Role.ADMIN);
     expect(audit.records).toHaveLength(1);
+    expect(notifier.notices).toHaveLength(0);
+    expect(prisma.transactions).toBe(1);
   });
 
   it('answers a repeated revoke alike and records once', async () => {
@@ -978,6 +1093,7 @@ function resetHarness(
   sessions: InMemorySessionRepository = new InMemorySessionRepository(),
   audit: FakeAudit = new FakeAudit(),
   totp: InMemoryTotpRepository = new InMemoryTotpRepository(),
+  notifier: OwnerNotifier = new RecordingNotifier(),
 ) {
   seed(sessions);
   sessions.seedUser({
@@ -987,7 +1103,7 @@ function resetHarness(
     role: Role.ADMIN,
   });
 
-  return createHarness(audit, sessions, undefined, totp);
+  return createHarness(audit, sessions, notifier, totp);
 }
 
 describe('resetTotp', () => {
@@ -1044,9 +1160,14 @@ describe('resetTotp', () => {
     expect(audit.records).toHaveLength(0);
   });
 
-  it('reports a failed revocation as a generic 500 without a success row', async () => {
-    const sessions = new FailingSessions();
-    const { service, audit, totp } = resetHarness(sessions);
+  it('reports a failed revocation as a generic 500 without changing anything', async () => {
+    const notifier = new RecordingNotifier();
+    const { service, audit, totp } = resetHarness(
+      new FailingSessions(),
+      undefined,
+      undefined,
+      notifier,
+    );
 
     seedFactor(totp, ADMIN_ID);
 
@@ -1054,13 +1175,35 @@ describe('resetTotp', () => {
 
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ statusCode: 500, message: 'Internal Server Error' });
-    // No rollback: the factor is gone, and only the revocation is left to retry.
-    expect(totp.credentials.has(ADMIN_ID)).toBe(false);
+    // The revocation comes first: the factor and its codes are still there.
+    expect(totp.credentials.has(ADMIN_ID)).toBe(true);
+    expect(totp.recoveryCodes.get(ADMIN_ID)).toHaveLength(2);
     expect(audit.records).toHaveLength(0);
+    expect(notifier.notices).toHaveLength(0);
   });
 
-  it('does not report success when the audit row cannot be written', async () => {
-    const { service, audit, totp } = resetHarness(undefined, new FailingAudit());
+  it('writes the removal and its audit row in one transaction', async () => {
+    const totp = new TransactionTotp();
+    const { service, audit, prisma } = resetHarness(undefined, undefined, totp);
+
+    seedFactor(totp, ADMIN_ID);
+
+    await service.resetTotp(OWNER, ADMIN_ID, REQUEST_ID);
+
+    expect(prisma.transactions).toBe(1);
+    // The removal joined the transaction: the repository saw its client.
+    expect(totp.txArgs).toEqual([prisma.client]);
+    expect(audit.transactions).toEqual([prisma.client]);
+  });
+
+  it('restores the factor when the audit row cannot be written', async () => {
+    const notifier = new RecordingNotifier();
+    const { service, audit, totp, prisma } = resetHarness(
+      new InMemorySessionRepository(),
+      new FailingAudit(),
+      undefined,
+      notifier,
+    );
 
     seedFactor(totp, ADMIN_ID);
 
@@ -1068,8 +1211,27 @@ describe('resetTotp', () => {
       ServiceUnavailableException,
     );
 
-    expect(totp.credentials.has(ADMIN_ID)).toBe(false);
+    // The failed row rolled the removal back with it.
+    expect(totp.credentials.has(ADMIN_ID)).toBe(true);
+    expect(totp.recoveryCodes.get(ADMIN_ID)).toHaveLength(2);
     expect(audit.records).toHaveLength(1);
+    expect(notifier.notices).toHaveLength(0);
+    expect(prisma.transactions).toBe(1);
+  });
+
+  it('writes no second-factor material into the audit row', async () => {
+    const { service, audit, totp } = resetHarness();
+
+    seedFactor(totp, ADMIN_ID);
+
+    await service.resetTotp(OWNER, ADMIN_ID, REQUEST_ID);
+
+    const recorded = JSON.stringify(audit.records[0]?.metadata) ?? '';
+
+    expect(audit.records[0]?.metadata).toEqual({ role: Role.ADMIN });
+    expect(recorded).not.toContain('test-envelope');
+    expect(recorded).not.toContain('hash-one');
+    expect(recorded).not.toContain('hash-two');
   });
 
   it('answers a repeated reset alike and records once', async () => {

@@ -221,8 +221,14 @@ export class PrismaSessionRepository implements SessionRepository {
     return updated.count === 1;
   }
 
-  async setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean> {
-    const updated = await this.prisma.user.updateMany({
+  async setRoleIf(
+    userId: string,
+    expectedRole: Role,
+    newRole: Role,
+    tx?: Prisma.TransactionClient,
+  ): Promise<boolean> {
+    const client = tx ?? this.prisma;
+    const updated = await client.user.updateMany({
       where: { id: userId, role: PRISMA_ROLE[expectedRole] },
       data: { role: PRISMA_ROLE[newRole] },
     });

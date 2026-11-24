@@ -214,8 +214,17 @@ export interface SessionRepository {
     newStatus: 'ACTIVE' | 'BLOCKED',
     tx?: Prisma.TransactionClient,
   ): Promise<boolean>;
-  /** Same contract as `setStatusIf`, for the role. */
-  setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean>;
+  /**
+   * Same contract as `setStatusIf`, for the role: a caller that already owns a
+   * transaction passes it as `tx`, so the role change joins the audit row that
+   * describes it.
+   */
+  setRoleIf(
+    userId: string,
+    expectedRole: Role,
+    newRole: Role,
+    tx?: Prisma.TransactionClient,
+  ): Promise<boolean>;
   /**
    * Number of accounts currently holding `role`. The first-owner bootstrap
    * reads it to refuse its run the moment any OWNER exists.
