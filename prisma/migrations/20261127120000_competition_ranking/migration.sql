@@ -1,4 +1,4 @@
-﻿-- Stage 8a: staff-entered competition results and the derived ranking.
+-- Stage 8a: staff-entered competition results and the derived ranking.
 --
 -- `competition_results` is the only place a score exists; it is written by a
 -- staff route only. `athlete_rankings` is derived, recomputed in the same
