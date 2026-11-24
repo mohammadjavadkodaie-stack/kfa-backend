@@ -754,15 +754,23 @@ describe('StaffPhotoReviewService', () => {
     const handlers = StaffPhotoReviewController.prototype;
 
     it('keeps every handler on the two staff roles', () => {
-      for (const name of ['list', 'listReported', 'approve', 'reject', 'takeDown'] as const) {
+      for (const name of [
+        'list',
+        'listReported',
+        'approve',
+        'reject',
+        'takeDown',
+        'issueViewLink',
+      ] as const) {
         expect(Reflect.getMetadata(ROLES_KEY, handlers[name])).toEqual([Role.ADMIN, Role.OWNER]);
       }
     });
 
-    it('demands a fresh second factor for the decisions and the takedown only', () => {
-      expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.approve)).toBe(true);
-      expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.reject)).toBe(true);
-      expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.takeDown)).toBe(true);
+    it('demands a fresh second factor for decisions, takedown and view links only', () => {
+      for (const name of ['approve', 'reject', 'takeDown', 'issueViewLink'] as const) {
+        expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers[name])).toBe(true);
+      }
+
       // Both lists are metadata reads; the staff gate is the whole requirement.
       expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.list)).toBeUndefined();
       expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.listReported)).toBeUndefined();
