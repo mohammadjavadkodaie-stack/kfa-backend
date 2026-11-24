@@ -18,6 +18,9 @@ import type { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { writeTooManyRequests, type ErrorResponseBody } from '../../common/errors/error-response';
 import { getRequestId } from '../../common/middleware/request-id.middleware';
+import { readClientCountry } from '../../common/client-country';
+import { ENV } from '../../config/config.module';
+import type { Env } from '../../config/env';
 import type { AuthResult } from '../auth.service';
 import { DEVICE_KEY_HEADER, readDeviceKey } from '../device-key';
 import { EmailCodeService } from '../email/email-code.service';
@@ -93,6 +96,7 @@ export class EmailAuthController {
     private readonly emailAuth: EmailAuthService,
     private readonly passwordResetService: PasswordResetService,
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
+    @Inject(ENV) private readonly env: Pick<Env, 'TRUST_CF_COUNTRY_HEADER'>,
   ) {}
 
   @Public()
@@ -260,6 +264,7 @@ export class EmailAuthController {
       const result = await this.emailAuth.signIn({
         ...input,
         proof: input.proof,
+        country: readClientCountry(request.headers, this.env.TRUST_CF_COUNTRY_HEADER),
         ...requestContext(request),
       });
       if (result.outcome === 'throttled')

@@ -52,6 +52,7 @@ export class EmailAuthService {
     readonly proof: unknown;
     readonly ip: string;
     readonly userAgent?: string;
+    readonly country?: string | null;
   }): Promise<AuthResult> {
     const throttle = async (
       scope: string,
@@ -171,7 +172,12 @@ export class EmailAuthService {
       });
       if (proved !== email) throw invalidCredentials();
     }
-    return this.auth.issueEmailLoginSession({ email: email as string, account, context });
+    return this.auth.issueEmailLoginSession({
+      email: email as string,
+      account,
+      context,
+      country: input.country,
+    });
   }
 
   async signUp(input: {
