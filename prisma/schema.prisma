@@ -142,8 +142,47 @@ model AthleteProfile {
   reviewedById      String?      @map("reviewed_by_id") @db.Uuid
   rejectionReason   String?      @map("rejection_reason") @db.VarChar(500)
   user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  photos             ProfilePhoto[]
 
   @@map("athlete_profiles")
+}
+
+enum ProfilePhotoStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// One photo on an athlete's personal page. Like an identity document, the row
+/// points at an encrypted blob - an opaque object key plus the envelope - and
+/// never at a file name, a URL or the bytes themselves. `caption` is plain text
+/// that the API sanitized and escaped before it was written; the CHECK
+/// constraints and the withheld DELETE privilege live in the migration.
+model ProfilePhoto {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  athleteProfileId String             @map("athlete_profile_id") @db.Uuid
+  /// Random UUID from createObjectKey(); never a user id, a name or an extension.
+  objectKey        String             @unique @map("object_key")
+  /// Sanitized, escaped and length-capped by the API. NULL when no caption was sent.
+  caption          String?            @db.VarChar(1000)
+  status           ProfilePhotoStatus @default(PENDING)
+  contentType      String             @map("content_type")
+  sizeBytes        Int                @map("size_bytes")
+  /// Hex SHA-256 of the sanitized bytes that were encrypted.
+  sha256           String             @db.Char(64)
+  keyId            String             @map("key_id")
+  wrappedDek       Bytes              @map("wrapped_dek")
+  iv               Bytes
+  authTag          Bytes              @map("auth_tag")
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Set only when a reviewer decides; NULL while the photo is PENDING.
+  reviewedAt       DateTime?          @map("reviewed_at") @db.Timestamptz(6)
+  reviewedById     String?            @map("reviewed_by_id") @db.Uuid
+  athleteProfile   AthleteProfile     @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+
+  @@index([athleteProfileId, status])
+  @@index([athleteProfileId, createdAt(sort: Desc)])
+  @@map("profile_photos")
 }
 
 /// One uploaded identity document. The row only points at a blob: it holds the

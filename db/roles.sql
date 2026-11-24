@@ -75,6 +75,17 @@ BEGIN
 END
 $$;
 
+-- profile_photos: the runtime role reads, inserts and stamps a review decision,
+-- but never deletes a photo. The migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.profile_photos') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.profile_photos FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.profile_photos TO kfa_app';
+    END IF;
+END
+$$;
+
 -- Billing tables: read and write, never DELETE. Payment terms are frozen by a
 -- trigger in the billing migration. The migration applies the same grants.
 DO $$
