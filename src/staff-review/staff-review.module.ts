@@ -1,8 +1,9 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { AthleteModule } from '../athlete/athlete.module';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { BillingModule } from '../billing/billing.module';
+import { noStoreMiddleware } from '../common/middleware/no-store.middleware';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PrismaStaffReviewRepository } from './prisma-staff-review.repository';
 import { REVIEW_RESULT_NOTIFIER, EmailReviewResultNotifier } from './review-result-notifier';
@@ -24,4 +25,9 @@ import { StaffReviewService } from './staff-review.service';
     { provide: REVIEW_RESULT_NOTIFIER, useClass: EmailReviewResultNotifier },
   ],
 })
-export class StaffReviewModule {}
+export class StaffReviewModule implements NestModule {
+  /** Queue rows and profile details describe a person: nothing here is cacheable. */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(noStoreMiddleware).forRoutes(StaffReviewController);
+  }
+}

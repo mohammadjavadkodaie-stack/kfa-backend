@@ -1,7 +1,8 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { AthleteModule } from '../athlete/athlete.module';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
+import { noStoreMiddleware } from '../common/middleware/no-store.middleware';
 import { RateLimitModule } from '../rate-limit/rate-limit.module';
 import { PrismaStaffPhotoReviewRepository } from './prisma-staff-photo-review.repository';
 import { StaffPhotoReviewController } from './staff-photo-review.controller';
@@ -20,4 +21,9 @@ import { StaffPhotoReviewService } from './staff-photo-review.service';
     { provide: STAFF_PHOTO_REVIEW_REPOSITORY, useClass: PrismaStaffPhotoReviewRepository },
   ],
 })
-export class StaffPhotoReviewModule {}
+export class StaffPhotoReviewModule implements NestModule {
+  /** Queue rows and reported photos are somebody's images: nothing here is cacheable. */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(noStoreMiddleware).forRoutes(StaffPhotoReviewController);
+  }
+}
