@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { Params } from 'nestjs-pino';
-import { stdSerializers } from 'pino';
 import type { Env } from '../config/env';
 import { redactRequestPath } from './request-path';
 
@@ -19,6 +18,7 @@ const SENSITIVE_HEADER_PATHS = [
 /** Body/context fields (any nesting level up to 3) that must be redacted. */
 const SENSITIVE_FIELDS = [
   'password',
+  'authorization',
   'newPassword',
   'currentPassword',
   'passwordHash',
@@ -35,7 +35,20 @@ const SENSITIVE_FIELDS = [
   'cardNumber',
   'captchaToken',
   'proof',
+  'proofToken',
   'otpProof',
+  'totpSecret',
+  'totpCode',
+  'phone',
+  'objectKey',
+  'storageKey',
+  'fileName',
+  'filename',
+  'signature',
+  'webhookSignature',
+  'nowPaymentsApiKey',
+  'paypalApiKey',
+  'apiKey',
 ] as const;
 
 /**
@@ -46,6 +59,14 @@ const SENSITIVE_FIELDS = [
 const SENSITIVE_IP_PATHS = ['ip', '*.ip', '*.*.ip'] as const;
 
 const WILDCARD_PREFIXES = ['', '*.', '*.*.', '*.*.*.'] as const;
+
+function serializeError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return { type: error.constructor.name, name: error.name };
+  }
+
+  return { type: typeof error };
+}
 
 /**
  * Connection strings / secrets that could be logged by accident (startup
@@ -68,6 +89,11 @@ const SENSITIVE_CONFIG_PATHS = [
   'DOCUMENT_VIEW_TOKEN_SECRET',
   'S3_ACCESS_KEY_ID',
   'S3_SECRET_ACCESS_KEY',
+  'NOWPAYMENTS_API_KEY',
+  'NOWPAYMENTS_API_SECRET',
+  'PAYPAL_API_KEY',
+  'PAYPAL_API_SECRET',
+  'PAYPAL_CLIENT_SECRET',
 ] as const;
 
 export function buildRedactPaths(): string[] {
@@ -76,6 +102,9 @@ export function buildRedactPaths(): string[] {
   // Whole payloads are never logged, even if they somehow end up in a log call.
   paths.add('req.body');
   paths.add('res.body');
+  paths.add('env.*');
+  paths.add('*.env.*');
+  paths.add('*.*.env.*');
 
   for (const field of SENSITIVE_FIELDS) {
     paths.add(`req.body.${field}`);
@@ -129,7 +158,7 @@ export function buildPinoParams(env: Env): Params<Request, Response> {
           remoteAddress: request.ip ?? request.socket?.remoteAddress,
         }),
         res: (response: Response) => ({ statusCode: response.statusCode }),
-        err: stdSerializers.err,
+        err: serializeError,
       },
     },
   };
