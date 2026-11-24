@@ -21,6 +21,12 @@ export const MAX_PHOTO_REVIEW_PAGE_SIZE = 50;
  */
 export const MAX_PHOTO_REJECTION_REASON_LENGTH = 200;
 
+/** Longest takedown note a reviewer may send; audit metadata only. */
+export const MAX_PHOTO_TAKEDOWN_REASON_LENGTH = 200;
+
+/** The reported list is offset-paginated; the cap keeps a deep page cheap. */
+export const MAX_REPORTED_PHOTO_PAGE = 1_000;
+
 /**
  * `GET /staff/photo-reviews?limit=&cursor=`.
  *
@@ -41,10 +47,33 @@ export class PhotoReviewQueueQueryDto {
   cursor?: string;
 }
 
-/** The path parameter of the two decision routes. */
+/** The path parameter of the two decision routes and the takedown route. */
 export class PhotoReviewParamsDto {
   @IsUUID()
   photoId!: string;
+}
+
+/**
+ * `GET /staff/photo-reviews/reported?page=&limit=`.
+ *
+ * The reported list is ordered by the newest report, which is not a column of
+ * the photo, so it pages by offset. Staff-only and metadata-only, and both
+ * bounds are declared, so an unknown parameter is a generic 400.
+ */
+export class ReportedPhotoQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(MAX_REPORTED_PHOTO_PAGE)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(MAX_PHOTO_REVIEW_PAGE_SIZE)
+  limit?: number;
 }
 
 /**
@@ -72,6 +101,36 @@ export type RejectPhotoInput = z.infer<typeof rejectPhotoSchema>;
 /** The wire gate: a body outside the schema is the generic 400. */
 export function parseRejectPhoto(body: unknown): RejectPhotoInput {
   const parsed = rejectPhotoSchema.safeParse(body ?? {});
+
+  if (!parsed.success) throw new BadRequestException();
+
+  return parsed.data;
+}
+
+/**
+ * The only thing a takedown may carry: the reviewer's optional words. The
+ * reviewer, the clock and the new status come from the token, the server and the
+ * route. The text is trimmed, so a reason of spaces is no reason.
+ */
+export const takeDownPhotoSchema = z.strictObject({
+  reason: z
+    .string()
+    .max(MAX_PHOTO_TAKEDOWN_REASON_LENGTH)
+    .optional()
+    .transform((value) => {
+      if (value === undefined) return null;
+
+      const text = value.trim();
+
+      return text.length === 0 ? null : text;
+    }),
+});
+
+export type TakeDownPhotoInput = z.infer<typeof takeDownPhotoSchema>;
+
+/** The wire gate: a body outside the schema is the generic 400. */
+export function parseTakeDownPhoto(body: unknown): TakeDownPhotoInput {
+  const parsed = takeDownPhotoSchema.safeParse(body ?? {});
 
   if (!parsed.success) throw new BadRequestException();
 

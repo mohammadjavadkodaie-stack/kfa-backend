@@ -22,9 +22,14 @@ import type {
   PendingPhotoRow,
   PhotoReviewDecision,
   PhotoReviewTarget,
+  PhotoTakedown,
+  ReportedPhotoRow,
   StaffPhotoReviewRepository,
 } from './staff-photo-review.repository';
-import { STAFF_PHOTO_REVIEW_AUDIT_ACTIONS, StaffPhotoReviewService } from './staff-photo-review.service';
+import {
+  STAFF_PHOTO_REVIEW_AUDIT_ACTIONS,
+  StaffPhotoReviewService,
+} from './staff-photo-review.service';
 
 /**
  * The staff photo moderation queue without HTTP.
@@ -87,6 +92,16 @@ class InMemoryStaffPhotoReview implements StaffPhotoReviewRepository {
   }[] = [];
   /** Every queue read, with what it asked for, in order. */
   readonly queueReads: { limit: number; cursor: string | undefined }[] = [];
+  /** Every takedown attempt, in order, so a refusal can be shown to write nothing. */
+  readonly takedowns: {
+    photoId: string;
+    takedown: PhotoTakedown;
+    tx: Prisma.TransactionClient | undefined;
+  }[] = [];
+  /** The `photo_reports` table, by photo: one entry per report's timestamp. */
+  readonly reports = new Map<string, Date[]>();
+  /** Every reported-list read, with what it asked for, in order. */
+  readonly reportedReads: { limit: number; offset: number }[] = [];
 
   seed(id: string, overrides: Partial<StoredPhoto> = {}): StoredPhoto {
     const row: StoredPhoto = {
@@ -160,6 +175,53 @@ class InMemoryStaffPhotoReview implements StaffPhotoReviewRepository {
     row.reviewedById = decision.reviewedById;
 
     return 1;
+  }
+
+  /** Adds one report row for a photo, as a user's POST would. */
+  report(photoId: string, at: Date = LATEST): void {
+    this.reports.set(photoId, [...(this.reports.get(photoId) ?? []), at]);
+  }
+
+  async takeDown(
+    photoId: string,
+    takedown: PhotoTakedown,
+    tx?: Prisma.TransactionClient,
+  ): Promise<number> {
+    this.takedowns.push({ photoId, takedown, tx });
+
+    const row = this.rows.get(photoId);
+
+    // The conditional UPDATE: a photo leaves PENDING or APPROVED exactly once.
+    if (row === undefined || (row.status !== 'PENDING' && row.status !== 'APPROVED')) return 0;
+
+    row.status = 'REMOVED';
+    row.reviewedAt = takedown.reviewedAt;
+    row.reviewedById = takedown.reviewedById;
+
+    return 1;
+  }
+
+  async listReported(limit: number, offset: number): Promise<ReportedPhotoRow[]> {
+    this.reportedReads.push({ limit, offset });
+
+    // APPROVED photos that carry at least one report, newest activity first, with
+    // the count and the newest report - and no reporter in sight.
+    return [...this.rows.values()]
+      .flatMap((row) => {
+        const reportedAt = this.reports.get(row.id);
+
+        if (row.status !== 'APPROVED' || reportedAt === undefined) return [];
+
+        const newest = Math.max(...reportedAt.map((at) => at.getTime()));
+
+        return [{ ...row, reportCount: reportedAt.length, lastReportedAt: new Date(newest) }];
+      })
+      .sort(
+        (left, right) =>
+          right.lastReportedAt.getTime() - left.lastReportedAt.getTime() ||
+          left.id.localeCompare(right.id),
+      )
+      .slice(offset, offset + limit + 1);
   }
 
   snapshot(): Map<string, PhotoRowState> {
@@ -406,7 +468,12 @@ describe('StaffPhotoReviewService', () => {
       photos.seed(SECOND_PHOTO_ID);
 
       await service.decide(reviewer, PHOTO_ID, { status: 'REJECTED' }, CONTEXT);
-      await service.decide(reviewer, SECOND_PHOTO_ID, { status: 'REJECTED', reason: '   ' }, CONTEXT);
+      await service.decide(
+        reviewer,
+        SECOND_PHOTO_ID,
+        { status: 'REJECTED', reason: '   ' },
+        CONTEXT,
+      );
 
       expect(audit.records[0]?.metadata).toEqual({
         photoId: PHOTO_ID,
@@ -518,21 +585,187 @@ describe('StaffPhotoReviewService', () => {
     });
   });
 
+  describe('listReported', () => {
+    it('lists approved reported photos, newest report first, with counts only', async () => {
+      const { service, photos } = createService();
+
+      photos.seed(PHOTO_ID, { status: 'APPROVED' });
+      photos.seed(SECOND_PHOTO_ID, { status: 'APPROVED' });
+      photos.seed(THIRD_PHOTO_ID);
+      photos.report(PHOTO_ID, EARLIER);
+      photos.report(SECOND_PHOTO_ID, LATEST);
+      photos.report(SECOND_PHOTO_ID, MIDDLE);
+      photos.report(THIRD_PHOTO_ID, LATEST);
+
+      const page = await service.listReported({});
+
+      expect(page.items.map((item) => item.id)).toEqual([SECOND_PHOTO_ID, PHOTO_ID]);
+      expect(page.items.map((item) => item.reportCount)).toEqual([2, 1]);
+      expect(page.nextPage).toBeNull();
+      expect(photos.reportedReads).toEqual([{ limit: 20, offset: 0 }]);
+
+      // No reporter, no note and no reason: a count is the whole disclosure.
+      const wire = JSON.stringify(page);
+
+      expect(wire).not.toContain(OWNER_ID);
+      expect(wire).not.toContain('note');
+      expect(wire).not.toContain('reason');
+    });
+
+    it('drops a photo the moment it is taken down', async () => {
+      const { service, photos } = createService();
+
+      photos.seed(PHOTO_ID, { status: 'REMOVED' });
+      photos.report(PHOTO_ID, LATEST);
+
+      await expect(service.listReported({})).resolves.toEqual({ items: [], nextPage: null });
+    });
+
+    it('pages with one extra row and names the next page', async () => {
+      const { service, photos } = createService();
+
+      photos.seed(PHOTO_ID, { status: 'APPROVED' });
+      photos.seed(SECOND_PHOTO_ID, { status: 'APPROVED' });
+      photos.seed(THIRD_PHOTO_ID, { status: 'APPROVED' });
+      photos.report(PHOTO_ID, EARLIER);
+      photos.report(SECOND_PHOTO_ID, MIDDLE);
+      photos.report(THIRD_PHOTO_ID, LATEST);
+
+      const page = await service.listReported({ page: 1, limit: 2 });
+
+      expect(page.items.map((item) => item.id)).toEqual([THIRD_PHOTO_ID, SECOND_PHOTO_ID]);
+      expect(page.nextPage).toBe(2);
+      expect(photos.reportedReads).toEqual([{ limit: 2, offset: 0 }]);
+    });
+  });
+
+  describe('takeDown', () => {
+    it('withdraws an approved photo, stamps the reviewer and writes the trail', async () => {
+      const { service, photos, audit } = createService();
+      const row = photos.seed(PHOTO_ID, {
+        status: 'APPROVED',
+        reviewedAt: EARLIER,
+        reviewedById: OWNER_ID,
+      });
+
+      const result = await service.takeDown(reviewer, PHOTO_ID, { reason: '  nudity  ' }, CONTEXT);
+
+      expect(result).toEqual({ status: 'REMOVED', reviewedAt: NOW.toISOString() });
+      expect(row.status).toBe('REMOVED');
+      expect(row.reviewedAt).toBe(NOW);
+      expect(row.reviewedById).toBe(STAFF_ID);
+      expect(photos.takedowns).toHaveLength(1);
+      expect(audit.records).toHaveLength(1);
+      expect(audit.records[0]).toMatchObject({
+        action: STAFF_PHOTO_REVIEW_AUDIT_ACTIONS.REMOVED,
+        targetId: PHOTO_ID,
+        metadata: {
+          photoId: PHOTO_ID,
+          athleteProfileId: PROFILE_ID,
+          status: 'REMOVED',
+          reason: 'nudity',
+        },
+      });
+    });
+
+    it('removes a photo that never left the queue', async () => {
+      const { service, photos, audit } = createService();
+      const row = photos.seed(PHOTO_ID);
+
+      await service.takeDown(reviewer, PHOTO_ID, {}, CONTEXT);
+
+      expect(row.status).toBe('REMOVED');
+      expect(audit.records[0]?.metadata).not.toHaveProperty('reason');
+    });
+
+    it('refuses a photo that is already removed with the generic 409', async () => {
+      const { service, photos, audit } = createService();
+
+      photos.seed(PHOTO_ID, { status: 'REMOVED' });
+
+      const refused = await refusalOf(
+        service.takeDown(reviewer, PHOTO_ID, {}, CONTEXT),
+        ConflictException,
+      );
+
+      expect(messageOf(refused)).toBe('Conflict');
+      expect(photos.takedowns).toEqual([]);
+      expect(audit.records).toEqual([]);
+    });
+
+    it('refuses a reviewer taking down a photo of their own profile', async () => {
+      const { service, photos, audit, logger } = createService();
+
+      photos.seed(PHOTO_ID, { status: 'APPROVED', ownerUserId: STAFF_ID });
+
+      const refused = await refusalOf(
+        service.takeDown(reviewer, PHOTO_ID, {}, CONTEXT),
+        ForbiddenException,
+      );
+
+      expect(messageOf(refused)).toBe('Forbidden');
+      expect(photos.takedowns).toEqual([]);
+      expect(audit.records).toEqual([]);
+      expect(logger.messages()).toEqual(['staff photo review refused: self takedown']);
+    });
+
+    it('refuses the second of two takedowns racing on one photo, and rolls back', async () => {
+      const { service, photos, audit } = createService();
+      const row = photos.seed(PHOTO_ID, { status: 'APPROVED' });
+
+      // The other reviewer's UPDATE landed between this request's read and write.
+      jest.spyOn(photos, 'takeDown').mockResolvedValue(0);
+
+      await refusalOf(service.takeDown(reviewer, PHOTO_ID, {}, CONTEXT), ConflictException);
+
+      expect(row.status).toBe('APPROVED');
+      expect(audit.records).toEqual([]);
+    });
+
+    it('fails closed when the trail cannot be written, and undoes the takedown', async () => {
+      const { service, photos } = createService({ audit: new FailingAudit() });
+      const row = photos.seed(PHOTO_ID, { status: 'APPROVED' });
+
+      await refusalOf(
+        service.takeDown(reviewer, PHOTO_ID, {}, CONTEXT),
+        ServiceUnavailableException,
+      );
+
+      // The photo is APPROVED again: a takedown nobody can account for did not happen.
+      expect(row.status).toBe('APPROVED');
+      expect(row.reviewedById).toBeNull();
+    });
+
+    it('refuses an over-long reason before anything is written', async () => {
+      const { service, photos } = createService();
+
+      photos.seed(PHOTO_ID, { status: 'APPROVED' });
+
+      await refusalOf(
+        service.takeDown(reviewer, PHOTO_ID, { reason: 'x'.repeat(201) }, CONTEXT),
+        BadRequestException,
+      );
+
+      expect(photos.takedowns).toEqual([]);
+    });
+  });
+
   describe('the guard markers the staff stack reads', () => {
     const handlers = StaffPhotoReviewController.prototype;
 
     it('keeps every handler on the two staff roles', () => {
-      for (const name of ['list', 'approve', 'reject'] as const) {
+      for (const name of ['list', 'listReported', 'approve', 'reject', 'takeDown'] as const) {
         expect(Reflect.getMetadata(ROLES_KEY, handlers[name])).toEqual([Role.ADMIN, Role.OWNER]);
       }
     });
 
-    it('demands a fresh second factor for the two decisions only', () => {
+    it('demands a fresh second factor for the decisions and the takedown only', () => {
       expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.approve)).toBe(true);
       expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.reject)).toBe(true);
-      // Listing is a metadata read; the staff gate is the whole requirement.
+      expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.takeDown)).toBe(true);
+      // Both lists are metadata reads; the staff gate is the whole requirement.
       expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.list)).toBeUndefined();
+      expect(Reflect.getMetadata(STEP_UP_REQUIRED_KEY, handlers.listReported)).toBeUndefined();
     });
   });
 });
-

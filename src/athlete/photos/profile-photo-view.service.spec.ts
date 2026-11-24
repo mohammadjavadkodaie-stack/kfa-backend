@@ -288,14 +288,16 @@ describe('ProfilePhotoViewService', () => {
       expect(served.sizeBytes).not.toBe(row.photo.sizeBytes + 1);
     });
 
-    it('answers a PENDING, a REJECTED and an unknown photo with the same generic 404', async () => {
+    it('answers a PENDING, a REJECTED, a REMOVED and an unknown photo with the same generic 404', async () => {
       const { service, photos, storage } = harness();
       const pending = await seed(photos, storage, { status: 'PENDING' });
       const rejected = await seed(photos, storage, { status: 'REJECTED' });
+      const removed = await seed(photos, storage, { status: 'REMOVED' });
 
       const answers = await Promise.all([
         refusal(() => service.readApproved(pending.photo.id)),
         refusal(() => service.readApproved(rejected.photo.id)),
+        refusal(() => service.readApproved(removed.photo.id)),
         refusal(() => service.readApproved(randomUUID())),
       ]);
 

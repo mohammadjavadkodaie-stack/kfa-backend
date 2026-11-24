@@ -158,14 +158,18 @@ export function mayRedeemProfilePhotoView(input: PhotoViewDecisionInput): boolea
 
   if (role === null || record === null) return false;
 
-  if (staff) return isStaffRole(role) && record.photo.status !== 'REJECTED';
+  if (staff) return isStaffRole(role) && staffMayPreview(record.photo.status);
 
   return record.ownerUserId === viewer.id;
 }
 
-/** What a staff link may open: anything a reviewer has to look at. */
+/**
+ * What a staff link may open: a photo still under review or approved. A REJECTED
+ * or REMOVED row is not previewable - a taken-down photo must not come back
+ * through a link issued before the takedown.
+ */
 function staffMayPreview(status: ProfilePhotoStatus): boolean {
-  return status !== 'REJECTED';
+  return status === 'PENDING' || status === 'APPROVED';
 }
 
 @Injectable()

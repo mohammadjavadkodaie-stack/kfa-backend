@@ -43,6 +43,21 @@ export interface PhotoReviewDecision {
   readonly reviewedById: string;
 }
 
+/** What a takedown writes: the reviewer and the time, never a delete. */
+export interface PhotoTakedown {
+  readonly reviewedAt: Date;
+  readonly reviewedById: string;
+}
+
+/**
+ * One reported photo, as the staff list may see it: the photo's metadata and how
+ * many reports it carries. Deliberately no reporter id, no note and no reason.
+ */
+export interface ReportedPhotoRow extends PendingPhotoRow {
+  readonly reportCount: number;
+  readonly lastReportedAt: Date;
+}
+
 export interface StaffPhotoReviewRepository {
   /**
    * PENDING photos, oldest first, at most `limit + 1` rows: the extra row is how
@@ -63,4 +78,22 @@ export interface StaffPhotoReviewRepository {
     decision: PhotoReviewDecision,
     tx?: Prisma.TransactionClient,
   ): Promise<number>;
+
+  /**
+   * One conditional UPDATE from PENDING or APPROVED to REMOVED: the photo leaves
+   * the public surface exactly once. Returns the number of rows changed, which is
+   * zero when another reviewer decided or removed it first.
+   */
+  takeDown(
+    photoId: string,
+    takedown: PhotoTakedown,
+    tx?: Prisma.TransactionClient,
+  ): Promise<number>;
+
+  /**
+   * APPROVED photos that carry at least one report, newest activity first, at
+   * most `limit + 1` rows after skipping `offset`. A taken-down or rejected photo
+   * drops out on the next read.
+   */
+  listReported(limit: number, offset: number): Promise<ReportedPhotoRow[]>;
 }

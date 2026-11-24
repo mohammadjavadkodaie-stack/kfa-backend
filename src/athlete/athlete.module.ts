@@ -11,6 +11,10 @@ import { CLOCK, SYSTEM_CLOCK } from './profile/athlete-age';
 import { ATHLETE_PROFILE_REPOSITORY } from './profile/athlete-profile.repository';
 import { PrismaAthleteProfileRepository } from './profile/prisma-athlete-profile.repository';
 import { PROFILE_PHOTO_REPOSITORY } from './photos/profile-photo.repository';
+import { PROFILE_PHOTO_REPORT_REPOSITORY } from './photos/profile-photo-report.repository';
+import { ProfilePhotoReportController } from './photos/profile-photo-report.controller';
+import { ProfilePhotoReportService } from './photos/profile-photo-report.service';
+import { PrismaProfilePhotoReportRepository } from './photos/prisma-profile-photo-report.repository';
 import { PROFILE_PHOTO_VIEW_REPOSITORY } from './photos/profile-photo-view.repository';
 import { PrismaProfilePhotoViewRepository } from './photos/prisma-profile-photo-view.repository';
 import { ProfilePhotoViewFileController } from './photos/profile-photo-view-file.controller';
@@ -28,6 +32,8 @@ import { PublicProfilePhotosController } from './photos/public-profile-photos.co
   controllers: [
     AthleteController,
     ProfilePhotosController,
+    // Reporting another account's photo: any signed-in caller, APPROVED only.
+    ProfilePhotoReportController,
     // The unauthenticated surface: one approved photo's bytes, one approved
     // listing, and the single-use preview link both marked `@Public()`.
     PublicProfilePhotosController,
@@ -39,6 +45,10 @@ import { PublicProfilePhotosController } from './photos/public-profile-photos.co
     // Photos: one service, one repository, no second pipeline.
     ProfilePhotosService,
     { provide: PROFILE_PHOTO_REPOSITORY, useClass: PrismaProfilePhotoRepository },
+    // Reports: an append-only side table, its own service so the upload pipeline
+    // never learns what a report is.
+    ProfilePhotoReportService,
+    { provide: PROFILE_PHOTO_REPORT_REPOSITORY, useClass: PrismaProfilePhotoReportRepository },
     // Serving: a read-only view service over the same rows, the same crypto and
     // the same storage - never a second copy of either.
     ProfilePhotoViewService,
@@ -62,6 +72,7 @@ export class AthleteModule implements NestModule {
       .apply(noStoreMiddleware)
       .forRoutes(
         ProfilePhotosController,
+        ProfilePhotoReportController,
         PublicProfilePhotosController,
         ProfilePhotoViewFileController,
       );

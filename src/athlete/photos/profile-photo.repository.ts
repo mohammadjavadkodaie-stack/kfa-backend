@@ -13,8 +13,12 @@ import type { Prisma } from '@prisma/client';
 /** DI token so the Prisma implementation can be swapped in tests. */
 export const PROFILE_PHOTO_REPOSITORY = Symbol('PROFILE_PHOTO_REPOSITORY');
 
-/** The states a photo moves through: uploaded, then a reviewer decides. */
-export type ProfilePhotoStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+/**
+ * The states a photo moves through: uploaded, then a reviewer decides, or staff
+ * withdraws it from public view (REMOVED). Only APPROVED is ever served in
+ * public; a removal is reversible in the database but not through this API.
+ */
+export type ProfilePhotoStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'REMOVED';
 
 /** The two formats the ingest pipeline produces and the only ones the table accepts. */
 export type PhotoContentType = 'image/jpeg' | 'image/png';

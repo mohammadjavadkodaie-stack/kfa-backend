@@ -96,3 +96,16 @@ BEGIN
     END IF;
 END
 $$;
+
+-- photo_reports: append-only from the runtime role's point of view. A report is
+-- evidence of a user's complaint, so the app may read and add rows but never
+-- rewrite or delete one. The migration applies the same grants. profile_photos
+-- still gets no DELETE (see the block above): a takedown only changes status.
+DO $$
+BEGIN
+    IF to_regclass('public.photo_reports') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.photo_reports FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT ON TABLE public.photo_reports TO kfa_app';
+    END IF;
+END
+$$;

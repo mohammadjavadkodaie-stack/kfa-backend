@@ -31,19 +31,25 @@ import { getRequestId } from '../common/middleware/request-id.middleware';
 import { RateLimitService } from '../rate-limit/rate-limit.service';
 import {
   parseRejectPhoto,
+  parseTakeDownPhoto,
   PhotoReviewParamsDto,
   PhotoReviewQueueQueryDto,
+  ReportedPhotoQueryDto,
 } from './staff-photo-review.dto';
 import {
   StaffPhotoReviewService,
   type PhotoReviewDecisionResult,
   type PhotoReviewQueuePage,
+  type PhotoTakedownResult,
+  type ReportedPhotosPage,
 } from './staff-photo-review.service';
 
 /**
  * The profile-photo moderation queue: `GET /staff/photo-reviews`,
- * `POST /staff/photo-reviews/:photoId/approve` and
- * `POST /staff/photo-reviews/:photoId/reject`.
+ * `POST /staff/photo-reviews/:photoId/approve`,
+ * `POST /staff/photo-reviews/:photoId/reject`,
+ * `POST /staff/photo-reviews/:photoId/takedown` and
+ * `GET /staff/photo-reviews/reported`.
  *
  * The guard stack is the staff review stack:
  *
@@ -51,11 +57,11 @@ import {
  * - the global `StaffGateGuard` keeps a staff session that never proved a second
  *   factor out of the whole controller;
  * - `@Roles(ADMIN, OWNER)` keeps every USER and ATHLETE out;
- * - `@RequireStepUp()` additionally covers the two decisions.
+ * - `@RequireStepUp()` additionally covers the two decisions and the takedown.
  *
- * Listing is a read of metadata, so the five-minute window is not demanded
- * there - the gate the session already passed is enough, and no image bytes and
- * no view link are returned.
+ * Listing and the reported list are reads of metadata, so the five-minute window
+ * is not demanded there - the gate the session already passed is enough, and no
+ * image bytes, no view link and no reporter identity are returned.
  */
 @Controller('staff/photo-reviews')
 export class StaffPhotoReviewController {
@@ -70,6 +76,16 @@ export class StaffPhotoReviewController {
   @Get()
   async list(@Query() query: PhotoReviewQueueQueryDto): Promise<PhotoReviewQueuePage> {
     return this.reviews.listQueue(query);
+  }
+
+  /**
+   * APPROVED photos that users reported, most recently reported first: counts
+   * and photo metadata, never who reported.
+   */
+  @Roles(Role.ADMIN, Role.OWNER)
+  @Get('reported')
+  async listReported(@Query() query: ReportedPhotoQueryDto): Promise<ReportedPhotosPage> {
+    return this.reviews.listReported(query);
   }
 
   /** Records an approval; 409 when someone decided first. */
@@ -108,6 +124,26 @@ export class StaffPhotoReviewController {
       { status: 'REJECTED', reason: decision.reason },
       this.context(request),
     );
+  }
+
+  /**
+   * Takes a photo out of public view: PENDING or APPROVED becomes REMOVED. The
+   * photo row and its encrypted blob stay; the optional reason lives only in the
+   * audit trail. A photo that is already REJECTED or REMOVED is a generic 409.
+   */
+  @Roles(Role.ADMIN, Role.OWNER)
+  @RequireStepUp()
+  @Post(':photoId/takedown')
+  @HttpCode(HttpStatus.OK)
+  async takeDown(
+    @Param() params: PhotoReviewParamsDto,
+    // Optional and at most one field; zod is the whole gate, so the pipe skips it.
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<PhotoTakedownResult> {
+    const input = parseTakeDownPhoto(body);
+
+    return this.reviews.takeDown(this.actor(request), params.photoId, input, this.context(request));
   }
 
   /**

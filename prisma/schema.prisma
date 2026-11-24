@@ -114,6 +114,7 @@ model User {
   documents        IdentityDocument[]
   notifications    Notification[]
   subscriptions    Subscription[]
+  photoReports     PhotoReport[]
   @@map("users")
 }
 
@@ -151,6 +152,18 @@ enum ProfilePhotoStatus {
   PENDING
   APPROVED
   REJECTED
+  /// Withdrawn from public view by staff, either after approval or while still
+  /// PENDING. Distinct from REJECTED: a rejection is a review outcome, a removal
+  /// takes down a photo that may already have been published.
+  REMOVED
+}
+
+/// The fixed reason codes a user may attach to a report.
+enum PhotoReportReason {
+  SPAM
+  ABUSE
+  NUDITY
+  OTHER
 }
 
 /// One photo on an athlete's personal page. Like an identity document, the row
@@ -179,10 +192,33 @@ model ProfilePhoto {
   reviewedAt       DateTime?          @map("reviewed_at") @db.Timestamptz(6)
   reviewedById     String?            @map("reviewed_by_id") @db.Uuid
   athleteProfile   AthleteProfile     @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+  reports          PhotoReport[]
 
   @@index([athleteProfileId, status])
   @@index([athleteProfileId, createdAt(sort: Desc)])
   @@map("profile_photos")
+}
+
+/// One user's report about one profile photo.
+///
+/// A report is append-only: there is no update path and the runtime role never
+/// deletes one. The unique pair (photo, reporter) makes a second report for the
+/// same photo a no-op instead of a second row. `note` is plain text the API
+/// trimmed and stripped of control characters; it is never returned to a
+/// client, and the reporter's identity never leaves the staff read model.
+model PhotoReport {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  photoId        String            @map("photo_id") @db.Uuid
+  reporterUserId String            @map("reporter_user_id") @db.Uuid
+  reason         PhotoReportReason
+  note           String?           @db.VarChar(200)
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  photo          ProfilePhoto      @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  reporter       User              @relation(fields: [reporterUserId], references: [id], onDelete: Cascade)
+
+  @@unique([photoId, reporterUserId])
+  @@index([photoId, createdAt])
+  @@map("photo_reports")
 }
 
 /// One uploaded identity document. The row only points at a blob: it holds the
