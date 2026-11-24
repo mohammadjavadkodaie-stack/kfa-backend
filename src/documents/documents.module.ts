@@ -12,6 +12,7 @@ import { noStoreMiddleware } from '../common/middleware/no-store.middleware';
 import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 import { RateLimitModule } from '../rate-limit/rate-limit.module';
+import { SecurityAlertsModule } from '../security-alerts/security-alerts.module';
 import { REDIS_CLIENT } from '../rate-limit/redis-throttler.storage';
 import { DocumentCryptoService } from './document-crypto.service';
 import { DOCUMENT_STORAGE, type DocumentStorage } from './document-storage';
@@ -197,7 +198,7 @@ export function buildProofNonceStore(client: unknown): ProofNonceStore | null {
   // transaction and the view path writes before a byte is read; RateLimitModule
   // the shared counters behind the strict limits and the Redis client the view
   // links spend their nonces in.
-  imports: [AuditModule, RateLimitModule],
+  imports: [AuditModule, RateLimitModule, SecurityAlertsModule],
   controllers: [
     DocumentUploadController,
     DocumentViewLinkController,

@@ -8,6 +8,7 @@ import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 import { PrismaModule } from '../database/prisma.module';
 import { RateLimitModule } from '../rate-limit/rate-limit.module';
+import { SecurityAlertsModule } from '../security-alerts/security-alerts.module';
 import { REDIS_CLIENT } from '../rate-limit/redis-throttler.storage';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -48,7 +49,7 @@ import { TotpController } from './totp/totp.controller';
 import { TotpModule } from './totp/totp.module';
 
 @Module({
-  imports: [RateLimitModule, AuditModule, PrismaModule, TotpModule],
+  imports: [RateLimitModule, AuditModule, PrismaModule, TotpModule, SecurityAlertsModule],
   controllers: [AuthController, EmailAuthController, MeController, TotpController],
   providers: [
     {
