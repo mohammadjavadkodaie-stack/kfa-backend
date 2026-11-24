@@ -78,3 +78,35 @@ export function parsePhotoId(value: unknown): string {
 
   return result.data;
 }
+
+/** The athlete profile id from a public path segment; same shape rule. */
+export const athleteProfileIdSchema = z.uuid();
+
+export function parseAthleteProfileId(value: unknown): string {
+  const result = athleteProfileIdSchema.safeParse(value);
+
+  if (!result.success) throw new BadRequestException();
+
+  return result.data;
+}
+
+/**
+ * `GET /public/athlete-profiles/:athleteProfileId/photos?limit=&cursor=`.
+ *
+ * Public and unauthenticated, so the page is hard-capped: no caller chooses
+ * how much metadata leaves the server in one response.
+ */
+export const publicPhotoListQuerySchema = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  cursor: z.uuid().optional(),
+});
+
+export type PublicPhotoListQuery = z.infer<typeof publicPhotoListQuerySchema>;
+
+export function parsePublicPhotoListQuery(query: unknown): PublicPhotoListQuery {
+  const result = publicPhotoListQuerySchema.safeParse(query ?? {});
+
+  if (!result.success) throw new BadRequestException();
+
+  return result.data;
+}

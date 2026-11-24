@@ -9,7 +9,7 @@ import type {
 } from './profile-photo.repository';
 
 /** Columns the repository reads back; nothing is hidden behind a `select *`. */
-const RECORD_FIELDS = {
+export const PROFILE_PHOTO_RECORD_FIELDS = {
   id: true,
   athleteProfileId: true,
   objectKey: true,
@@ -27,7 +27,7 @@ const RECORD_FIELDS = {
   reviewedById: true,
 } as const;
 
-type PhotoRow = Prisma.ProfilePhotoGetPayload<{ select: typeof RECORD_FIELDS }>;
+type PhotoRow = Prisma.ProfilePhotoGetPayload<{ select: typeof PROFILE_PHOTO_RECORD_FIELDS }>;
 
 function toColumns(record: ProfilePhotoInsert) {
   return {
@@ -47,7 +47,7 @@ function toColumns(record: ProfilePhotoInsert) {
 }
 
 /** `Bytes` columns come back as `Uint8Array`; the boundary hands out Buffers. */
-function toRecord(row: PhotoRow): ProfilePhotoRecord {
+export function toProfilePhotoRecord(row: PhotoRow): ProfilePhotoRecord {
   return {
     ...row,
     contentType: row.contentType as PhotoContentType,
@@ -72,10 +72,10 @@ export class PrismaProfilePhotoRepository implements ProfilePhotoRepository {
     // upload can produce, whatever a future caller passes in.
     const row = await client.profilePhoto.create({
       data: toColumns(record),
-      select: RECORD_FIELDS,
+      select: PROFILE_PHOTO_RECORD_FIELDS,
     });
 
-    return toRecord(row);
+    return toProfilePhotoRecord(row);
   }
 
   async countAgainstQuota(
@@ -101,10 +101,10 @@ export class PrismaProfilePhotoRepository implements ProfilePhotoRepository {
       where: { athleteProfileId },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit,
-      select: RECORD_FIELDS,
+      select: PROFILE_PHOTO_RECORD_FIELDS,
     });
 
-    return rows.map(toRecord);
+    return rows.map(toProfilePhotoRecord);
   }
 
   async findByProfile(
@@ -116,9 +116,9 @@ export class PrismaProfilePhotoRepository implements ProfilePhotoRepository {
     // Profile id is part of the predicate, never a check the caller could skip.
     const row = await client.profilePhoto.findFirst({
       where: { id: photoId, athleteProfileId },
-      select: RECORD_FIELDS,
+      select: PROFILE_PHOTO_RECORD_FIELDS,
     });
 
-    return row === null ? null : toRecord(row);
+    return row === null ? null : toProfilePhotoRecord(row);
   }
 }

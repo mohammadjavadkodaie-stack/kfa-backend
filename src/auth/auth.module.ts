@@ -114,6 +114,9 @@ import { TotpModule } from './totp/totp.module';
     // instead of building an adapter of its own.
     EMAIL_PROVIDER,
     SESSION_REPOSITORY,
+    // The one one-time store every short-lived proof spends its nonce in; the
+    // profile-photo view links reuse it instead of opening a second store.
+    PROOF_NONCE_STORE,
     // Exported so the global guards and later modules share one definition.
     AuthGuard,
     RolesGuard,

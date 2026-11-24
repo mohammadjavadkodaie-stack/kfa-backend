@@ -37,7 +37,7 @@ export async function refuseViewLinkWhenOverLimit(
   request: AuthenticatedRequest,
   response: Response,
 ): Promise<ErrorResponseBody | null> {
-  return consumeOrRefuse(
+  return refuseWhenOverLimit(
     rateLimit,
     DOCUMENT_VIEW_LINK_RATE_LIMIT_SCOPE,
     DOCUMENT_VIEW_LINK_LIMITS,
@@ -78,7 +78,7 @@ export async function refuseViewFileWhenOverLimit(
   request: RequestIdSource,
   response: Response,
 ): Promise<ErrorResponseBody | null> {
-  return consumeOrRefuse(
+  return refuseWhenOverLimit(
     rateLimit,
     DOCUMENT_VIEW_FILE_RATE_LIMIT_SCOPE,
     DOCUMENT_VIEW_FILE_LIMITS,
@@ -89,7 +89,7 @@ export async function refuseViewFileWhenOverLimit(
 }
 
 /** The one fact a refusal needs from the request: the id the envelope echoes. */
-interface RequestIdSource {
+export interface RequestIdSource {
   readonly id?: unknown;
 }
 
@@ -97,8 +97,11 @@ interface RequestIdSource {
  * The shared loop: the windows are checked in order and the first refusal wins,
  * so a caller that is out of budget never reaches the service or the second
  * counter.
+ *
+ * Exported because the profile-photo view links need exactly this behaviour
+ * under their own scopes: a second copy of the loop could drift from this one.
  */
-async function consumeOrRefuse(
+export async function refuseWhenOverLimit(
   rateLimit: RateLimitService,
   scope: string,
   limits: readonly { readonly limit: number; readonly windowSeconds: number }[],

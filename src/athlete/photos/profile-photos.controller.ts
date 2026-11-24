@@ -23,6 +23,14 @@ import { RateLimitService } from '../../rate-limit/rate-limit.service';
 import { DocumentIngestError } from '../../documents/ingest/ingest.errors';
 import { parsePhotoId, parsePhotoUploadQuery } from './profile-photo.dto';
 import {
+  PROFILE_PHOTO_VIEW_LINK_LIMITS,
+  PROFILE_PHOTO_VIEW_LINK_RATE_LIMIT_SCOPE,
+} from './profile-photo-view-limits';
+import {
+  ProfilePhotoViewService,
+  type ProfilePhotoPreviewLink,
+} from './profile-photo-view.service';
+import {
   ProfilePhotosService,
   type ProfilePhotoListView,
   type ProfilePhotoView,
@@ -72,6 +80,7 @@ export const PROFILE_PHOTO_READ_LIMITS = [{ limit: 60, windowSeconds: 60 }] as c
 export class ProfilePhotosController {
   constructor(
     private readonly photos: ProfilePhotosService,
+    private readonly views: ProfilePhotoViewService,
     private readonly rateLimit: RateLimitService,
   ) {}
 
@@ -157,6 +166,37 @@ export class ProfilePhotosController {
     if (refusal !== null) return refusal;
 
     return this.photos.read(actor, id);
+  }
+
+  /**
+   * A short-lived, single-use link to one own photo: `POST .../:photoId/view-link`.
+   *
+   * The owner may open their own photo at any status - a PENDING upload is what
+   * they just sent and a REJECTED one is what they may want to replace - but the
+   * link is not a session: it is signed for that one photo and that one viewer,
+   * can be spent once, and the status is re-checked when it is spent. A foreign
+   * id answers the same generic 404 as a missing one.
+   */
+  @Post(':photoId/view-link')
+  @HttpCode(HttpStatus.CREATED)
+  async issueViewLink(
+    @Param('photoId') photoId: string,
+    @Req() request: AuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<ProfilePhotoPreviewLink | ErrorResponseBody> {
+    const actor = this.actor(request);
+    const id = parsePhotoId(photoId);
+    const refusal = await this.refuseWhenOverLimit(
+      actor.id,
+      request,
+      response,
+      PROFILE_PHOTO_VIEW_LINK_RATE_LIMIT_SCOPE,
+      PROFILE_PHOTO_VIEW_LINK_LIMITS,
+    );
+
+    if (refusal !== null) return refusal;
+
+    return this.views.issueOwnerLink(actor, id);
   }
 
   /** AuthGuard runs first, so a missing principal is a wiring bug, not input. */
