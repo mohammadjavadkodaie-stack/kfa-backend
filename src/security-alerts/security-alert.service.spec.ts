@@ -2,6 +2,7 @@ import type { AlertSink, SecurityAlert } from './alert-sink';
 import type { SecurityAlertOptions } from './security-alert.service';
 import { SecurityAlertService } from './security-alert.service';
 import { InMemoryCounterStore } from './testing/in-memory-counter-store';
+import { InMemoryKnownCountryStore } from './testing/in-memory-known-country-store';
 
 class RecordingLogger {
   readonly debug = jest.fn();
@@ -19,7 +20,12 @@ const ALLOWED_FIELDS = new Set(['kind', 'at', 'subjectId', 'country', 'count', '
 
 function createService(options: SecurityAlertOptions = {}, clock: () => number = () => Date.now()) {
   const sink = new RecordingSink();
-  const service = new SecurityAlertService(new InMemoryCounterStore(clock), sink, options);
+  const service = new SecurityAlertService(
+    new InMemoryCounterStore(clock),
+    sink,
+    new InMemoryKnownCountryStore(),
+    options,
+  );
   return { service, sink };
 }
 
@@ -27,20 +33,26 @@ describe('SecurityAlertService', () => {
   it('alerts on a login from an unknown country', async () => {
     const { service, sink } = createService();
 
-    await service.loginCountry('user-1', 'DE', ['IR', 'TR']);
+    await service.loginCountry('user-1', 'DE');
 
-    expect(sink.alerts).toHaveLength(1);
-    expect(sink.alerts[0]).toMatchObject({
-      kind: 'LOGIN_NEW_COUNTRY',
-      subjectId: 'user-1',
-      country: 'DE',
-    });
+    expect(sink.alerts).toHaveLength(0);
   });
 
-  it('stays quiet for a known country', async () => {
+  it('alerts for a new country after the first country was stored', async () => {
     const { service, sink } = createService();
 
-    await service.loginCountry('user-1', 'ir', ['IR', 'TR']);
+    await service.loginCountry('user-1', 'IR');
+    await service.loginCountry('user-1', 'DE');
+
+    expect(sink.alerts).toHaveLength(1);
+    expect(sink.alerts[0]).toMatchObject({ subjectId: 'user-1', country: 'DE' });
+  });
+
+  it('stays quiet for the same country', async () => {
+    const { service, sink } = createService();
+
+    await service.loginCountry('user-1', 'ir');
+    await service.loginCountry('user-1', 'IR');
 
     expect(sink.alerts).toHaveLength(0);
   });
@@ -48,9 +60,12 @@ describe('SecurityAlertService', () => {
   it('ignores an empty or malformed country', async () => {
     const { service, sink } = createService();
 
-    await service.loginCountry('user-1', '', ['IR']);
-    await service.loginCountry('user-1', 'Germany', ['IR']);
-    await service.loginCountry('user-1', 'D1', ['IR']);
+    await service.loginCountry('user-1', '');
+    await service.loginCountry('user-1', 'Germany');
+    await service.loginCountry('user-1', 'D1');
+    await service.loginCountry('user-1', 'unknown');
+    await service.loginCountry('user-1', 'XX');
+    await service.loginCountry('user-1', 'T1');
 
     expect(sink.alerts).toHaveLength(0);
   });
@@ -59,9 +74,10 @@ describe('SecurityAlertService', () => {
     // A retry storm from one country must not become a retry storm of alerts.
     const { service, sink } = createService();
 
-    await service.loginCountry('user-1', 'DE', []);
-    await service.loginCountry('user-1', 'DE', []);
-    await service.loginCountry('user-1', 'DE', []);
+    await service.loginCountry('user-1', 'IR');
+    await service.loginCountry('user-1', 'DE');
+    await service.loginCountry('user-1', 'DE');
+    await service.loginCountry('user-1', 'DE');
 
     expect(sink.alerts).toHaveLength(1);
   });
@@ -126,8 +142,15 @@ describe('SecurityAlertService', () => {
   it('swallows counter failures', async () => {
     // Alerts must not break the request path.
     const logger = new RecordingLogger();
+
     const counters = { incr: jest.fn().mockRejectedValue(new Error('redis down')) };
-    const service = new SecurityAlertService(counters, new RecordingSink(), {}, logger as never);
+    const service = new SecurityAlertService(
+      counters,
+      new RecordingSink(),
+      new InMemoryKnownCountryStore(),
+      {},
+      logger as never,
+    );
 
     await expect(service.emailCodeRequest()).resolves.toBeNull();
     expect(logger.debug).toHaveBeenCalledWith(
@@ -142,6 +165,7 @@ describe('SecurityAlertService', () => {
     const service = new SecurityAlertService(
       new InMemoryCounterStore(),
       sink,
+      new InMemoryKnownCountryStore(),
       {
         emailCode: { threshold: 1, windowSeconds: 60 },
       },
@@ -161,7 +185,8 @@ describe('SecurityAlertService', () => {
       documentView: { threshold: 1, windowSeconds: 60 },
     });
 
-    await service.loginCountry('user-1', 'FR', []);
+    await service.loginCountry('user-1', 'IR');
+    await service.loginCountry('user-1', 'FR');
     await service.emailCodeRequest();
     await service.documentView('user-1');
 
@@ -169,5 +194,30 @@ describe('SecurityAlertService', () => {
     const keys = sink.alerts.flatMap((alert) => Object.keys(alert));
     for (const key of keys) expect(ALLOWED_FIELDS.has(key)).toBe(true);
     expect(keys.join(',')).not.toMatch(/email|phone|ip|token|file/i);
+  });
+
+  it('does not call the known-country store for invalid or excluded countries', async () => {
+    const store = { recordAndCheck: jest.fn() };
+    const service = new SecurityAlertService(
+      new InMemoryCounterStore(),
+      new RecordingSink(),
+      store,
+    );
+
+    await service.loginCountry('user-1', '');
+    await service.loginCountry('user-1', 'unknown');
+    await service.loginCountry('user-1', 'XX');
+    await service.loginCountry('user-1', 'T1');
+
+    expect(store.recordAndCheck).not.toHaveBeenCalled();
+  });
+
+  it('swallows known-country store failures', async () => {
+    const store = { recordAndCheck: jest.fn().mockRejectedValue(new Error('redis down')) };
+    const sink = new RecordingSink();
+    const service = new SecurityAlertService(new InMemoryCounterStore(), sink, store);
+
+    await expect(service.loginCountry('user-1', 'DE')).resolves.toBeNull();
+    expect(sink.alerts).toHaveLength(0);
   });
 });

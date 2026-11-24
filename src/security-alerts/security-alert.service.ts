@@ -4,6 +4,8 @@ import { ALERT_SINK } from './alert-sink';
 import type { AlertSink, SecurityAlert } from './alert-sink';
 import { COUNTER_STORE } from './counter-store';
 import type { CounterStore } from './counter-store';
+import { KNOWN_COUNTRY_STORE } from './known-country-store';
+import type { KnownCountryStore } from './known-country-store';
 
 /** Overrides for a deployment that needs other limits; not fed from env yet. */
 export const SECURITY_ALERT_OPTIONS = Symbol('SECURITY_ALERT_OPTIONS');
@@ -41,6 +43,7 @@ export class SecurityAlertService {
   constructor(
     @Inject(COUNTER_STORE) private readonly counters: CounterStore,
     @Inject(ALERT_SINK) private readonly sink: AlertSink,
+    @Inject(KNOWN_COUNTRY_STORE) private readonly knownCountries: KnownCountryStore,
     @Optional() @Inject(SECURITY_ALERT_OPTIONS) options: SecurityAlertOptions = {},
     @Optional() private readonly logger?: PinoLogger,
   ) {
@@ -56,19 +59,15 @@ export class SecurityAlertService {
    * Login from a country the user has never used. The per user+country counter
    * also throttles repeats, so a burst of logins yields one alert per window.
    */
-  async loginCountry(
-    userId: string,
-    country: string,
-    knownCountries: readonly string[],
-  ): Promise<SecurityAlert | null> {
+  async loginCountry(userId: string, country: string): Promise<SecurityAlert | null> {
     try {
       if (!userId) return null;
 
       const code = normalizeCountry(country);
-      if (!code) return null;
+      if (!code || code === 'XX') return null;
 
-      const known = knownCountries.map((entry) => normalizeCountry(entry));
-      if (known.includes(code)) return null;
+      const result = await this.knownCountries.recordAndCheck(userId, code);
+      if (!result.isNew || !result.hadAny) return null;
 
       const key = `login-country:${userId}:${code}`;
       const count = await this.counters.incr(key, this.loginCountryWindowSeconds);
@@ -79,8 +78,6 @@ export class SecurityAlertService {
         at: new Date(),
         subjectId: userId,
         country: code,
-        count,
-        windowSeconds: this.loginCountryWindowSeconds,
       });
     } catch {
       this.logger?.debug({ kind: 'LOGIN_NEW_COUNTRY' }, 'security_alert_failed');
