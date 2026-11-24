@@ -12,6 +12,7 @@ import { RolesGuard } from './auth/guards/roles.guard';
 import { StaffGateGuard } from './auth/totp/staff-gate.guard';
 import { StepUpGuard } from './auth/totp/step-up.guard';
 import { BillingModule } from './billing/billing.module';
+import { CompanyModule } from './company/company.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppConfigModule, ENV } from './config/config.module';
 import type { Env } from './config/env';
@@ -21,6 +22,8 @@ import { HealthModule } from './health/health.module';
 import { buildPinoParams } from './logging/pino.config';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
+import { RankingModule } from './ranking/ranking.module';
+import { StaffPhotoReviewModule } from './staff-photo-review/staff-photo-review.module';
 import { StaffReviewModule } from './staff-review/staff-review.module';
 
 @Module({
@@ -39,6 +42,9 @@ import { StaffReviewModule } from './staff-review/staff-review.module';
     DocumentsModule,
     NotificationsModule,
     StaffReviewModule,
+    StaffPhotoReviewModule,
+    RankingModule,
+    CompanyModule,
     BillingModule,
     HealthModule,
   ],

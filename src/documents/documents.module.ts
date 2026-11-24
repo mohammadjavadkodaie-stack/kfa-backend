@@ -257,7 +257,10 @@ export function buildProofNonceStore(client: unknown): ProofNonceStore | null {
     // applies to the next link as well.
     { provide: SESSION_REPOSITORY, useClass: PrismaSessionRepository },
   ],
-  exports: [DocumentUploadService],
+  // The pipeline is exported, not duplicated: the profile-photo routes reuse the
+  // one that already decides size, format, metadata stripping and scanning, so
+  // there is no second answer to "what is an acceptable image" in the codebase.
+  exports: [DocumentUploadService, DocumentCryptoService, DocumentIngestService, DOCUMENT_STORAGE],
 })
 export class DocumentsModule implements NestModule {
   /**

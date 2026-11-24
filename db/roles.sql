@@ -75,6 +75,17 @@ BEGIN
 END
 $$;
 
+-- profile_photos: the runtime role reads, inserts and stamps a review decision,
+-- but never deletes a photo. The migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.profile_photos') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.profile_photos FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.profile_photos TO kfa_app';
+    END IF;
+END
+$$;
+
 -- Billing tables: read and write, never DELETE. Payment terms are frozen by a
 -- trigger in the billing migration. The migration applies the same grants.
 DO $$
@@ -85,3 +96,56 @@ BEGIN
     END IF;
 END
 $$;
+
+-- photo_reports: append-only from the runtime role's point of view. A report is
+-- evidence of a user's complaint, so the app may read and add rows but never
+-- rewrite or delete one. The migration applies the same grants. profile_photos
+-- still gets no DELETE (see the block above): a takedown only changes status.
+DO $$
+BEGIN
+    IF to_regclass('public.photo_reports') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.photo_reports FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT ON TABLE public.photo_reports TO kfa_app';
+    END IF;
+END
+$$;
+
+-- athlete_follows and photo_likes (stage 7c): read, add and withdraw only. A
+-- follow and a like are never edited, so the runtime role gets no UPDATE, and
+-- both rows are withdrawn by DELETE. The migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.athlete_follows') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.athlete_follows, public.photo_likes FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, DELETE ON TABLE public.athlete_follows, public.photo_likes TO kfa_app';
+    END IF;
+END
+$$;
+
+-- competition_results and athlete_rankings (stage 8a): a staff member may add,
+-- correct and withdraw a result, and the derived ranking rows are rewritten on
+-- every recompute, so the runtime role needs full row CRUD on both. No client
+-- route reaches either table directly; the guard stack is the gate. The points
+-- 0..1000 CHECK lives in the migration. The migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.competition_results') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.competition_results, public.athlete_rankings FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.competition_results, public.athlete_rankings TO kfa_app';
+    END IF;
+END
+$$;
+
+-- companies (stage 9a): read, add and correct only. A company is never removed
+-- physically - a delete stamps `deleted_at`, and the unique slug index must keep
+-- covering that retired row - so the runtime role gets no DELETE here. The
+-- migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.companies') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.companies FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.companies TO kfa_app';
+    END IF;
+END
+$$;
+

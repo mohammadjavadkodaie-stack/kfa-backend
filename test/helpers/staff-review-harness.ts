@@ -120,6 +120,9 @@ export async function createStaffReviewHarness(
   }> {
     const account = await base.signUp(Role.ATHLETE);
 
+    // A submitted application in these fixtures belongs to a paid account; the
+    // no-subscription gate has its own tests below.
+    base.billing.grant(account.userId, 'ACTIVE');
     base.sessions.seedAthleteProfile(account.userId);
     grantDocument(account.userId);
 

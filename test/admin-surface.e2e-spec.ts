@@ -35,6 +35,13 @@ const ROUTES = [
  */
 const HANDLERS = ['list', 'block', 'unblock', 'grantAdmin', 'revokeAdmin', 'resetTotp'] as const;
 
+/**
+ * Both moderation routes now require a plain-text reason. The sweep sends a
+ * valid one so each refusal is still answered by the guard or the policy under
+ * test, never by the new body gate.
+ */
+const MODERATION_BODY = { reason: 'e2e moderation test' } as const;
+
 /** Bodies carry a per-request id; two refusals are compared without it. */
 const withoutRequestId = (body: unknown): Record<string, unknown> => ({
   ...(body as Record<string, unknown>),
@@ -52,7 +59,12 @@ describe('Admin surface (e2e)', () => {
   const send = (route: (typeof ROUTES)[number], id: string, token?: string) => {
     const path = `/admin/users/${id}/${route.path}`;
 
-    return route.method === 'DELETE' ? admin.del(path, token) : admin.post(path, token);
+    if (route.method === 'DELETE') return admin.del(path, token);
+
+    // Only the moderation routes of the surface take a body.
+    return route.path === 'block' || route.path === 'unblock'
+      ? admin.post(path, token, MODERATION_BODY)
+      : admin.post(path, token);
   };
 
   beforeAll(async () => {
@@ -160,8 +172,8 @@ describe('Admin surface (e2e)', () => {
     const promoted = await admin.signUp(Role.USER);
 
     const blocks = await Promise.all([
-      admin.post(`/admin/users/${blocked.userId}/block`, staff.token),
-      admin.post(`/admin/users/${blocked.userId}/block`, staff.token),
+      admin.post(`/admin/users/${blocked.userId}/block`, staff.token, MODERATION_BODY),
+      admin.post(`/admin/users/${blocked.userId}/block`, staff.token, MODERATION_BODY),
     ]);
     const grants = await Promise.all([
       admin.post(`/admin/users/${promoted.userId}/admin`, promoter.token),

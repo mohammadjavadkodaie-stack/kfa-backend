@@ -6,6 +6,7 @@ import type { AuditService } from '../../src/audit/audit.service';
 import { AthleteService, ATHLETE_AUDIT_ACTIONS } from '../../src/athlete/athlete.service';
 import type { AthleteProfileInput } from '../../src/athlete/profile/athlete-profile.repository';
 import { PrismaAthleteProfileRepository } from '../../src/athlete/profile/prisma-athlete-profile.repository';
+import type { SubscriptionStatusService } from '../../src/billing/subscription-status.service';
 import type { PolicySubject } from '../../src/auth/policy/access-policy';
 import type { AccessPolicyContext } from '../../src/auth/policy/access-policy.service';
 import { ResourceOwnershipService } from '../../src/auth/policy/resource-ownership.service';
@@ -92,6 +93,12 @@ describeWithDatabase('athlete profile service (PostgreSQL)', () => {
       audit,
       logger,
       () => new Date(),
+      // This suite owns the profile rows, not billing: every account reads paid.
+      {
+        isActive: async () => true,
+        statusOf: async () => 'ACTIVE' as const,
+        statusesOf: async () => new Map(),
+      } as unknown as SubscriptionStatusService,
     );
   });
 
@@ -225,6 +232,12 @@ describeWithDatabase('athlete profile service (PostgreSQL)', () => {
       broken,
       logger,
       () => new Date(),
+      // The gate is not what fails here, so it never gets asked.
+      {
+        isActive: async () => true,
+        statusOf: async () => 'ACTIVE' as const,
+        statusesOf: async () => new Map(),
+      } as unknown as SubscriptionStatusService,
     );
 
     await refusalOf(

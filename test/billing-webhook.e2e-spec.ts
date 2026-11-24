@@ -1,7 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import { BillingWebhookService } from '../src/billing/billing-webhook.service';
-import type { NormalizedEvent, WebhookVerifier } from '../src/billing/webhook-verifier';
+import type {
+  NormalizedEvent,
+  Verification,
+  WebhookVerifier,
+} from '../src/billing/webhook-verifier';
 import {
   createTestAuditService,
   createTestPrisma,
@@ -16,9 +20,12 @@ class FakeVerifier implements WebhookVerifier {
   async verify(
     _rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
-  ): Promise<NormalizedEvent | null> {
+  ): Promise<Verification> {
     const event = this.events.get(String(headers.event));
-    return event?.valid === false ? null : (event ?? null);
+
+    if (event === undefined || event.valid === false) return { status: 'invalid' };
+
+    return { status: 'event', event };
   }
 }
 

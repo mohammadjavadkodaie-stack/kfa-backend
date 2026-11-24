@@ -114,6 +114,10 @@ model User {
   documents        IdentityDocument[]
   notifications    Notification[]
   subscriptions    Subscription[]
+  photoReports     PhotoReport[]
+  athleteFollows   AthleteFollow[] @relation("AthleteFollowFollower")
+  photoLikes       PhotoLike[]
+  competitionResults CompetitionResult[] @relation("CompetitionResultEnteredBy")
   @@map("users")
 }
 
@@ -142,8 +146,86 @@ model AthleteProfile {
   reviewedById      String?      @map("reviewed_by_id") @db.Uuid
   rejectionReason   String?      @map("rejection_reason") @db.VarChar(500)
   user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  photos             ProfilePhoto[]
+  followers          AthleteFollow[] @relation("AthleteFollowFollowed")
+  competitionResults CompetitionResult[]
+  ranking            AthleteRanking?
 
   @@map("athlete_profiles")
+}
+
+enum ProfilePhotoStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  /// Withdrawn from public view by staff, either after approval or while still
+  /// PENDING. Distinct from REJECTED: a rejection is a review outcome, a removal
+  /// takes down a photo that may already have been published.
+  REMOVED
+}
+
+/// The fixed reason codes a user may attach to a report.
+enum PhotoReportReason {
+  SPAM
+  ABUSE
+  NUDITY
+  OTHER
+}
+
+/// One photo on an athlete's personal page. Like an identity document, the row
+/// points at an encrypted blob - an opaque object key plus the envelope - and
+/// never at a file name, a URL or the bytes themselves. `caption` is plain text
+/// that the API sanitized and escaped before it was written; the CHECK
+/// constraints and the withheld DELETE privilege live in the migration.
+model ProfilePhoto {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  athleteProfileId String             @map("athlete_profile_id") @db.Uuid
+  /// Random UUID from createObjectKey(); never a user id, a name or an extension.
+  objectKey        String             @unique @map("object_key")
+  /// Sanitized, escaped and length-capped by the API. NULL when no caption was sent.
+  caption          String?            @db.VarChar(1000)
+  status           ProfilePhotoStatus @default(PENDING)
+  contentType      String             @map("content_type")
+  sizeBytes        Int                @map("size_bytes")
+  /// Hex SHA-256 of the sanitized bytes that were encrypted.
+  sha256           String             @db.Char(64)
+  keyId            String             @map("key_id")
+  wrappedDek       Bytes              @map("wrapped_dek")
+  iv               Bytes
+  authTag          Bytes              @map("auth_tag")
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Set only when a reviewer decides; NULL while the photo is PENDING.
+  reviewedAt       DateTime?          @map("reviewed_at") @db.Timestamptz(6)
+  reviewedById     String?            @map("reviewed_by_id") @db.Uuid
+  athleteProfile   AthleteProfile     @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+  reports          PhotoReport[]
+  likes            PhotoLike[]
+
+  @@index([athleteProfileId, status])
+  @@index([athleteProfileId, createdAt(sort: Desc)])
+  @@map("profile_photos")
+}
+
+/// One user's report about one profile photo.
+///
+/// A report is append-only: there is no update path and the runtime role never
+/// deletes one. The unique pair (photo, reporter) makes a second report for the
+/// same photo a no-op instead of a second row. `note` is plain text the API
+/// trimmed and stripped of control characters; it is never returned to a
+/// client, and the reporter's identity never leaves the staff read model.
+model PhotoReport {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  photoId        String            @map("photo_id") @db.Uuid
+  reporterUserId String            @map("reporter_user_id") @db.Uuid
+  reason         PhotoReportReason
+  note           String?           @db.VarChar(200)
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  photo          ProfilePhoto      @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  reporter       User              @relation(fields: [reporterUserId], references: [id], onDelete: Cascade)
+
+  @@unique([photoId, reporterUserId])
+  @@index([photoId, createdAt])
+  @@map("photo_reports")
 }
 
 /// One uploaded identity document. The row only points at a blob: it holds the
@@ -381,4 +463,148 @@ model BillingPlan {
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("billing_plans")
+}
+
+/// One account following one athlete profile.
+///
+/// The unique pair (follower, profile) makes a repeated follow a no-op at the
+/// database, not only in the service. Both sides cascade: deleting an account or
+/// a profile removes the follow rows that named it. No column ever describes who
+/// follows whom beyond the pair itself, and the API only reads counts from it.
+model AthleteFollow {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  followerUserId    String         @map("follower_user_id") @db.Uuid
+  followedProfileId String         @map("followed_profile_id") @db.Uuid
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  follower          User           @relation("AthleteFollowFollower", fields: [followerUserId], references: [id], onDelete: Cascade)
+  followedProfile   AthleteProfile @relation("AthleteFollowFollowed", fields: [followedProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([followerUserId, followedProfileId])
+  /// Counting the followers of one profile is the only aggregate read.
+  @@index([followedProfileId])
+  @@map("athlete_follows")
+}
+
+/// One account liking one public profile photo.
+///
+/// The unique pair (photo, user) makes a repeated like a no-op at the database.
+/// A like is withdrawn with DELETE, so the runtime role may delete these rows,
+/// and only these: a photo itself is never deleted by the app.
+model PhotoLike {
+  id        String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  photoId   String       @map("photo_id") @db.Uuid
+  userId    String       @map("user_id") @db.Uuid
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  photo     ProfilePhoto @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([photoId, userId])
+  /// Counting the likes of one photo is the only aggregate read.
+  @@index([photoId])
+  @@map("photo_likes")
+}
+
+/// One competition result a staff member entered for one athlete profile.
+///
+/// The score is never supplied by the athlete: only a staff route writes this
+/// row, and `enteredById` records who did. Points are an integer with a
+/// 0..1000 CHECK in the migration, so a bad value cannot be stored even if a
+/// future caller skips the DTO.
+model CompetitionResult {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  athleteProfileId String         @map("athlete_profile_id") @db.Uuid
+  eventName        String         @map("event_name") @db.VarChar(120)
+  eventDate        DateTime       @map("event_date") @db.Date
+  points           Int
+  enteredById      String         @map("entered_by_id") @db.Uuid
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  athleteProfile   AthleteProfile @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+  enteredBy        User           @relation("CompetitionResultEnteredBy", fields: [enteredById], references: [id], onDelete: Cascade)
+
+  /// Listing the results of one athlete is the only filtered read.
+  @@index([athleteProfileId])
+  @@map("competition_results")
+}
+
+/// The derived leaderboard row for one athlete profile.
+///
+/// It is never written by a client: the ranking service recomputes it from the
+/// approved athletes' results inside the same transaction as the change, behind
+/// an advisory lock. The primary key is the profile id, so one profile has at
+/// most one row. The descending index serves the leaderboard read.
+model AthleteRanking {
+  athleteProfileId String         @id @map("athlete_profile_id") @db.Uuid
+  totalPoints      Int            @map("total_points")
+  rank             Int
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  athleteProfile   AthleteProfile @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+
+  @@index([totalPoints(sort: Desc)])
+  @@map("athlete_rankings")
+}
+
+enum CompanyKind {
+  ORGANIZER
+  SPONSOR
+  PARTNER
+  OTHER
+}
+
+/// One staff-maintained company profile: the "identity card" of an organizer,
+/// sponsor, partner or other organization.
+///
+/// The columns are split in two on purpose:
+///
+/// - the public face - `slug`, `displayName`, `country`, `kind`, `description`
+///   and `websiteUrl` - is everything a later public read may ever show;
+/// - the legal identity from `legalName` down is staff-only, because a sole
+///   proprietorship's legal name is a natural person's name. No public query
+///   selects these columns, and this route set is `@Roles(ADMIN, OWNER)` only.
+///
+/// `slug` carries a plain unique index, so uniqueness also covers soft-deleted
+/// rows: a retired slug can never be reused to impersonate a company.
+/// `deletedAt` is the only deletion this table has; the row and its trail stay.
+///
+/// Format rules (slug, country, https URL, MERSIS, NACE) are CHECK constraints
+/// in prisma/migrations/20261128120000_company_profile/migration.sql, so a
+/// future caller that skips the DTO still cannot store a malformed value.
+model Company {
+  id                  String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Lowercase `[a-z0-9-]`, 3-60 characters; immutable after creation.
+  slug                String      @unique @db.VarChar(60)
+  displayName         String      @map("display_name") @db.VarChar(120)
+  /// ISO 3166-1 alpha-2, uppercase.
+  country             String      @db.VarChar(2)
+  kind                CompanyKind
+  /// Public activity summary. Plain text only.
+  description         String?     @db.VarChar(2000)
+  /// https only, no IP literal and no local/private host; bounded at 300.
+  websiteUrl          String?     @map("website_url") @db.VarChar(300)
+
+  // Staff-only from here down: never selected by a public read.
+  legalName           String      @map("legal_name") @db.VarChar(200)
+  tradeRegistryNumber String?     @map("trade_registry_number") @db.VarChar(20)
+  mersisNumber        String?     @map("mersis_number") @db.VarChar(16)
+  taxNumber           String?     @map("tax_number") @db.VarChar(20)
+  taxOffice           String?     @map("tax_office") @db.VarChar(120)
+  chamberName         String?     @map("chamber_name") @db.VarChar(200)
+  chamberRegisteredAt DateTime?   @map("chamber_registered_at") @db.Date
+  /// NACE code as `12.34.56`.
+  naceCode            String?     @map("nace_code") @db.VarChar(8)
+  address             String?     @db.VarChar(500)
+  contactEmail        String?     @map("contact_email") @db.VarChar(254)
+
+  /// Attribution only, like `AuditLog.actorId`: deliberately no foreign key, so
+  /// a staff account change can never cascade into a company row.
+  createdById         String      @map("created_by_id") @db.Uuid
+  updatedById         String      @map("updated_by_id") @db.Uuid
+  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Soft delete: set once, never cleared. NULL means the company is live.
+  deletedAt           DateTime?   @map("deleted_at") @db.Timestamptz(6)
+
+  /// The staff list is newest first and pages by (createdAt, id).
+  @@index([createdAt(sort: Desc), id(sort: Desc)])
+  @@map("companies")
 }

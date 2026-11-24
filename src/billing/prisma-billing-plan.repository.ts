@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { BillingPlan as BillingPlanRow } from '@prisma/client';
+import type { BillingPlan as BillingPlanRow, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import type { BillingPlan, BillingPlanRepository } from './billing-plan';
 
@@ -31,16 +31,27 @@ export class PrismaBillingPlanRepository implements BillingPlanRepository {
    * The price is written once here and frozen for every payment already issued:
    * each payment row keeps its own expected amount, so changing the offer never
    * rewrites the terms of a payment in flight.
+   *
+   * The where clause carries the amount the caller read, so a change that lost a
+   * race writes nothing instead of overwriting a value it never described. The
+   * caller's transaction, when given, is the client used for both statements.
    */
-  async setPrice(id: string, priceUsd: string): Promise<BillingPlan | null> {
-    const updated = await this.prisma.billingPlan.updateMany({
-      where: { id, active: true },
+  async setPrice(
+    id: string,
+    fromPriceUsd: string,
+    priceUsd: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<BillingPlan | null> {
+    const client = tx ?? this.prisma;
+
+    const updated = await client.billingPlan.updateMany({
+      where: { id, active: true, priceUsd: fromPriceUsd },
       data: { priceUsd },
     });
 
     if (updated.count === 0) return null;
 
-    const row = await this.prisma.billingPlan.findUnique({ where: { id } });
+    const row = await client.billingPlan.findUnique({ where: { id } });
 
     return row === null ? null : toPlan(row);
   }

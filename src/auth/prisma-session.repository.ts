@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { parseRole, Role } from './roles';
 import type {
@@ -202,14 +203,17 @@ export class PrismaSessionRepository implements SessionRepository {
   /**
    * One UPDATE with the old value in the predicate. PostgreSQL re-checks the
    * predicate against the committed row, so of two callers that read the same
-   * value exactly one changes a row.
+   * value exactly one changes a row. A caller-owned `tx` makes the change join
+   * that transaction instead of committing on its own.
    */
   async setStatusIf(
     userId: string,
     expectedStatus: 'ACTIVE' | 'BLOCKED',
     newStatus: 'ACTIVE' | 'BLOCKED',
+    tx?: Prisma.TransactionClient,
   ): Promise<boolean> {
-    const updated = await this.prisma.user.updateMany({
+    const client = tx ?? this.prisma;
+    const updated = await client.user.updateMany({
       where: { id: userId, status: expectedStatus },
       data: { status: newStatus },
     });
@@ -217,8 +221,14 @@ export class PrismaSessionRepository implements SessionRepository {
     return updated.count === 1;
   }
 
-  async setRoleIf(userId: string, expectedRole: Role, newRole: Role): Promise<boolean> {
-    const updated = await this.prisma.user.updateMany({
+  async setRoleIf(
+    userId: string,
+    expectedRole: Role,
+    newRole: Role,
+    tx?: Prisma.TransactionClient,
+  ): Promise<boolean> {
+    const client = tx ?? this.prisma;
+    const updated = await client.user.updateMany({
       where: { id: userId, role: PRISMA_ROLE[expectedRole] },
       data: { role: PRISMA_ROLE[newRole] },
     });

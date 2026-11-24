@@ -19,6 +19,7 @@ import { PROFILE_WRONG_STATE_CODE } from '../common/errors/error-response';
 import type { PrismaService } from '../database/prisma.service';
 import type { ReviewResultNotification, ReviewResultNotifier } from './review-result-notifier';
 import { MAX_REJECTION_REASON_LENGTH } from './staff-review.dto';
+import { SubscriptionStatusService } from '../billing/subscription-status.service';
 import { STAFF_REVIEW_AUDIT_ACTIONS, StaffReviewService } from './staff-review.service';
 
 /**
@@ -53,6 +54,7 @@ const QUEUE_ITEM_FIELDS = [
   'profileId',
   'reviewStatus',
   'submittedAt',
+  'subscriptionStatus',
 ];
 
 /** Exactly what a detail page may carry: no address, no username, no object key. */
@@ -73,6 +75,7 @@ const DETAIL_FIELDS = [
   'reviewStatus',
   'reviewedAt',
   'submittedAt',
+  'subscriptionStatus',
   'weightKg',
 ];
 
@@ -166,6 +169,23 @@ class QuietLogger {
   }
 }
 
+/** The billing reader fake: every account paid, unless a test flips it. */
+class FakeSubscriptions {
+  status: 'ACTIVE' | 'NONE' = 'ACTIVE';
+
+  async statusOf(): Promise<'ACTIVE' | 'NONE'> {
+    return this.status;
+  }
+
+  async isActive(): Promise<boolean> {
+    return this.status === 'ACTIVE';
+  }
+
+  async statusesOf(userIds: readonly string[]): Promise<ReadonlyMap<string, 'ACTIVE' | 'NONE'>> {
+    return new Map(userIds.map((id) => [id, this.status]));
+  }
+}
+
 interface Handles {
   readonly service: StaffReviewService;
   readonly profiles: InMemoryAthleteProfileRepository;
@@ -174,6 +194,7 @@ interface Handles {
   readonly notifier: RecordingNotifier;
   readonly logger: QuietLogger;
   readonly prisma: FakePrisma;
+  readonly subscriptions: FakeSubscriptions;
 }
 
 function createService(
@@ -182,6 +203,7 @@ function createService(
     notifier?: RecordingNotifier;
     profiles?: InMemoryAthleteProfileRepository;
     reviews?: InMemoryStaffReviews;
+    subscriptions?: FakeSubscriptions;
   } = {},
 ): Handles {
   const profiles = options.profiles ?? new InMemoryAthleteProfileRepository();
@@ -190,6 +212,7 @@ function createService(
   const notifier = options.notifier ?? new RecordingNotifier();
   const logger = new QuietLogger();
   const prisma = new FakePrisma(profiles);
+  const subscriptions = options.subscriptions ?? new FakeSubscriptions();
 
   const service = new StaffReviewService(
     prisma as unknown as PrismaService,
@@ -199,9 +222,10 @@ function createService(
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
     () => NOW,
+    subscriptions as unknown as SubscriptionStatusService,
   );
 
-  return { service, profiles, reviews, audit, notifier, logger, prisma };
+  return { service, profiles, reviews, audit, notifier, logger, prisma, subscriptions };
 }
 
 /** Seeds rows and returns the service handles that read them. */
@@ -265,6 +289,7 @@ describe('StaffReviewService', () => {
           legalFirstName: 'Ada',
           legalLastName: 'Lovelace',
           nationality: 'PK',
+          subscriptionStatus: 'ACTIVE',
         },
       ]);
       // A birthday, a city or an address here would be a leak.
@@ -474,6 +499,36 @@ describe('StaffReviewService', () => {
       expect(prisma.options).toEqual([{ maxWait: 5_000, timeout: 10_000 }]);
       expect(notifier.sent).toEqual([{ to: 'ada@example.org', status: 'APPROVED', reason: null }]);
       expect(logger.messages()).toEqual([]);
+    });
+
+    it('refuses an approval while nothing is paid, without writing anything', async () => {
+      const { service, subscriptions, audit, notifier } = serviceWith([record()]);
+
+      subscriptions.status = 'NONE';
+
+      await refusalOf(
+        service.decide(reviewer, PROFILE_ID, { status: 'APPROVED' }, CONTEXT),
+        ConflictException,
+      );
+
+      expect(audit.records).toEqual([]);
+      expect(notifier.sent).toEqual([]);
+    });
+
+    it('approves an unpaid account only with the acknowledgement, and records it', async () => {
+      const { service, subscriptions, audit } = serviceWith([record()]);
+
+      subscriptions.status = 'NONE';
+
+      const result = await service.decide(
+        reviewer,
+        PROFILE_ID,
+        { status: 'APPROVED', acknowledgeNoSubscription: true },
+        CONTEXT,
+      );
+
+      expect(result).toEqual({ reviewStatus: 'APPROVED', reviewedAt: NOW.toISOString() });
+      expect(audit.records[0]?.metadata).toEqual({ subscriptionOverride: true });
     });
 
     it('writes the trail row joined to the decision transaction', async () => {

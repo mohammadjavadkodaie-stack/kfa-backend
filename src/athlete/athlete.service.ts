@@ -10,6 +10,7 @@ import { validate } from 'class-validator';
 import type { Prisma } from '@prisma/client';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
+import { SubscriptionStatusService } from '../billing/subscription-status.service';
 import type { PolicySubject } from '../auth/policy/access-policy';
 import type { AccessPolicyContext } from '../auth/policy/access-policy.service';
 import { PROFILE_NOT_READY_CODE, PROFILE_WRONG_STATE_CODE } from '../common/errors/error-response';
@@ -68,6 +69,12 @@ export interface AthleteProfileView {
   readonly reviewStatus: ReviewStatus;
   readonly submittedAt: string | null;
   readonly rejectionReason?: string;
+  /**
+   * True only while a submitted resume waits for a decision and the account
+   * holds no active subscription. Only the own-profile read carries it; the
+   * client renders the message, it never decides the rule.
+   */
+  readonly subscriptionRequired?: boolean;
 }
 
 /** `undefined` from the input layer would otherwise read as "changed" against NULL. */
@@ -90,6 +97,14 @@ export function changedFields(
 }
 
 /**
+ * The frontend's red message is built from this one rule: a resume that is
+ * waiting for a decision and an account with nothing paid.
+ */
+export function subscriptionRequiredFor(reviewStatus: ReviewStatus, active: boolean): boolean {
+  return reviewStatus === 'PENDING' && !active;
+}
+
+/**
  * The caller's own profile. No method takes a user id: the owner always comes
  * from the verified principal, so there is no id a request could point
  * somewhere else.
@@ -103,6 +118,7 @@ export class AthleteService {
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
     @Inject(CLOCK) private readonly clock: Clock,
+    private readonly subscriptions: SubscriptionStatusService,
   ) {}
 
   async readProfile(
@@ -114,7 +130,13 @@ export class AthleteService {
     // A caller without a profile is told nothing more than that.
     if (record === null) throw new NotFoundException();
 
-    return this.toView(record);
+    // The one fact the client turns into the red message; the rule stays here.
+    const required = subscriptionRequiredFor(
+      record.reviewStatus,
+      await this.subscriptions.isActive(actor.id),
+    );
+
+    return { ...this.toView(record), subscriptionRequired: required };
   }
 
   async saveProfile(

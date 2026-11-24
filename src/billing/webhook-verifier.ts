@@ -19,8 +19,22 @@ export interface WebhookVerifier {
    * Async because PayPal's own answer decides the signature: the bytes are
    * checked by their API, not by a local secret.
    */
-  verify(rawBody: Buffer, headers: WebhookHeaders): Promise<NormalizedEvent | null>;
+  verify(rawBody: Buffer, headers: WebhookHeaders): Promise<Verification>;
 }
+
+/**
+ * What a verifier could decide about one delivery.
+ *
+ * The middle case is why this is not a nullable event: "the signature is wrong"
+ * and "I could not ask anyone" must not lead to the same answer. A wrong
+ * signature is final (2xx, nothing stored); an unreachable verifier means the
+ * provider has to send the delivery again (503), otherwise a network blip would
+ * silently drop a payment the athlete already made.
+ */
+export type Verification =
+  | { readonly status: 'event'; readonly event: NormalizedEvent }
+  | { readonly status: 'invalid' }
+  | { readonly status: 'unavailable' };
 
 /** First value of a header, or null. A repeated header is not trusted. */
 export function readWebhookHeader(headers: WebhookHeaders, name: string): string | null {

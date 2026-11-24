@@ -7,9 +7,10 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, SubscriptionStatus } from '@prisma/client';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../audit/audit.service';
+import { SubscriptionStatusService } from '../billing/subscription-status.service';
 import { CLOCK, isMinor, type Clock } from '../athlete/profile/athlete-age';
 import {
   ATHLETE_PROFILE_REPOSITORY,
@@ -68,6 +69,8 @@ export interface ReviewQueueItem {
   readonly legalLastName: string;
   /** ISO 3166-1 alpha-2, to compare with the document's issuing country. */
   readonly nationality: string;
+  /** What the account holds now; the queue shows it next to the decision. */
+  readonly subscriptionStatus: SubscriptionStatus;
 }
 
 export interface ReviewQueuePage {
@@ -109,6 +112,8 @@ export interface ReviewDetailView {
   readonly heightCm: number | null;
   /** Derived from the birthday and the clock; the row does not hold it. */
   readonly isMinor: boolean;
+  /** What the account holds now; the reviewer sees it before deciding. */
+  readonly subscriptionStatus: SubscriptionStatus;
   readonly documents: ReviewDocumentView[];
 }
 
@@ -116,6 +121,11 @@ export interface ReviewDecisionRequest {
   readonly status: ReviewDecisionStatus;
   /** Required for a rejection, ignored for an approval. */
   readonly reason?: string | null;
+  /**
+   * The reviewer has seen that the account holds no active subscription and
+   * still wants the approval recorded. A rejection never needs it.
+   */
+  readonly acknowledgeNoSubscription?: boolean;
 }
 
 /** The whole answer a decision produces: no reason echo, no profile data. */
@@ -166,6 +176,8 @@ export class StaffReviewService {
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
     @Inject(CLOCK) private readonly clock: Clock,
+    // Billing's one subscription reader: the EXPIRED rule lives there only.
+    private readonly subscriptions: SubscriptionStatusService,
   ) {}
 
   /**
@@ -185,6 +197,7 @@ export class StaffReviewService {
 
     const page = rows.slice(0, limit);
     const counts = await this.reviews.countActiveDocuments(page.map((row) => row.userId));
+    const statuses = await this.subscriptions.statusesOf(page.map((row) => row.userId));
     const last = page[page.length - 1];
 
     return {
@@ -196,6 +209,7 @@ export class StaffReviewService {
         legalFirstName: row.legalFirstName,
         legalLastName: row.legalLastName,
         nationality: row.nationality,
+        subscriptionStatus: statuses.get(row.userId) ?? 'NONE',
       })),
       nextCursor: rows.length > limit && last !== undefined ? last.userId : null,
     };
@@ -214,6 +228,7 @@ export class StaffReviewService {
   ): Promise<ReviewDetailView> {
     const record = await this.findSubmitted(profileId);
     const documents = await this.reviews.listActiveDocuments(record.userId);
+    const subscriptionStatus = await this.subscriptions.statusOf(record.userId);
 
     // Before the page leaves the service: the answer is personal data and the
     // trail is what proves who looked at it.
@@ -236,6 +251,7 @@ export class StaffReviewService {
       weightKg: record.weightKg,
       heightCm: record.heightCm,
       isMinor: isMinor(record.dateOfBirth, this.clock()),
+      subscriptionStatus,
       documents: documents.map((document) => ({
         id: document.id,
         kind: document.kind,
@@ -275,6 +291,11 @@ export class StaffReviewService {
     // and it is answered before anything is written.
     if (record.reviewStatus !== 'PENDING') throw this.wrongState();
 
+    // Only an approval depends on what the account bought. Refusing it while
+    // nothing is paid is the generic 409; the acknowledgement is the reviewer's
+    // explicit "I know", and the trail is what records it.
+    const subscriptionOverride = await this.approvalOverridesSubscription(record.userId, decision);
+
     const reviewedAt = this.clock();
 
     await this.prisma.$transaction(
@@ -294,7 +315,17 @@ export class StaffReviewService {
         // reviewer decided first. Nothing is written, and the rollback keeps it so.
         if (changed !== 1) throw this.wrongState();
 
-        await this.record(decision.status, actor, record.userId, reason, context, tx);
+        await this.record(
+          decision.status,
+          actor,
+          record.userId,
+          {
+            ...(reason === null ? {} : { reason }),
+            ...(subscriptionOverride ? { subscriptionOverride: true } : {}),
+          },
+          context,
+          tx,
+        );
       },
       { maxWait: 5_000, timeout: 10_000 },
     );
@@ -315,6 +346,24 @@ export class StaffReviewService {
     if (record === null || record.submittedAt === null) throw new NotFoundException();
 
     return record;
+  }
+
+  /**
+   * An approval of an account with no active subscription is refused with the
+   * generic 409 unless the reviewer acknowledged it. Returns whether the
+   * acknowledgement was what let the decision through, so the trail can say so.
+   */
+  private async approvalOverridesSubscription(
+    userId: string,
+    decision: ReviewDecisionRequest,
+  ): Promise<boolean> {
+    if (decision.status !== 'APPROVED') return false;
+
+    if (await this.subscriptions.isActive(userId)) return false;
+
+    if (decision.acknowledgeNoSubscription !== true) throw new ConflictException();
+
+    return true;
   }
 
   private wrongState(): ConflictException {
@@ -359,7 +408,7 @@ export class StaffReviewService {
     status: ReviewDecisionStatus,
     actor: PolicySubject,
     profileId: string,
-    reason: string | null,
+    metadata: Record<string, unknown>,
     context: AccessPolicyContext,
     tx: Prisma.TransactionClient,
   ): Promise<void> {
@@ -376,7 +425,7 @@ export class StaffReviewService {
           requestId: context.requestId,
           ip: context.ip,
           // The reviewer's words only; the profile itself is never copied here.
-          metadata: reason === null ? {} : { reason },
+          metadata,
         },
         tx,
       );

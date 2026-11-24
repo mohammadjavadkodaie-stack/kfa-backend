@@ -13,7 +13,12 @@ import { EMAIL_PROVIDER, type EmailProvider } from '../../src/auth/email/email.p
 import { PROOF_NONCE_STORE, type ProofNonceStore } from '../../src/auth/proof/proof-nonce.store';
 import { SESSION_REPOSITORY, type SessionRepository } from '../../src/auth/session.repository';
 import { TOTP_REPOSITORY, type TotpRepository } from '../../src/auth/totp/totp.repository';
-import { WEBHOOK_VERIFIERS, type WebhookVerifiers } from '../../src/billing/billing.tokens';
+import {
+  BILLING_STORE,
+  WEBHOOK_VERIFIERS,
+  type BillingStore,
+  type WebhookVerifiers,
+} from '../../src/billing/billing.tokens';
 import { ENV } from '../../src/config/config.module';
 import type { Env } from '../../src/config/env';
 import { PrismaService } from '../../src/database/prisma.service';
@@ -78,6 +83,8 @@ export interface CreateTestAppOptions {
   readonly virusScanner?: VirusScanner;
   /** Fake provider verifiers, so the webhook route runs without a real signature. */
   readonly webhookVerifiers?: WebhookVerifiers;
+  /** In-memory subscription rows, so review/athlete reads run without PostgreSQL. */
+  readonly billingStore?: BillingStore;
 }
 
 /**
@@ -163,6 +170,10 @@ export async function createTestApp(
 
   if (options.webhookVerifiers !== undefined) {
     builder = builder.overrideProvider(WEBHOOK_VERIFIERS).useValue(options.webhookVerifiers);
+  }
+
+  if (options.billingStore !== undefined) {
+    builder = builder.overrideProvider(BILLING_STORE).useValue(options.billingStore);
   }
 
   const moduleRef = await builder.compile();

@@ -17,7 +17,12 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/roles';
 import { RequireStepUp } from '../auth/totp/step-up.guard';
 import { getRequestId } from '../common/middleware/request-id.middleware';
-import { RejectReviewDto, ReviewProfileParamsDto, ReviewQueueQueryDto } from './staff-review.dto';
+import {
+  RejectReviewDto,
+  ReviewProfileParamsDto,
+  ReviewQueueQueryDto,
+  parseApproveReview,
+} from './staff-review.dto';
 import {
   StaffReviewService,
   type ReviewDecisionResult,
@@ -71,12 +76,19 @@ export class StaffReviewController {
   @HttpCode(HttpStatus.OK)
   async approve(
     @Param() params: ReviewProfileParamsDto,
+    // Optional and at most one flag; zod is the whole gate, so the pipe skips it.
+    @Body() body: unknown,
     @Req() request: AuthenticatedRequest,
   ): Promise<ReviewDecisionResult> {
+    const approval = parseApproveReview(body);
+
     return this.reviews.decide(
       this.actor(request),
       params.profileId,
-      { status: 'APPROVED' },
+      {
+        status: 'APPROVED',
+        acknowledgeNoSubscription: approval.acknowledgeNoSubscription,
+      },
       this.context(request),
     );
   }

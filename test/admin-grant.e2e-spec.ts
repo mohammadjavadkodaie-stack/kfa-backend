@@ -21,6 +21,9 @@ import { InMemoryProofNonceStore } from './helpers/proof-nonce-store';
 const FORBIDDEN = { statusCode: 403, message: 'Forbidden' } as const;
 const SECOND_FACTOR_REQUIRED = { ...FORBIDDEN, code: 'second_factor_required' } as const;
 
+/** Blocking now requires a plain-text reason; this suite blocks once, as setup. */
+const MODERATION_BODY = { reason: 'e2e moderation test' } as const;
+
 /** The explicit limiter is out of scope here: always admit. */
 class PermissiveRateLimit {
   async consume(): Promise<RateLimitDecision> {
@@ -240,7 +243,9 @@ describe('Admin grant (e2e)', () => {
     const other = await signUp(Role.OWNER);
     const blocked = await signUp(Role.USER);
 
-    expect((await post(`/admin/users/${blocked.userId}/block`, owner.token)).status).toBe(204);
+    expect(
+      (await post(`/admin/users/${blocked.userId}/block`, owner.token, MODERATION_BODY)).status,
+    ).toBe(204);
 
     const asOwner = await post(grantPath(other.userId), owner.token);
     const asBlocked = await post(grantPath(blocked.userId), owner.token);

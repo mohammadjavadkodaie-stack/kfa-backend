@@ -4,6 +4,7 @@ import { InMemorySessionRepository } from '../../src/auth/in-memory-session.repo
 import { EmailProofService } from '../../src/auth/email/email-proof';
 import { Role } from '../../src/auth/roles';
 import { InMemoryTotpRepository } from '../../src/auth/totp/in-memory-totp.repository';
+import { InMemoryBillingStore } from './in-memory-billing-store';
 import type { RateLimitDecision, RateLimitService } from '../../src/rate-limit/rate-limit.service';
 import type { CreateTestAppOptions } from './create-test-app';
 import { createTestApp } from './create-test-app';
@@ -120,10 +121,12 @@ export async function createAdminHarness(
 ) {
   const sessions = new InMemorySessionRepository();
   const auditPrisma = createAuditPrisma();
+  const billing = new InMemoryBillingStore();
   let sequence = 0;
 
   const app: NestExpressApplication = await createTestApp(env, {
     prisma: auditPrisma.prisma,
+    billingStore: billing,
     sessionRepository: sessions,
     totpRepository: new InMemoryTotpRepository(),
     proofNonceStore: new InMemoryProofNonceStore(),
@@ -205,6 +208,7 @@ export async function createAdminHarness(
     app,
     sessions,
     proofs,
+    billing,
     post,
     del,
     get,

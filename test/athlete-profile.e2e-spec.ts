@@ -101,7 +101,8 @@ describe('Athlete profile routes (e2e)', () => {
     const read = await harness.get('/athlete/profile', athlete.token);
 
     expect(read.status).toBe(200);
-    expect(read.body).toEqual(saved.body);
+    // A save answers the row; the read adds the one flag the resume screen needs.
+    expect(read.body).toEqual({ ...saved.body, subscriptionRequired: false });
     expect(harness.profiles.rows.size).toBe(1);
   });
 

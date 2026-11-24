@@ -14,6 +14,10 @@ import {
   DOCUMENT_UPLOAD_MEDIA_TYPES,
   DOCUMENT_UPLOAD_PATH,
 } from './documents/document-upload.controller';
+import {
+  PROFILE_PHOTO_MEDIA_TYPES,
+  PROFILE_PHOTOS_UPLOAD_PATH,
+} from './athlete/photos/profile-photos.controller';
 import { MAX_UPLOAD_BYTES } from './documents/ingest/ingest.constants';
 
 /** Explicit CORS allowlists - no wildcards, no reflection of arbitrary origins. */
@@ -77,6 +81,17 @@ export function configureApp(app: NestExpressApplication, env: Env): void {
     DOCUMENT_UPLOAD_PATH,
     createRawBodyMiddleware({
       mediaTypes: DOCUMENT_UPLOAD_MEDIA_TYPES,
+      limitBytes: MAX_UPLOAD_BYTES,
+    }),
+  );
+
+  // The profile-photo upload is a file body too, so it gets the same reader and
+  // the same cap, bound to its own path. The family is tested on the bytes by the
+  // pipeline; this list only decides which requests are buffered at all.
+  app.use(
+    PROFILE_PHOTOS_UPLOAD_PATH,
+    createRawBodyMiddleware({
+      mediaTypes: PROFILE_PHOTO_MEDIA_TYPES,
       limitBytes: MAX_UPLOAD_BYTES,
     }),
   );

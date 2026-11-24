@@ -1,6 +1,10 @@
 import request from 'supertest';
 import type { WebhookVerifiers } from '../src/billing/billing-webhook.service';
-import type { NormalizedEvent, WebhookVerifier } from '../src/billing/webhook-verifier';
+import type {
+  NormalizedEvent,
+  Verification,
+  WebhookVerifier,
+} from '../src/billing/webhook-verifier';
 import type { RateLimitDecision, RateLimitService } from '../src/rate-limit/rate-limit.service';
 import { createTestApp } from './helpers/create-test-app';
 
@@ -10,8 +14,9 @@ const ROUTE = '/billing/webhook';
 
 class RecordingVerifier implements WebhookVerifier {
   readonly provider = PROVIDER;
+  outcome: 'event' | 'unavailable' = 'event';
   readonly bodies: Buffer[] = [];
-  event: NormalizedEvent | null = {
+  event: NormalizedEvent = {
     eventId: 'evt-1',
     providerPaymentId: 'p-1',
     kind: 'PAID',
@@ -20,10 +25,12 @@ class RecordingVerifier implements WebhookVerifier {
     network: 'TRC20',
   };
 
-  async verify(rawBody: Buffer): Promise<NormalizedEvent | null> {
+  async verify(rawBody: Buffer): Promise<Verification> {
     this.bodies.push(rawBody);
 
-    return this.event;
+    return this.outcome === 'unavailable'
+      ? { status: 'unavailable' }
+      : { status: 'event', event: this.event };
   }
 }
 
@@ -107,6 +114,27 @@ describe('billing webhook route (e2e)', () => {
 
       expect(response.status).toBe(400);
       expect(sources.bodies).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('asks the provider to retry when the verifier cannot decide', async () => {
+    const sources = new RecordingVerifier();
+    sources.outcome = 'unavailable';
+    const app = await createTestApp(
+      {},
+      { prisma: NO_WRITES, rateLimit: rateLimit(true), webhookVerifiers: verifiers(sources) },
+    );
+
+    try {
+      const response = await request(app.getHttpServer())
+        .post(`${ROUTE}/${PROVIDER.toLowerCase()}`)
+        .set('content-type', 'application/json')
+        .send(PAYLOAD);
+
+      expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({ statusCode: 503 });
     } finally {
       await app.close();
     }
