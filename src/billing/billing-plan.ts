@@ -1,3 +1,5 @@
+import type { Prisma } from '@prisma/client';
+
 /**
  * One priced offer. The amount is a decimal string the whole way through: money
  * never becomes a JavaScript number, so `4.20` cannot silently become
@@ -15,8 +17,22 @@ export interface BillingPlan {
 export interface BillingPlanRepository {
   /** The active offer, or null when the catalogue is empty. */
   findActive(): Promise<BillingPlan | null>;
-  /** Changes the price of that offer; null when it is not active any more. */
-  setPrice(id: string, priceUsd: string): Promise<BillingPlan | null>;
+  /**
+   * A compare-and-set on that offer: the new amount is written only while the
+   * stored one is still `fromPriceUsd`, so two simultaneous changes cannot both
+   * be recorded as coming from the same price. Null when the offer is not active
+   * any more or another change got there first.
+   *
+   * A caller that owns a transaction passes it as `tx`, so the write joins that
+   * transaction: the price commits or rolls back with the audit row that
+   * describes it.
+   */
+  setPrice(
+    id: string,
+    fromPriceUsd: string,
+    priceUsd: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<BillingPlan | null>;
 }
 
 /** `4.2`, `4.20`, `12`, `999.99`: positive, at most two fraction digits. */
