@@ -23,6 +23,14 @@ import { ProfilePhotosController } from './photos/profile-photos.controller';
 import { ProfilePhotosService } from './photos/profile-photos.service';
 import { PrismaProfilePhotoRepository } from './photos/prisma-profile-photo.repository';
 import { PublicProfilePhotosController } from './photos/public-profile-photos.controller';
+import { AthleteFollowController } from './social/athlete-follow.controller';
+import { ATHLETE_FOLLOW_REPOSITORY } from './social/athlete-follow.repository';
+import { AthleteFollowService } from './social/athlete-follow.service';
+import { PhotoLikeController } from './social/photo-like.controller';
+import { PHOTO_LIKE_REPOSITORY } from './social/photo-like.repository';
+import { PhotoLikeService } from './social/photo-like.service';
+import { PrismaAthleteFollowRepository } from './social/prisma-athlete-follow.repository';
+import { PrismaPhotoLikeRepository } from './social/prisma-photo-like.repository';
 
 @Module({
   // AuthModule supplies the one ownership check; AuditModule the append-only trail.
@@ -38,6 +46,9 @@ import { PublicProfilePhotosController } from './photos/public-profile-photos.co
     // listing, and the single-use preview link both marked `@Public()`.
     PublicProfilePhotosController,
     ProfilePhotoViewFileController,
+    // Following and liking: any signed-in caller, counted per user and address.
+    AthleteFollowController,
+    PhotoLikeController,
   ],
   providers: [
     AthleteService,
@@ -55,6 +66,12 @@ import { PublicProfilePhotosController } from './photos/public-profile-photos.co
     { provide: PROFILE_PHOTO_VIEW_REPOSITORY, useClass: PrismaProfilePhotoViewRepository },
     // Production time; the specs override this token with a fixed clock.
     { provide: CLOCK, useValue: SYSTEM_CLOCK },
+    // Stage 7c: one repository each, so a follow and a like never reach into
+    // another feature's storage seam.
+    AthleteFollowService,
+    { provide: ATHLETE_FOLLOW_REPOSITORY, useClass: PrismaAthleteFollowRepository },
+    PhotoLikeService,
+    { provide: PHOTO_LIKE_REPOSITORY, useClass: PrismaPhotoLikeRepository },
   ],
   // Exported so the review module reads and writes the same profile rows and the
   // same clock instead of declaring a second binding of either, and issues its
@@ -75,6 +92,8 @@ export class AthleteModule implements NestModule {
         ProfilePhotoReportController,
         PublicProfilePhotosController,
         ProfilePhotoViewFileController,
+        AthleteFollowController,
+        PhotoLikeController,
       );
   }
 }

@@ -109,3 +109,16 @@ BEGIN
     END IF;
 END
 $$;
+
+-- athlete_follows and photo_likes (stage 7c): read, add and withdraw only. A
+-- follow and a like are never edited, so the runtime role gets no UPDATE, and
+-- both rows are withdrawn by DELETE. The migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.athlete_follows') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.athlete_follows, public.photo_likes FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, DELETE ON TABLE public.athlete_follows, public.photo_likes TO kfa_app';
+    END IF;
+END
+$$;
+

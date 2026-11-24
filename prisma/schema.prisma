@@ -115,6 +115,8 @@ model User {
   notifications    Notification[]
   subscriptions    Subscription[]
   photoReports     PhotoReport[]
+  athleteFollows   AthleteFollow[] @relation("AthleteFollowFollower")
+  photoLikes       PhotoLike[]
   @@map("users")
 }
 
@@ -144,6 +146,7 @@ model AthleteProfile {
   rejectionReason   String?      @map("rejection_reason") @db.VarChar(500)
   user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   photos             ProfilePhoto[]
+  followers          AthleteFollow[] @relation("AthleteFollowFollowed")
 
   @@map("athlete_profiles")
 }
@@ -193,6 +196,7 @@ model ProfilePhoto {
   reviewedById     String?            @map("reviewed_by_id") @db.Uuid
   athleteProfile   AthleteProfile     @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
   reports          PhotoReport[]
+  likes            PhotoLike[]
 
   @@index([athleteProfileId, status])
   @@index([athleteProfileId, createdAt(sort: Desc)])
@@ -456,4 +460,43 @@ model BillingPlan {
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("billing_plans")
+}
+
+/// One account following one athlete profile.
+///
+/// The unique pair (follower, profile) makes a repeated follow a no-op at the
+/// database, not only in the service. Both sides cascade: deleting an account or
+/// a profile removes the follow rows that named it. No column ever describes who
+/// follows whom beyond the pair itself, and the API only reads counts from it.
+model AthleteFollow {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  followerUserId    String         @map("follower_user_id") @db.Uuid
+  followedProfileId String         @map("followed_profile_id") @db.Uuid
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  follower          User           @relation("AthleteFollowFollower", fields: [followerUserId], references: [id], onDelete: Cascade)
+  followedProfile   AthleteProfile @relation("AthleteFollowFollowed", fields: [followedProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([followerUserId, followedProfileId])
+  /// Counting the followers of one profile is the only aggregate read.
+  @@index([followedProfileId])
+  @@map("athlete_follows")
+}
+
+/// One account liking one public profile photo.
+///
+/// The unique pair (photo, user) makes a repeated like a no-op at the database.
+/// A like is withdrawn with DELETE, so the runtime role may delete these rows,
+/// and only these: a photo itself is never deleted by the app.
+model PhotoLike {
+  id        String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  photoId   String       @map("photo_id") @db.Uuid
+  userId    String       @map("user_id") @db.Uuid
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  photo     ProfilePhoto @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([photoId, userId])
+  /// Counting the likes of one photo is the only aggregate read.
+  @@index([photoId])
+  @@map("photo_likes")
 }
