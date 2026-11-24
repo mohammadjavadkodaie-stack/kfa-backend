@@ -237,7 +237,6 @@ describe('PublicCompanyController', () => {
     });
   });
 
-
   describe('the single-company route', () => {
     it('serves one card with the same headers', async () => {
       const { controller, companies } = createController();
@@ -359,4 +358,3 @@ describe('PublicCompanyController', () => {
     });
   });
 });
-

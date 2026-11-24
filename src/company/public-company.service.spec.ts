@@ -53,8 +53,11 @@ function row(slug: string, kind: CompanyKind = 'ORGANIZER'): FakeRow {
 class FakePublicCompanies implements PublicCompanyRepository {
   readonly rows = new Map<string, FakeRow>();
   readonly retired = new Set<string>();
-  readonly listCalls: { limit: number; cursor: string | undefined; kind: CompanyKind | undefined }[] =
-    [];
+  readonly listCalls: {
+    limit: number;
+    cursor: string | undefined;
+    kind: CompanyKind | undefined;
+  }[] = [];
   readonly readCalls: string[] = [];
 
   seed(row: FakeRow, deleted = false): void {
