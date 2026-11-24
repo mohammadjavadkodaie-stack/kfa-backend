@@ -3,6 +3,10 @@ import type { SecurityAlertOptions } from './security-alert.service';
 import { SecurityAlertService } from './security-alert.service';
 import { InMemoryCounterStore } from './testing/in-memory-counter-store';
 
+class RecordingLogger {
+  readonly debug = jest.fn();
+}
+
 class RecordingSink implements AlertSink {
   readonly alerts: SecurityAlert[] = [];
 
@@ -117,6 +121,38 @@ describe('SecurityAlertService', () => {
 
     await service.documentView('user-1');
     expect(sink.alerts).toHaveLength(2);
+  });
+
+  it('swallows counter failures', async () => {
+    // Alerts must not break the request path.
+    const logger = new RecordingLogger();
+    const counters = { incr: jest.fn().mockRejectedValue(new Error('redis down')) };
+    const service = new SecurityAlertService(counters, new RecordingSink(), {}, logger as never);
+
+    await expect(service.emailCodeRequest()).resolves.toBeNull();
+    expect(logger.debug).toHaveBeenCalledWith(
+      { kind: 'EMAIL_CODE_SURGE' },
+      'security_alert_failed',
+    );
+  });
+
+  it('swallows sink failures', async () => {
+    const logger = new RecordingLogger();
+    const sink = { emit: jest.fn().mockRejectedValue(new Error('sink down')) };
+    const service = new SecurityAlertService(
+      new InMemoryCounterStore(),
+      sink,
+      {
+        emailCode: { threshold: 1, windowSeconds: 60 },
+      },
+      logger as never,
+    );
+
+    await expect(service.emailCodeRequest()).resolves.toBeNull();
+    expect(logger.debug).toHaveBeenCalledWith(
+      { kind: 'EMAIL_CODE_SURGE' },
+      'security_alert_failed',
+    );
   });
 
   it('never carries email, phone, IP, token or file name fields', async () => {

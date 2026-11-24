@@ -1,4 +1,5 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
+import { PinoLogger } from 'nestjs-pino';
 import { ALERT_SINK } from './alert-sink';
 import type { AlertSink, SecurityAlert } from './alert-sink';
 import { COUNTER_STORE } from './counter-store';
@@ -41,6 +42,7 @@ export class SecurityAlertService {
     @Inject(COUNTER_STORE) private readonly counters: CounterStore,
     @Inject(ALERT_SINK) private readonly sink: AlertSink,
     @Optional() @Inject(SECURITY_ALERT_OPTIONS) options: SecurityAlertOptions = {},
+    @Optional() private readonly logger?: PinoLogger,
   ) {
     this.emailCodeLimits = normalizeThreshold(options.emailCode, DEFAULT_EMAIL_CODE);
     this.documentViewLimits = normalizeThreshold(options.documentView, DEFAULT_DOCUMENT_VIEW);
@@ -59,56 +61,74 @@ export class SecurityAlertService {
     country: string,
     knownCountries: readonly string[],
   ): Promise<SecurityAlert | null> {
-    if (!userId) return null;
+    try {
+      if (!userId) return null;
 
-    const code = normalizeCountry(country);
-    if (!code) return null;
+      const code = normalizeCountry(country);
+      if (!code) return null;
 
-    const known = knownCountries.map((entry) => normalizeCountry(entry));
-    if (known.includes(code)) return null;
+      const known = knownCountries.map((entry) => normalizeCountry(entry));
+      if (known.includes(code)) return null;
 
-    const key = `login-country:${userId}:${code}`;
-    const count = await this.counters.incr(key, this.loginCountryWindowSeconds);
-    if (count !== 1) return null;
+      const key = `login-country:${userId}:${code}`;
+      const count = await this.counters.incr(key, this.loginCountryWindowSeconds);
+      if (count !== 1) return null;
 
-    return this.emit({
-      kind: 'LOGIN_NEW_COUNTRY',
-      at: new Date(),
-      subjectId: userId,
-      country: code,
-      count,
-      windowSeconds: this.loginCountryWindowSeconds,
-    });
+      return await this.emit({
+        kind: 'LOGIN_NEW_COUNTRY',
+        at: new Date(),
+        subjectId: userId,
+        country: code,
+        count,
+        windowSeconds: this.loginCountryWindowSeconds,
+      });
+    } catch {
+      this.logger?.debug({ kind: 'LOGIN_NEW_COUNTRY' }, 'security_alert_failed');
+      return null;
+    }
   }
 
   /** Global email-code traffic (an abuse signal, not tied to one account). */
   async emailCodeRequest(): Promise<SecurityAlert | null> {
-    const count = await this.counters.incr('email-code:global', this.emailCodeLimits.windowSeconds);
-    if (count !== this.emailCodeLimits.threshold) return null;
+    try {
+      const count = await this.counters.incr(
+        'email-code:global',
+        this.emailCodeLimits.windowSeconds,
+      );
+      if (count !== this.emailCodeLimits.threshold) return null;
 
-    return this.emit({
-      kind: 'EMAIL_CODE_SURGE',
-      at: new Date(),
-      count,
-      windowSeconds: this.emailCodeLimits.windowSeconds,
-    });
+      return await this.emit({
+        kind: 'EMAIL_CODE_SURGE',
+        at: new Date(),
+        count,
+        windowSeconds: this.emailCodeLimits.windowSeconds,
+      });
+    } catch {
+      this.logger?.debug({ kind: 'EMAIL_CODE_SURGE' }, 'security_alert_failed');
+      return null;
+    }
   }
 
   /** Document reads per actor: a surge hints at scraping or a stolen session. */
   async documentView(actorId: string): Promise<SecurityAlert | null> {
-    if (!actorId) return null;
+    try {
+      if (!actorId) return null;
 
-    const key = `document-view:${actorId}`;
-    const count = await this.counters.incr(key, this.documentViewLimits.windowSeconds);
-    if (count !== this.documentViewLimits.threshold) return null;
+      const key = `document-view:${actorId}`;
+      const count = await this.counters.incr(key, this.documentViewLimits.windowSeconds);
+      if (count !== this.documentViewLimits.threshold) return null;
 
-    return this.emit({
-      kind: 'DOCUMENT_VIEW_SURGE',
-      at: new Date(),
-      subjectId: actorId,
-      count,
-      windowSeconds: this.documentViewLimits.windowSeconds,
-    });
+      return await this.emit({
+        kind: 'DOCUMENT_VIEW_SURGE',
+        at: new Date(),
+        subjectId: actorId,
+        count,
+        windowSeconds: this.documentViewLimits.windowSeconds,
+      });
+    } catch {
+      this.logger?.debug({ kind: 'DOCUMENT_VIEW_SURGE' }, 'security_alert_failed');
+      return null;
+    }
   }
 
   private async emit(alert: SecurityAlert): Promise<SecurityAlert> {

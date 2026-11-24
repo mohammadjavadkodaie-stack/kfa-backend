@@ -23,6 +23,7 @@ import { buildPinoParams } from './logging/pino.config';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { RankingModule } from './ranking/ranking.module';
+import { SecurityAlertsModule } from './security-alerts/security-alerts.module';
 import { StaffPhotoReviewModule } from './staff-photo-review/staff-photo-review.module';
 import { StaffReviewModule } from './staff-review/staff-review.module';
 
@@ -47,6 +48,7 @@ import { StaffReviewModule } from './staff-review/staff-review.module';
     CompanyModule,
     BillingModule,
     HealthModule,
+    SecurityAlertsModule,
   ],
   providers: [
     // Order matters: throttle before authenticating so unauthenticated floods
