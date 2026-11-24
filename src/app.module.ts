@@ -21,6 +21,7 @@ import { HealthModule } from './health/health.module';
 import { buildPinoParams } from './logging/pino.config';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
+import { RankingModule } from './ranking/ranking.module';
 import { StaffPhotoReviewModule } from './staff-photo-review/staff-photo-review.module';
 import { StaffReviewModule } from './staff-review/staff-review.module';
 
@@ -41,6 +42,7 @@ import { StaffReviewModule } from './staff-review/staff-review.module';
     NotificationsModule,
     StaffReviewModule,
     StaffPhotoReviewModule,
+    RankingModule,
     BillingModule,
     HealthModule,
   ],

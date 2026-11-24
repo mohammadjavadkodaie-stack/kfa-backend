@@ -122,3 +122,17 @@ BEGIN
 END
 $$;
 
+-- competition_results and athlete_rankings (stage 8a): a staff member may add,
+-- correct and withdraw a result, and the derived ranking rows are rewritten on
+-- every recompute, so the runtime role needs full row CRUD on both. No client
+-- route reaches either table directly; the guard stack is the gate. The points
+-- 0..1000 CHECK lives in the migration. The migration applies the same grants.
+DO $$
+BEGIN
+    IF to_regclass('public.competition_results') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE public.competition_results, public.athlete_rankings FROM PUBLIC, kfa_app';
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.competition_results, public.athlete_rankings TO kfa_app';
+    END IF;
+END
+$$;
+
