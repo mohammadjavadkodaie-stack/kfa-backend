@@ -9,6 +9,7 @@ import {
   type AuditRecord,
 } from '../../../test/helpers/auth-service-harness';
 import type { AuditService } from '../../audit/audit.service';
+import type { SecurityAlertService } from '../../security-alerts/security-alert.service';
 import { InMemorySessionRepository } from '../../auth/in-memory-session.repository';
 import type { ProofNonceStore } from '../../auth/proof/proof-nonce.store';
 import type { PolicySubject } from '../../auth/policy/access-policy';
@@ -195,6 +196,7 @@ interface Harness {
   readonly crypto: RecordingCrypto;
   readonly audit: RecordingAudit;
   readonly logger: FakeLogger;
+  readonly securityAlerts: { documentView: jest.Mock };
   readonly timeline: Timeline;
   readonly document: IdentityDocumentRecord;
   readonly objectKey: string;
@@ -220,6 +222,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const crypto = new RecordingCrypto(timeline);
   const audit = new RecordingAudit(timeline);
   const logger = new FakeLogger();
+  const securityAlerts = { documentView: jest.fn().mockResolvedValue(null) };
 
   sessions.seedUser({ id: OWNER_ID, phone: '+14155550100', username: 'owner', role: Role.ATHLETE });
   sessions.seedUser({ id: STAFF_ID, phone: '+14155550101', username: 'staff', role: Role.ADMIN });
@@ -252,6 +255,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     storage,
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
+    securityAlerts as unknown as SecurityAlertService,
   );
 
   // Seeding is not part of any expectation.
@@ -266,6 +270,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     crypto,
     audit,
     logger,
+    securityAlerts,
     timeline,
     document,
     objectKey,
@@ -320,6 +325,24 @@ describe('DocumentViewService', () => {
       expect(view.bytes.equals(PLAINTEXT)).toBe(true);
       expect(view.contentType).toBe('image/png');
       expect(view.sizeBytes).toBe(PLAINTEXT.length);
+    });
+
+    it('alerts once after issuing a link', async () => {
+      const harness = await createHarness();
+
+      await harness.service.issueLink(ownerSubject, { documentId: harness.document.id }, NOW_MS);
+
+      expect(harness.securityAlerts.documentView).toHaveBeenCalledTimes(1);
+      expect(harness.securityAlerts.documentView).toHaveBeenCalledWith(OWNER_ID);
+    });
+
+    it('keeps the link when alerting fails', async () => {
+      const harness = await createHarness();
+      harness.securityAlerts.documentView.mockRejectedValue(new Error('alert unavailable'));
+
+      await expect(
+        harness.service.issueLink(ownerSubject, { documentId: harness.document.id }, NOW_MS),
+      ).resolves.toMatchObject({ token: expect.any(String) });
     });
 
     it('records the issue and the read, on the owner basis', async () => {
@@ -428,6 +451,15 @@ describe('DocumentViewService', () => {
         accessBasis: 'staff',
         viewerRole: Role.ADMIN,
       });
+    });
+
+    it('does not alert a refused request', async () => {
+      const harness = await createHarness();
+
+      await expect(
+        harness.service.issueLink(staffSubject, { documentId: harness.document.id }, NOW_MS),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(harness.securityAlerts.documentView).not.toHaveBeenCalled();
     });
 
     it('refuses it when the caller did not assert the step-up', async () => {

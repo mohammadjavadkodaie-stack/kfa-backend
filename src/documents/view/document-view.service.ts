@@ -1,4 +1,10 @@
-import { Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../../audit/audit.service';
@@ -30,6 +36,7 @@ import {
   VIEW_LINK_CONSUMPTION_TTL_SECONDS,
   VIEW_LINK_TTL_SECONDS,
 } from './view-token';
+import { SecurityAlertService } from '../../security-alerts/security-alert.service';
 
 /**
  * A single-use link to one identity document.
@@ -128,6 +135,7 @@ export class DocumentViewService {
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
+    @Optional() private readonly securityAlerts?: SecurityAlertService,
   ) {
     this.secret = env.DOCUMENT_VIEW_TOKEN_SECRET;
   }
@@ -185,6 +193,12 @@ export class DocumentViewService {
         'document view link not stored',
       );
       throw unavailable();
+    }
+
+    try {
+      await this.securityAlerts?.documentView(viewer.id);
+    } catch {
+      // Security alerts are fail-open and must not alter link issuance.
     }
 
     return { token: issued.token, expiresInSeconds: VIEW_LINK_TTL_SECONDS };

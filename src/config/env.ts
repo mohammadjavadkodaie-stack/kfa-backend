@@ -279,6 +279,10 @@ export const envSchema = z
     APP_ORIGINS: appOriginsSchema,
     LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
     TRUSTED_PROXY_COUNT: z.coerce.number().int().min(0).max(10).default(0),
+    TRUST_CF_COUNTRY_HEADER: z
+      .enum(['true', 'false'], 'must be true or false')
+      .default('false')
+      .transform((value) => value === 'true'),
     BODY_LIMIT_BYTES: z.coerce
       .number()
       .int()

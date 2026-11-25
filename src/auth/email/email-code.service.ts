@@ -3,6 +3,7 @@ import {
   HttpException,
   Inject,
   Injectable,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomInt } from 'node:crypto';
@@ -22,6 +23,7 @@ import {
 } from './email-code.store';
 import { EMAIL_PROVIDER, type EmailCodePurpose, type EmailProvider } from './email.provider';
 import { EmailProofService } from './email-proof';
+import { SecurityAlertService } from '../../security-alerts/security-alert.service';
 
 export const EMAIL_START_IP_LIMIT = { limit: 10, windowSeconds: 600 } as const;
 export const EMAIL_START_EMAIL_LIMIT = { limit: 5, windowSeconds: 3600 } as const;
@@ -89,6 +91,7 @@ export class EmailCodeService {
     @Inject(CAPTCHA_PROVIDER) private readonly captchaProvider: CaptchaProvider,
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
+    @Optional() private readonly securityAlerts?: SecurityAlertService,
   ) {
     this.secret = env.EMAIL_CODE_HMAC_KEY;
     this.ttlSeconds = env.EMAIL_CODE_TTL_SECONDS;
@@ -121,6 +124,11 @@ export class EmailCodeService {
       input.eligible,
       input.locale,
     );
+    try {
+      await this.securityAlerts?.emailCodeRequest();
+    } catch {
+      // Security alerts are fail-open and must not alter the email flow.
+    }
   }
 
   async startForVerifiedUser(input: {

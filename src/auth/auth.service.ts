@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import { isUuid } from '../common/middleware/request-id.middleware';
 import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 import { RateLimitService } from '../rate-limit/rate-limit.service';
+import { SecurityAlertService } from '../security-alerts/security-alert.service';
 import { ephemeralDeviceKey, hashDeviceKey } from './device-key';
 import { maskEmail } from './email/email';
 import { isStaffRole, Role } from './roles';
@@ -155,6 +157,7 @@ export class AuthService {
     private readonly rateLimit: RateLimitService,
     private readonly audit: AuditService,
     private readonly logger: PinoLogger,
+    @Optional() private readonly securityAlerts?: SecurityAlertService,
   ) {
     this.accessTokenSecret = env.ACCESS_TOKEN_SECRET;
     this.accessTokenTtlSeconds = env.ACCESS_TOKEN_TTL_SECONDS;
@@ -225,6 +228,7 @@ export class AuthService {
     readonly email: string;
     readonly account: { readonly id: string; readonly role: Role };
     readonly context: AuthRequestContext;
+    readonly country?: string | null;
   }): Promise<AuthResult> {
     const now = this.now();
     const refreshToken = generateRefreshToken();
@@ -243,6 +247,17 @@ export class AuthService {
     await this.writeAudit('auth.login', input.account.id, input.context, {
       email: maskEmail(input.email),
     });
+    if (
+      input.country !== null &&
+      input.country !== undefined &&
+      this.securityAlerts !== undefined
+    ) {
+      try {
+        await this.securityAlerts.loginCountry(input.account.id, input.country);
+      } catch {
+        // Security alerts are deliberately fail-open and must not affect login.
+      }
+    }
     this.logger.info(
       {
         requestId: input.context.requestId,

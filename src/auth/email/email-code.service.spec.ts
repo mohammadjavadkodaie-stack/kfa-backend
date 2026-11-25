@@ -5,6 +5,7 @@ import type { AuditService } from '../../audit/audit.service';
 import type { RateLimitDecision, RateLimitService } from '../../rate-limit/rate-limit.service';
 import { FakeCaptchaProvider, type CaptchaProvider } from '../captcha/captcha.provider';
 import { EMAIL_CODE_STORE } from './email-code.store';
+import type { SecurityAlertService } from '../../security-alerts/security-alert.service';
 import { InMemoryEmailCodeStore } from './email-code.store';
 import { FakeEmailProvider, type EmailProvider } from './email.provider';
 import {
@@ -57,6 +58,7 @@ function harness(
   const store = options.store === undefined ? new InMemoryEmailCodeStore() : options.store;
   const audit = { record: jest.fn().mockResolvedValue(undefined) };
   const logger = { warn: jest.fn() };
+  const securityAlerts = { emailCodeRequest: jest.fn().mockResolvedValue(null) };
   const service = new EmailCodeService(
     { ...ENV, EMAIL_CODE_HMAC_KEY: options.key ?? ENV.EMAIL_CODE_HMAC_KEY },
     limits as unknown as RateLimitService,
@@ -66,8 +68,9 @@ function harness(
     options.captcha ?? new FakeCaptchaProvider(),
     audit as unknown as AuditService,
     logger as unknown as PinoLogger,
+    securityAlerts as unknown as SecurityAlertService,
   );
-  return { service, limits, provider, store, audit, logger };
+  return { service, limits, provider, store, audit, logger, securityAlerts };
 }
 
 describe('EmailCodeService', () => {
@@ -92,6 +95,21 @@ describe('EmailCodeService', () => {
     expect(h.audit.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'email_code.verified' }),
     );
+  });
+
+  it('alerts once after accepted start', async () => {
+    const h = harness();
+
+    await h.service.start(INPUT);
+
+    expect(h.securityAlerts.emailCodeRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the response when alerting fails', async () => {
+    const h = harness();
+    h.securityAlerts.emailCodeRequest.mockRejectedValue(new Error('alert unavailable'));
+
+    await expect(h.service.start(INPUT)).resolves.toBeUndefined();
   });
 
   it('accepts the dev captcha token outside production and sends one code', async () => {
