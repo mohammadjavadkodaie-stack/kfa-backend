@@ -24,10 +24,11 @@ type NotificationRow = Prisma.NotificationGetPayload<{ select: typeof RECORD_FIE
 function toParams(value: Prisma.JsonValue): NotificationParams {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
 
-  const params: Record<string, string> = {};
+  const params: Record<string, unknown> = {};
 
   for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === 'string') params[key] = entry;
+    if (typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean')
+      params[key] = entry;
   }
 
   return params;

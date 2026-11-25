@@ -105,6 +105,32 @@ describe('SecurityAlertService', () => {
     expect(sink.alerts).toHaveLength(1);
   });
 
+  it('fires one failed-login IP surge at six attempts', async () => {
+    const { service, sink } = createService();
+
+    for (let i = 0; i < 5; i += 1) await service.failedLoginIp('203.0.113.10');
+    expect(sink.alerts).toHaveLength(0);
+
+    await service.failedLoginIp('203.0.113.10');
+    await service.failedLoginIp('203.0.113.10');
+    expect(sink.alerts).toHaveLength(1);
+    expect(sink.alerts[0]).toMatchObject({
+      kind: 'FAILED_LOGIN_IP_SURGE',
+      count: 6,
+      windowSeconds: 900,
+      ip: '203.0.113.10',
+    });
+  });
+
+  it('skips failed-login IP alerts for missing addresses', async () => {
+    const { service, sink } = createService();
+
+    await service.failedLoginIp('');
+    await service.failedLoginIp('   ');
+
+    expect(sink.alerts).toHaveLength(0);
+  });
+
   it('counts document views per actor', async () => {
     const { service, sink } = createService({ documentView: { threshold: 2, windowSeconds: 60 } });
 

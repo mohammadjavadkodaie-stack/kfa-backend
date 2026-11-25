@@ -6,6 +6,7 @@ export const SECURITY_ALERT_KINDS = [
   'LOGIN_NEW_COUNTRY',
   'EMAIL_CODE_SURGE',
   'DOCUMENT_VIEW_SURGE',
+  'FAILED_LOGIN_IP_SURGE',
 ] as const;
 
 export type SecurityAlertKind = (typeof SECURITY_ALERT_KINDS)[number];
