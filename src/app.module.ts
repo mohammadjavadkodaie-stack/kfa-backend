@@ -18,6 +18,7 @@ import { AppConfigModule, ENV } from './config/config.module';
 import type { Env } from './config/env';
 import { PrismaModule } from './database/prisma.module';
 import { DocumentsModule } from './documents/documents.module';
+import { DangerousActionsModule } from './dangerous-actions/dangerous-actions.module';
 import { HealthModule } from './health/health.module';
 import { buildPinoParams } from './logging/pino.config';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -41,6 +42,7 @@ import { StaffReviewModule } from './staff-review/staff-review.module';
     AdminUsersModule,
     AthleteModule,
     DocumentsModule,
+    DangerousActionsModule,
     NotificationsModule,
     StaffReviewModule,
     StaffPhotoReviewModule,

@@ -109,8 +109,15 @@ export class BillingController {
   async changePrice(
     @Body() body: PriceDto,
     @Req() request: AuthenticatedRequest,
-  ): Promise<PlanView> {
-    return this.billing.changePrice(this.actor(request), body.priceUsd, getRequestId(request));
+    @Res({ passthrough: true }) response?: Response,
+  ): Promise<PlanView | { status: 'PENDING'; pendingApprovalId: string }> {
+    const result = await this.billing.changePrice(
+      this.actor(request),
+      body.priceUsd,
+      getRequestId(request),
+    );
+    if ('status' in result && result.status === 'PENDING') response?.status(202);
+    return result;
   }
 
   /** AuthGuard runs first, so a missing principal is a wiring bug, not input. */

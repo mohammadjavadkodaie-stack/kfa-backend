@@ -283,6 +283,10 @@ export const envSchema = z
       .enum(['true', 'false'], 'must be true or false')
       .default('false')
       .transform((value) => value === 'true'),
+    DANGEROUS_ACTION_APPROVAL_ENABLED: z
+      .enum(['true', 'false'], 'must be true or false')
+      .default('true')
+      .transform((value) => value === 'true'),
     BODY_LIMIT_BYTES: z.coerce
       .number()
       .int()

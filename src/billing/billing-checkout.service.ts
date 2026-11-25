@@ -1,4 +1,10 @@
-import { ConflictException, Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import type { PaymentProvider, Prisma, SubscriptionStatus } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import { PinoLogger } from 'nestjs-pino';
@@ -12,6 +18,7 @@ import { BILLING_PLAN_REPOSITORY, BILLING_STORE, PAYMENT_SESSION_CLIENTS } from 
 import type { BillingStore, SubscriptionRow } from './billing.store';
 import type { PaymentSessionClients } from './payment-session';
 import { effectiveSubscriptionStatus } from './subscription-status.service';
+import { DangerousActionsService } from '../dangerous-actions/dangerous-actions.service';
 
 /** One row of the price list, exactly as the site shows it. */
 export interface PlanView {
@@ -58,6 +65,7 @@ export class BillingCheckoutService {
     private readonly logger: PinoLogger,
     // The price change and its audit row share one transaction.
     private readonly prisma: PrismaService,
+    @Optional() private readonly dangerous?: DangerousActionsService,
   ) {}
 
   /** The catalogue. An empty catalogue is a refusal, never a free subscription. */
@@ -156,7 +164,28 @@ export class BillingCheckoutService {
    * compare-and-set on the amount just read, so two simultaneous changes cannot
    * both be recorded as coming from the same price.
    */
-  async changePrice(actor: PolicySubject, priceUsd: string, requestId: string): Promise<PlanView> {
+  async changePrice(actor: PolicySubject, priceUsd: string, requestId: string): Promise<any> {
+    if (actor.role !== 'OWNER' && this.dangerous !== undefined)
+      return this.dangerous.runOrQueue(actor, 'BILLING_CHANGE_PRICE', { priceUsd }, () =>
+        this.changePriceNow(actor, priceUsd, requestId),
+      ) as Promise<{ status: 'PENDING'; pendingApprovalId: string }>;
+    return this.changePriceNow(actor, priceUsd, requestId);
+  }
+
+  /** Executes an already-approved price change without entering the dangerous-action queue. */
+  async executePriceChange(
+    actor: PolicySubject,
+    priceUsd: string,
+    requestId: string,
+  ): Promise<PlanView> {
+    return this.changePriceNow(actor, priceUsd, requestId);
+  }
+
+  private async changePriceNow(
+    actor: PolicySubject,
+    priceUsd: string,
+    requestId: string,
+  ): Promise<PlanView> {
     const plan = await this.requirePlan();
 
     const updated = await this.prisma.$transaction(

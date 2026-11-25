@@ -237,6 +237,7 @@ describe('loadEnv', () => {
       LOG_LEVEL: 'debug',
       TRUSTED_PROXY_COUNT: 1,
       TRUST_CF_COUNTRY_HEADER: false,
+      DANGEROUS_ACTION_APPROVAL_ENABLED: true,
       BODY_LIMIT_BYTES: 2048,
       CAPTCHA_PROVIDER: 'fake',
       EMAIL_PROVIDER: 'fake',
