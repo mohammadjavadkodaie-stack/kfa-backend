@@ -69,6 +69,21 @@ View logs with `docker compose --env-file deploy/.env.production -f deploy/docke
 
 The backup script covers PostgreSQL only. Documents are encrypted in the private S3-compatible bucket and require provider-side versioning/backup.
 
+### Nightly encrypted backup with integrity check and email delivery
+
+`deploy/backup.sh` keeps one compressed dump on the host. `scripts/run-backup.js` is the copy that leaves the host: it dumps the database in custom format with `pg_dump`, encrypts the dump with `BACKUP_ENCRYPTION_KEY` (AES-256-GCM, random IV), decrypts it again to prove that the file on disk is a real archive, and mails the encrypted file to both owner mailboxes. Working files live in the container's `/tmp` and are deleted only after at least one delivery succeeded; a failed run keeps them and sends a plain alert instead.
+
+```cron
+0 0 * * * cd /home/ubuntu/KFA/KFA-backend && docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml exec -T backend node dist/scripts/run-backup.js >>/var/log/kfa-backup-encrypted.log 2>&1
+```
+
+00:00 UTC, deliberately separate from the 02:15 UTC `deploy/backup.sh` job above, so the two never compete for the database.
+
+- Three production variables are required: `BACKUP_ENCRYPTION_KEY` (base64url of exactly 32 bytes, unique from the other secrets), `BACKUP_NOTIFY_EMAIL` and `BACKUP_NOTIFY_EMAIL_EMERGENCY`. Both addresses receive the same attachment, so one failing delivery cannot lose the backup; the API refuses to boot in production when any of the three is missing.
+- The exit code is `0` only when the dump was verified and at least one mail was accepted. Any failure exits `1`, logs one structured line, and emails a `backup_failed` alert without an attachment; a run that cannot encrypt or deliver writes no dump at all.
+- Restore: decrypt the attachment with `BACKUP_ENCRYPTION_KEY`, then `pg_restore` the result into an empty database.
+- The provider rejects oversized attachments (Resend caps a message at roughly 40 MB, and base64 adds a third), so alert on a dump that approaches that size.
+
 ## Pre-launch checklist
 
 - [ ] Every secret is unique, generated securely, rotated from placeholders, and stored with mode 600.

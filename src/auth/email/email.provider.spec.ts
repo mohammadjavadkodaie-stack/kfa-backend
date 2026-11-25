@@ -63,6 +63,16 @@ describe('FakeEmailProvider', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('keeps an accepted backup in memory and delivers nothing', async () => {
+    const provider = new FakeEmailProvider();
+    const content = Buffer.from('test-only-ciphertext', 'utf8');
+    const message = { to: 'owner@example.com', filename: 'kfa-backup.dump.enc', content };
+
+    await expect(provider.sendBackup(message)).resolves.toBeUndefined();
+
+    expect(provider.backups).toEqual([message]);
+  });
+
   it('never writes the address or the code to the console', async () => {
     const methods = ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const;
     const spies = methods.map((method) =>

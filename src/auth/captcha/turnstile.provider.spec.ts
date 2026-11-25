@@ -38,6 +38,10 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   EMAIL_PROVIDER: 'resend',
   RESEND_API_KEY: 'test-resend-api-key',
   EMAIL_FROM: 'KFA <no-reply@example.com>',
+  // Required for the nightly encrypted backup (base64url of exactly 32 bytes).
+  BACKUP_ENCRYPTION_KEY: 'a2ZhLXRlc3Qtb25seS1iYWNrdXAtZW5jLWtleS0wMDE',
+  BACKUP_NOTIFY_EMAIL: 'owner@example.com',
+  BACKUP_NOTIFY_EMAIL_EMERGENCY: 'owner-emergency@example.com',
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

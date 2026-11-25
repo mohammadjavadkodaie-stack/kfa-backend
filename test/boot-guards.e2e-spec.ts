@@ -21,6 +21,10 @@ const PROD_PROVIDER_ENV = {
   EMAIL_PROVIDER: 'resend',
   RESEND_API_KEY: 'test-only-resend-api-key',
   EMAIL_FROM: 'KFA <no-reply@example.com>',
+  // Production refuses to boot without the nightly-backup settings.
+  BACKUP_ENCRYPTION_KEY: 'a2ZhLXRlc3Qtb25seS1iYWNrdXAtZW5jLWtleS0wMDE',
+  BACKUP_NOTIFY_EMAIL: 'owner@example.com',
+  BACKUP_NOTIFY_EMAIL_EMERGENCY: 'owner-emergency@example.com',
   // Production also validates the break-glass migration URL (used by the
   // owner bootstrap), so every production case carries a compliant value.
   MIGRATION_DATABASE_URL:

@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  BackupEmailMessage,
   EmailCodeMessage,
   EmailNoticeMessage,
   EmailProvider,
   ReviewResultMessage,
 } from './email.provider';
 import {
+  buildBackupEmail,
   buildCodeEmail,
   buildNoticeEmail,
   buildReviewResultEmail,
@@ -15,6 +17,12 @@ import {
 
 const RESEND_URL = 'https://api.resend.com/emails';
 const TIMEOUT_MS = 8_000;
+
+/** One Resend attachment: the filename plus the base64 text of its bytes. */
+interface ResendAttachment {
+  readonly filename: string;
+  readonly content: string;
+}
 
 type FetchLike = typeof fetch;
 type LogLike = {
@@ -47,7 +55,27 @@ export class ResendEmailProvider implements EmailProvider {
     await this.send(input.to, content.subject, content.text, input.status.toLowerCase());
   }
 
-  private async send(to: string, subject: string, text: string, purpose: string): Promise<void> {
+  /**
+   * The nightly backup: one encrypted file with a short cover text. Resend takes
+   * an attachment as base64 text, so the ciphertext is encoded here - it is
+   * already unreadable without BACKUP_ENCRYPTION_KEY, which never leaves the
+   * host. The file is the only attachment, so a tampered one is caught by the
+   * GCM tag rather than by a reader.
+   */
+  async sendBackup(input: BackupEmailMessage): Promise<void> {
+    const content = buildBackupEmail(input.filename);
+    await this.send(input.to, content.subject, content.text, 'backup', [
+      { filename: input.filename, content: input.content.toString('base64') },
+    ]);
+  }
+
+  private async send(
+    to: string,
+    subject: string,
+    text: string,
+    purpose: string,
+    attachments?: readonly ResendAttachment[],
+  ): Promise<void> {
     const masked = maskAddress(to);
     let lastFailure = 'network';
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -67,6 +95,8 @@ export class ResendEmailProvider implements EmailProvider {
             subject,
             text,
             html: `<p>${escapeHtml(text).replace(/\n/gu, '<br>')}</p>`,
+            // Absent for ordinary mail: only a backup carries a file.
+            ...(attachments === undefined ? {} : { attachments }),
           }),
           signal: controller.signal,
         });

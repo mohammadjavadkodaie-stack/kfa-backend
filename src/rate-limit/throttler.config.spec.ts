@@ -32,6 +32,10 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   RESEND_API_KEY: 'test-resend-api-key',
   EMAIL_FROM: 'no-reply@example.com',
   EMAIL_CODE_HMAC_KEY: 'unit-test-email-code-hmac-key-0123456789',
+  // Required from the nightly backup script on; base64url of exactly 32 bytes.
+  BACKUP_ENCRYPTION_KEY: 'a2ZhLXRlc3Qtb25seS1iYWNrdXAtZW5jLWtleS0wMDE',
+  BACKUP_NOTIFY_EMAIL: 'owner@example.com',
+  BACKUP_NOTIFY_EMAIL_EMERGENCY: 'owner-emergency@example.com',
 };
 
 /** The function only needs the abstract storage contract, so a stub is enough. */

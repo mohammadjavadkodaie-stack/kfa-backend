@@ -31,6 +31,9 @@ const PROD_TOTP_ENC_KEY = 'a2ZhLXVuaXQtdGVzdC10b3RwLWVuYy1rZXktMTIzNDU';
 /** Fixed, fake master key: base64 of exactly 32 bytes ("kfa-test-only-document-..."). */
 const PROD_DOCUMENT_MASTER_KEY = 'a2ZhLXRlc3Qtb25seS1kb2N1bWVudC1tYXN0ZXIta2U=';
 
+/** Fixed, fake backup key: base64url of exactly 32 bytes ("kfa-test-only-backup-..."). */
+const PROD_BACKUP_ENC_KEY = 'a2ZhLXRlc3Qtb25seS1iYWNrdXAtZW5jLWtleS0wMDE';
+
 /** A production environment that satisfies every production-only rule. */
 const PROD_ENV: NodeJS.ProcessEnv = {
   ...BASE_ENV,
@@ -46,6 +49,9 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   EMAIL_PROVIDER: 'resend',
   RESEND_API_KEY: 'test-resend-api-key',
   EMAIL_FROM: 'KFA <no-reply@example.com>',
+  BACKUP_ENCRYPTION_KEY: PROD_BACKUP_ENC_KEY,
+  BACKUP_NOTIFY_EMAIL: 'owner@example.com',
+  BACKUP_NOTIFY_EMAIL_EMERGENCY: 'owner-emergency@example.com',
 };
 
 /** The settings a live PayPal deployment needs, all together. */
@@ -452,6 +458,45 @@ describe('loadEnv', () => {
       expect((error as Error).message).toContain('TOTP_ENC_KEY');
       expect((error as Error).message).not.toContain(value);
     }
+  });
+
+  it('keeps the backup settings optional outside production', () => {
+    const dev = loadEnv({ ...BASE_ENV, BACKUP_ENCRYPTION_KEY: PROD_BACKUP_ENC_KEY });
+
+    expect(dev.BACKUP_ENCRYPTION_KEY).toBe(PROD_BACKUP_ENC_KEY);
+    expect(loadEnv({ ...BASE_ENV }).BACKUP_ENCRYPTION_KEY).toBeUndefined();
+    expect(loadEnv({ ...BASE_ENV }).BACKUP_NOTIFY_EMAIL).toBeUndefined();
+  });
+
+  it('requires a 32-byte backup key and both owner addresses in production', () => {
+    expect(() => loadEnv({ ...PROD_ENV, BACKUP_ENCRYPTION_KEY: undefined })).toThrow(
+      /BACKUP_ENCRYPTION_KEY.*required in production/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV, BACKUP_ENCRYPTION_KEY: 'too-short' })).toThrow(
+      /BACKUP_ENCRYPTION_KEY/,
+    );
+    expect(() =>
+      loadEnv({ ...PROD_ENV, BACKUP_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString('base64') }),
+    ).toThrow(/BACKUP_ENCRYPTION_KEY/);
+    expect(() => loadEnv({ ...PROD_ENV, BACKUP_NOTIFY_EMAIL: undefined })).toThrow(
+      /BACKUP_NOTIFY_EMAIL.*required in production/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV, BACKUP_NOTIFY_EMAIL_EMERGENCY: undefined })).toThrow(
+      /BACKUP_NOTIFY_EMAIL_EMERGENCY.*required in production/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV, BACKUP_NOTIFY_EMAIL: 'not-an-address' })).toThrow(
+      /BACKUP_NOTIFY_EMAIL/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV })).not.toThrow();
+  });
+
+  it('never allows the backup key to double as another secret', () => {
+    expect(() => loadEnv({ ...PROD_ENV, AUDIT_HMAC_KEY: PROD_BACKUP_ENC_KEY })).toThrow(
+      /BACKUP_ENCRYPTION_KEY.*must differ/,
+    );
+    expect(() => loadEnv({ ...PROD_ENV, RATE_LIMIT_HMAC_KEY: PROD_BACKUP_ENC_KEY })).toThrow(
+      /BACKUP_ENCRYPTION_KEY.*must differ/,
+    );
   });
 
   it('keeps the document master key optional outside production', () => {

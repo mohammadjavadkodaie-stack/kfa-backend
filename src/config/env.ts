@@ -38,6 +38,12 @@ export const DOCUMENT_MASTER_KEY_BYTES = 32;
 /** Minimum accepted length of the signed document view-token HMAC secret. */
 export const DOCUMENT_VIEW_TOKEN_SECRET_MIN_LENGTH = 32;
 
+/** Exact decoded length of the nightly-backup encryption key (AES-256). */
+export const BACKUP_ENCRYPTION_KEY_BYTES = 32;
+
+/** Maximum accepted length of an operational notification address. */
+const NOTIFY_EMAIL_MAX_LENGTH = 320;
+
 /** Label assumed for the current master key when DOCUMENT_MASTER_KEY_ID is unset. */
 export const DOCUMENT_MASTER_KEY_DEFAULT_ID = 'v1';
 
@@ -272,6 +278,18 @@ const s3EndpointSchema = z
  */
 export const PAYPAL_LIVE_API_BASE = 'https://api-m.paypal.com';
 
+/**
+ * Plain mailbox address (no display name) used for operational notifications,
+ * such as the owner mailboxes that receive the nightly encrypted backup. Only
+ * the shape is checked; the value is never echoed in a message.
+ */
+const notifyEmailSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(NOTIFY_EMAIL_MAX_LENGTH)
+  .refine((value) => /^[^<>@\s]+@[^<>@\s]+$/u.test(value), { message: 'must be a mailbox string' });
+
 export const envSchema = z
   .object({
     NODE_ENV: z.enum(NODE_ENVS).default('development'),
@@ -316,6 +334,35 @@ export const envSchema = z
         },
       )
       .optional(),
+
+    /**
+     * AES-256-GCM key that encrypts the nightly `pg_dump` output before it
+     * leaves the host (the dump itself is delivered by email). Base64url of
+     * exactly 32 bytes, same rule as TOTP_ENC_KEY. Optional outside
+     * production, where the backup CLI refuses to run without it; required in
+     * production.
+     */
+    BACKUP_ENCRYPTION_KEY: z
+      .string()
+      .max(1024, 'must be at most 1024 characters')
+      .superRefine((value, ctx) => {
+        if (!isBase64UrlOfLength(value, BACKUP_ENCRYPTION_KEY_BYTES)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `must be base64url that decodes to exactly ${BACKUP_ENCRYPTION_KEY_BYTES} bytes`,
+          });
+        }
+      })
+      .optional(),
+
+    /** Owner mailbox that receives the nightly encrypted backup. */
+    BACKUP_NOTIFY_EMAIL: notifyEmailSchema.optional(),
+
+    /**
+     * Second mailbox that receives the same backup, so one failing delivery
+     * cannot lose the dump. Required in production, like the two settings above.
+     */
+    BACKUP_NOTIFY_EMAIL_EMERGENCY: notifyEmailSchema.optional(),
 
     /**
      * Runtime connection string (role `kfa_app`, no DDL privileges).
@@ -631,6 +678,17 @@ export const envSchema = z
       });
     }
 
+    if (
+      env.BACKUP_ENCRYPTION_KEY !== undefined &&
+      [env.AUDIT_HMAC_KEY, env.RATE_LIMIT_HMAC_KEY].includes(env.BACKUP_ENCRYPTION_KEY)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['BACKUP_ENCRYPTION_KEY'],
+        message: 'must differ from the audit and rate-limit secrets',
+      });
+    }
+
     // The view-token secret signs a link that opens identity documents, so it is
     // never allowed to be a secret that already signs something else: one leaked
     // value would then forge two kinds of token.
@@ -836,6 +894,33 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['TOTP_ENC_KEY'],
+        message: 'is required in production',
+      });
+    }
+
+    // The nightly backup is a production duty: without the key the dump must
+    // not be written unencrypted, and without a recipient it would only sit on
+    // the host that the backup is supposed to survive.
+    if (env.BACKUP_ENCRYPTION_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['BACKUP_ENCRYPTION_KEY'],
+        message: 'is required in production',
+      });
+    }
+
+    if (env.BACKUP_NOTIFY_EMAIL === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['BACKUP_NOTIFY_EMAIL'],
+        message: 'is required in production',
+      });
+    }
+
+    if (env.BACKUP_NOTIFY_EMAIL_EMERGENCY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['BACKUP_NOTIFY_EMAIL_EMERGENCY'],
         message: 'is required in production',
       });
     }
