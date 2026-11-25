@@ -11,10 +11,11 @@ export type NotificationKind =
   | 'profile_approved'
   | 'profile_rejected'
   | 'upload_status'
-  | 'subscription_status';
+  | 'subscription_status'
+  | 'failed_login_ip_surge';
 
 /** Enum values only; the key set is closed per kind and there is no free text. */
-export type NotificationParams = Readonly<Record<string, string>>;
+export type NotificationParams = Readonly<Record<string, unknown>>;
 
 /** One stored row. `readAt` is NULL until the owner marks the row read. */
 export interface NotificationRecord {

@@ -8,7 +8,11 @@ export type EmailCodePurpose =
 
 /** A message without a code, sent after a security-relevant change. */
 export type EmailNoticeKind =
-  'password_changed' | 'email_changed' | 'new_device_login' | 'admin_granted';
+  | 'password_changed'
+  | 'email_changed'
+  | 'new_device_login'
+  | 'admin_granted'
+  | 'failed_login_ip_surge';
 
 /** The outcome of a membership review, as the athlete sees it. */
 export type ReviewResultStatus = 'APPROVED' | 'REJECTED';

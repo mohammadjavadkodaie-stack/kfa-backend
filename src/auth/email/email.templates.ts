@@ -77,24 +77,28 @@ const noticeNames: Record<EmailLocale, Record<EmailNoticeKind, string>> = {
     email_changed: 'Your email was changed',
     new_device_login: 'A new device signed in',
     admin_granted: 'Administrator access was granted',
+    failed_login_ip_surge: 'Security alert: repeated failed logins from one IP address',
   },
   fa: {
     password_changed: 'رمز عبور شما تغییر کرد',
     email_changed: 'ایمیل شما تغییر کرد',
     new_device_login: 'ورود از دستگاه جدید',
     admin_granted: 'دسترسی مدیر اعطا شد',
+    failed_login_ip_surge: 'تنبيه أمني: محاولات تسجيل دخول فاشلة متكررة',
   },
   tr: {
     password_changed: 'Şifreniz değiştirildi',
     email_changed: 'E-postanız değiştirildi',
     new_device_login: 'Yeni bir cihaz giriş yaptı',
     admin_granted: 'Yönetici erişimi verildi',
+    failed_login_ip_surge: 'Güvenlik uyarısı: aynı IP adresinden tekrarlanan başarısız girişler',
   },
   ar: {
     password_changed: 'تم تغيير كلمة المرور',
     email_changed: 'تم تغيير البريد الإلكتروني',
     new_device_login: 'تم تسجيل الدخول من جهاز جديد',
     admin_granted: 'تم منح صلاحية المدير',
+    failed_login_ip_surge: 'تنبيه أمني: محاولات تسجيل دخول فاشلة متكررة',
   },
 };
 

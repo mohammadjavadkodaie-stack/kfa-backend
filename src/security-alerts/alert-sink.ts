@@ -13,6 +13,8 @@ export interface SecurityAlert {
   readonly country?: string;
   readonly count?: number;
   readonly windowSeconds?: number;
+  /** Internal delivery-only value; sinks must never log or audit it raw. */
+  readonly ip?: string;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
+import { forwardRef, MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { noStoreMiddleware } from '../common/middleware/no-store.middleware';
 import { RateLimitModule } from '../rate-limit/rate-limit.module';
@@ -10,7 +10,7 @@ import { NotificationsService, REVIEW_DECISION_INBOX } from './notifications.ser
 @Module({
   // AuthModule supplies the one authentication check the routes need;
   // RateLimitModule the per-user counters the two routes consume.
-  imports: [AuthModule, RateLimitModule],
+  imports: [forwardRef(() => AuthModule), RateLimitModule],
   controllers: [NotificationsController],
   providers: [
     NotificationsService,
@@ -19,7 +19,7 @@ import { NotificationsService, REVIEW_DECISION_INBOX } from './notifications.ser
     // keeps both bindings on the same service instance.
     { provide: REVIEW_DECISION_INBOX, useExisting: NotificationsService },
   ],
-  exports: [NotificationsService, REVIEW_DECISION_INBOX],
+  exports: [NotificationsService, REVIEW_DECISION_INBOX, NOTIFICATION_REPOSITORY],
 })
 export class NotificationsModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

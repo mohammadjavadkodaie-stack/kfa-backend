@@ -23,6 +23,7 @@ import { PasswordBusyError, PasswordService } from '../password/password.service
 import { validatePassword } from '../password/password.policy';
 import { RateLimitService } from '../../rate-limit/rate-limit.service';
 import { SESSION_REPOSITORY, type SessionRepository } from '../session.repository';
+import { SecurityAlertService } from '../../security-alerts/security-alert.service';
 
 const SIGNIN_IP_LIMIT = { limit: 20, windowSeconds: 900 } as const;
 const SIGNIN_DEVICE_LIMIT = { limit: 10, windowSeconds: 900 } as const;
@@ -42,6 +43,7 @@ export class EmailAuthService {
     private readonly rateLimit: RateLimitService,
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
     @Optional() private readonly emailCode?: EmailCodeService,
+    @Optional() private readonly securityAlerts?: SecurityAlertService,
   ) {}
 
   async signIn(input: {
@@ -126,6 +128,11 @@ export class EmailAuthService {
           identifier: email as string,
           ...SIGNIN_FAIL_EMAIL_LIMIT,
         });
+      }
+      try {
+        await this.securityAlerts?.failedLoginIp(input.ip);
+      } catch {
+        // Security alerts are best effort and must never change login rejection.
       }
       throw invalidCredentials();
     };

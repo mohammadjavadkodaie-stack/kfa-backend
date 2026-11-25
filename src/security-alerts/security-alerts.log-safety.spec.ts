@@ -72,12 +72,19 @@ describe('LogAlertSink safety', () => {
       { kind: 'EMAIL_CODE_SURGE', at, count: 3, windowSeconds: 60 },
       { kind: 'DOCUMENT_VIEW_SURGE', at, subjectId: 'user-a', count: 3, windowSeconds: 60 },
       { kind: 'LOGIN_NEW_COUNTRY', at, subjectId: 'user-a', country: 'DE' },
+      {
+        kind: 'FAILED_LOGIN_IP_SURGE',
+        at,
+        count: 6,
+        windowSeconds: 900,
+        ip: '203.0.113.10',
+      },
     ];
 
     for (const alert of alerts) await sink.emit(alert);
 
-    expect(lines).toHaveLength(3);
-    expect(audit.records).toHaveLength(3);
+    expect(lines).toHaveLength(4);
+    expect(audit.records).toHaveLength(4);
     for (const line of lines) {
       const parsed = JSON.parse(line) as Record<string, unknown>;
       expect(Object.keys(parsed).every((key) => ALLOWED_LOG_FIELDS.has(key))).toBe(true);
@@ -94,6 +101,74 @@ describe('LogAlertSink safety', () => {
       'security.alert',
       'security.alert',
       'security.alert',
+      'security.alert',
     ]);
+  });
+
+  it('fans out IP surge delivery without leaking the IP to logs', async () => {
+    const logger = { warn: jest.fn(), debug: jest.fn() };
+    const audit = new RecordingAuditService();
+    const prisma = {
+      user: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'owner-1', email: 'owner@example.com' },
+          { id: 'admin-1', email: 'admin@example.com' },
+        ]),
+      },
+    };
+    const notifications = { create: jest.fn().mockResolvedValue(undefined) };
+    const email = { sendNotice: jest.fn().mockResolvedValue(undefined) };
+    const sink = new LogAlertSink(
+      logger as never,
+      audit as never,
+      prisma as never,
+      notifications as never,
+      email as never,
+    );
+
+    await sink.emit({
+      kind: 'FAILED_LOGIN_IP_SURGE',
+      at: new Date('2026-11-24T12:00:00.000Z'),
+      count: 6,
+      windowSeconds: 900,
+      ip: '203.0.113.10',
+    });
+
+    expect(notifications.create).toHaveBeenCalledTimes(2);
+    expect(email.sendNotice).toHaveBeenCalledTimes(2);
+    expect(notifications.create).toHaveBeenNthCalledWith(1, 'owner-1', 'failed_login_ip_surge', {
+      ip: '203.0.113.10',
+      count: 6,
+      windowSeconds: 900,
+    });
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ip: expect.anything() }),
+    );
+  });
+
+  it('swallows notification and email delivery failures', async () => {
+    const logger = { warn: jest.fn(), debug: jest.fn() };
+    const prisma = {
+      user: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'owner-1', email: 'owner@example.com' }]),
+      },
+    };
+    const sink = new LogAlertSink(
+      logger as never,
+      new RecordingAuditService() as never,
+      prisma as never,
+      { create: jest.fn().mockRejectedValue(new Error('db down')) } as never,
+      { sendNotice: jest.fn().mockRejectedValue(new Error('mail down')) } as never,
+    );
+
+    await expect(
+      sink.emit({
+        kind: 'FAILED_LOGIN_IP_SURGE',
+        at: new Date(),
+        count: 6,
+        windowSeconds: 900,
+        ip: '203.0.113.10',
+      }),
+    ).resolves.toBeUndefined();
   });
 });

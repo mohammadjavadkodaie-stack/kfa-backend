@@ -1,6 +1,6 @@
 import { PasswordService } from './password/password.service';
 
-import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
+import { forwardRef, Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { AuditModule } from '../audit/audit.module';
 import { noStoreMiddleware } from '../common/middleware/no-store.middleware';
@@ -49,7 +49,13 @@ import { TotpController } from './totp/totp.controller';
 import { TotpModule } from './totp/totp.module';
 
 @Module({
-  imports: [RateLimitModule, AuditModule, PrismaModule, TotpModule, SecurityAlertsModule],
+  imports: [
+    RateLimitModule,
+    AuditModule,
+    PrismaModule,
+    TotpModule,
+    forwardRef(() => SecurityAlertsModule),
+  ],
   controllers: [AuthController, EmailAuthController, MeController, TotpController],
   providers: [
     {

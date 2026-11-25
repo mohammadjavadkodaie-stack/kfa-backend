@@ -106,6 +106,28 @@ export class SecurityAlertService {
     }
   }
 
+  /** Repeated failed sign-ins from one source address. */
+  async failedLoginIp(ip: string): Promise<SecurityAlert | null> {
+    try {
+      if (typeof ip !== 'string' || ip.trim().length === 0) return null;
+
+      const normalizedIp = ip.trim();
+      const count = await this.counters.incr(`failed-login-ip:${normalizedIp}`, 900);
+      if (count !== 6) return null;
+
+      return await this.emit({
+        kind: 'FAILED_LOGIN_IP_SURGE',
+        at: new Date(),
+        count,
+        windowSeconds: 900,
+        ip: normalizedIp,
+      });
+    } catch {
+      this.logger?.debug({ kind: 'FAILED_LOGIN_IP_SURGE' }, 'security_alert_failed');
+      return null;
+    }
+  }
+
   /** Document reads per actor: a surge hints at scraping or a stolen session. */
   async documentView(actorId: string): Promise<SecurityAlert | null> {
     try {

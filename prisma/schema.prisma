@@ -351,6 +351,7 @@ enum NotificationKind {
   profile_rejected
   upload_status
   subscription_status
+  failed_login_ip_surge
 }
 
 /// One in-site inbox row per thing the owner should see. The row names no
