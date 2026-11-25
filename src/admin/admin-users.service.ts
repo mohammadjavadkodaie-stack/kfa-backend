@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   ForbiddenException,
   Inject,
+  Optional,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
@@ -21,6 +22,7 @@ import {
 import { TOTP_REPOSITORY, type TotpRepository } from '../auth/totp/totp.repository';
 import { isUuid } from '../common/middleware/request-id.middleware';
 import { PrismaService } from '../database/prisma.service';
+import { DangerousActionsService } from '../dangerous-actions/dangerous-actions.service';
 import type { AdminUsersFilter } from './admin-users.dto';
 import { OWNER_NOTIFIER, type OwnerNotifier } from './owner-notifier';
 
@@ -101,6 +103,7 @@ export class AdminUsersService {
     @Inject(OWNER_NOTIFIER) private readonly notifier: OwnerNotifier,
     // The moderation rows and their audit trail share one transaction.
     private readonly prisma: PrismaService,
+    @Optional() private readonly dangerous?: DangerousActionsService,
   ) {}
 
   /**
@@ -288,7 +291,24 @@ export class AdminUsersService {
    * A retry after an interrupted grant finds the target already an admin: it
    * still revokes and records nothing, exactly like a repeated block.
    */
-  async grantAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+  async grantAdmin(actor: PolicySubject, id: string, requestId: string): Promise<any> {
+    const target = await this.grantTarget(actor, id);
+    if (actor.role !== Role.OWNER && this.dangerous !== undefined)
+      return this.dangerous.runOrQueue(
+        actor,
+        'ADMIN_GRANT',
+        { targetId: target.id, role: Role.ADMIN },
+        () => this.grantAdminNow(actor, id, requestId),
+      );
+    return this.grantAdminNow(actor, id, requestId);
+  }
+
+  /** Executes an already-approved grant without entering the dangerous-action queue. */
+  async executeGrantAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+    return this.grantAdminNow(actor, id, requestId);
+  }
+
+  private async grantAdminNow(actor: PolicySubject, id: string, requestId: string): Promise<void> {
     const target = await this.grantTarget(actor, id);
 
     try {
@@ -347,7 +367,24 @@ export class AdminUsersService {
    * separate permission and is left untouched: the demotion changes the role and
    * nothing else.
    */
-  async revokeAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+  async revokeAdmin(actor: PolicySubject, id: string, requestId: string): Promise<any> {
+    const target = await this.adminOnlyTarget(actor, id, AccessAction.ADMIN_REVOKE);
+    if (actor.role !== Role.OWNER && this.dangerous !== undefined)
+      return this.dangerous.runOrQueue(
+        actor,
+        'ADMIN_REVOKE',
+        { targetId: target.id, role: Role.USER },
+        () => this.revokeAdminNow(actor, id, requestId),
+      );
+    return this.revokeAdminNow(actor, id, requestId);
+  }
+
+  /** Executes an already-approved revoke without entering the dangerous-action queue. */
+  async executeRevokeAdmin(actor: PolicySubject, id: string, requestId: string): Promise<void> {
+    return this.revokeAdminNow(actor, id, requestId);
+  }
+
+  private async revokeAdminNow(actor: PolicySubject, id: string, requestId: string): Promise<void> {
     const target = await this.adminOnlyTarget(actor, id, AccessAction.ADMIN_REVOKE);
 
     try {

@@ -102,6 +102,7 @@ model User {
   role             Role         @default(USER)
   /// Permission to verify identities, granted independently of `role`.
   identityVerifier Boolean      @default(false) @map("identity_verifier")
+  isApprover       Boolean      @default(false) @map("is_approver")
   status           UserStatus   @default(ACTIVE)
   phoneVerifiedAt  DateTime?    @map("phone_verified_at") @db.Timestamptz(6)
   createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -463,6 +464,22 @@ model BillingPlan {
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("billing_plans")
+}
+
+model PendingApproval {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actionType  String   @map("action_type")
+  payload     Json
+  requestedBy String   @map("requested_by") @db.Uuid
+  status      String   @default("PENDING")
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  executedAt  DateTime? @map("executed_at") @db.Timestamptz(6)
+  approvedBy  String?  @map("approved_by") @db.Uuid
+  approvedAt  DateTime? @map("approved_at") @db.Timestamptz(6)
+
+  @@index([status, expiresAt])
+  @@map("pending_approvals")
 }
 
 /// One account following one athlete profile.

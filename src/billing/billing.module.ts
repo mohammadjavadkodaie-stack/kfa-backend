@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import type { PaymentProvider } from '@prisma/client';
 import { AuditModule } from '../audit/audit.module';
+import { DangerousActionsModule } from '../dangerous-actions/dangerous-actions.module';
 import { ENV } from '../config/config.module';
 import type { Env } from '../config/env';
 import { RateLimitModule } from '../rate-limit/rate-limit.module';
@@ -79,7 +80,7 @@ export function buildBillingProviders(env: Env): BillingProviders {
 const BILLING_PROVIDERS = Symbol('BILLING_PROVIDERS');
 
 @Module({
-  imports: [AuditModule, RateLimitModule],
+  imports: [AuditModule, RateLimitModule, DangerousActionsModule],
   controllers: [BillingWebhookController, BillingController],
   providers: [
     BillingWebhookService,

@@ -9,7 +9,9 @@ import {
   Post,
   Query,
   Req,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { Roles } from '../auth/decorators/roles.decorator';
 import type { AuthenticatedRequest } from '../auth/guards/auth.guard';
 import type { PolicySubject } from '../auth/policy/access-policy';
@@ -93,8 +95,20 @@ export class AdminUsersController {
   @RequireStepUp()
   @Post(':id/admin')
   @HttpCode(204)
-  async grantAdmin(@Param('id') id: string, @Req() request: AuthenticatedRequest): Promise<void> {
-    await this.users.grantAdmin(this.actor(request), id, getRequestId(request));
+  async grantAdmin(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<unknown> {
+    const result = await this.users.grantAdmin(this.actor(request), id, getRequestId(request));
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'status' in result &&
+      result.status === 'PENDING'
+    )
+      response.status(202);
+    return result;
   }
 
   /**
@@ -105,8 +119,20 @@ export class AdminUsersController {
   @RequireStepUp()
   @Delete(':id/admin')
   @HttpCode(204)
-  async revokeAdmin(@Param('id') id: string, @Req() request: AuthenticatedRequest): Promise<void> {
-    await this.users.revokeAdmin(this.actor(request), id, getRequestId(request));
+  async revokeAdmin(
+    @Param('id') id: string,
+    @Req() request: AuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<unknown> {
+    const result = await this.users.revokeAdmin(this.actor(request), id, getRequestId(request));
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'status' in result &&
+      result.status === 'PENDING'
+    )
+      response.status(202);
+    return result;
   }
 
   /**
