@@ -78,6 +78,7 @@ const noticeNames: Record<EmailLocale, Record<EmailNoticeKind, string>> = {
     new_device_login: 'A new device signed in',
     admin_granted: 'Administrator access was granted',
     failed_login_ip_surge: 'Security alert: repeated failed logins from one IP address',
+    backup_failed: 'KFA nightly database backup failed',
   },
   fa: {
     password_changed: 'رمز عبور شما تغییر کرد',
@@ -85,6 +86,7 @@ const noticeNames: Record<EmailLocale, Record<EmailNoticeKind, string>> = {
     new_device_login: 'ورود از دستگاه جدید',
     admin_granted: 'دسترسی مدیر اعطا شد',
     failed_login_ip_surge: 'تنبيه أمني: محاولات تسجيل دخول فاشلة متكررة',
+    backup_failed: 'پشتیبان‌گیری شبانه پایگاه داده KFA ناموفق بود',
   },
   tr: {
     password_changed: 'Şifreniz değiştirildi',
@@ -92,6 +94,7 @@ const noticeNames: Record<EmailLocale, Record<EmailNoticeKind, string>> = {
     new_device_login: 'Yeni bir cihaz giriş yaptı',
     admin_granted: 'Yönetici erişimi verildi',
     failed_login_ip_surge: 'Güvenlik uyarısı: aynı IP adresinden tekrarlanan başarısız girişler',
+    backup_failed: 'KFA gece veritabanı yedeği başarısız oldu',
   },
   ar: {
     password_changed: 'تم تغيير كلمة المرور',
@@ -99,6 +102,7 @@ const noticeNames: Record<EmailLocale, Record<EmailNoticeKind, string>> = {
     new_device_login: 'تم تسجيل الدخول من جهاز جديد',
     admin_granted: 'تم منح صلاحية المدير',
     failed_login_ip_surge: 'تنبيه أمني: محاولات تسجيل دخول فاشلة متكررة',
+    backup_failed: 'فشل النسخ الاحتياطي الليلي لقاعدة بيانات KFA',
   },
 };
 
@@ -118,15 +122,42 @@ export function buildCodeEmail(
   };
 }
 
+/**
+ * What to do about a notice. A failed nightly backup needs an operator to look
+ * at the backup host, not advice about securing the account.
+ */
+const noticeActions: Record<EmailLocale, string> = {
+  en: 'If this was not you, secure your account and contact support.',
+  fa: 'اگر این کار توسط شما انجام نشده است، حساب خود را ایمن کرده و با پشتیبانی تماس بگیرید.',
+  tr: 'Bu işlemi siz yapmadıysanız hesabınızı güvene alın ve destek ekibiyle iletişime geçin.',
+  ar: 'إذا لم تكن أنت، أمّن حسابك وتواصل مع الدعم.',
+};
+
+const backupFailureAction: Record<EmailLocale, string> = {
+  en: 'Check the backup host and the tail of the nightly backup log; the dump was not delivered.',
+  fa: 'میزبان پشتیبان‌گیری و انتهای گزارش پشتیبان‌گیری شبانه را بررسی کنید؛ نسخه پشتیبان ارسال نشد.',
+  tr: 'Yedekleme sunucusunu ve gece yedekleme günlüğünün sonunu kontrol edin; yedek gönderilmedi.',
+  ar: 'تحقق من مضيف النسخ الاحتياطي ونهاية سجل النسخ الاحتياطي الليلي؛ لم يتم إرسال النسخة.',
+};
+
 export function buildNoticeEmail(kind: EmailNoticeKind, locale: EmailLocale = 'en'): EmailContent {
   const title = noticeNames[locale][kind];
-  const action = {
-    en: 'If this was not you, secure your account and contact support.',
-    fa: 'اگر این کار توسط شما انجام نشده است، حساب خود را ایمن کرده و با پشتیبانی تماس بگیرید.',
-    tr: 'Bu işlemi siz yapmadıysanız hesabınızı güvene alın ve destek ekibiyle iletişime geçin.',
-    ar: 'إذا لم تكن أنت، أمّن حسابك وتواصل مع الدعم.',
-  }[locale];
+  const action = kind === 'backup_failed' ? backupFailureAction[locale] : noticeActions[locale];
   return { subject: title, text: `${title}\n\n${action}` };
+}
+
+/**
+ * Cover text of the nightly backup mail. Owner-facing operations copy: without
+ * the key the attachment cannot be read, so the text says how to restore it and
+ * nothing about the database it came from.
+ */
+export function buildBackupEmail(filename: string): EmailContent {
+  return {
+    subject: 'KFA nightly database backup',
+    text:
+      `Encrypted nightly database backup attached: ${filename}\n\n` +
+      'Decrypt it with BACKUP_ENCRYPTION_KEY, then restore it with pg_restore.',
+  };
 }
 
 /**

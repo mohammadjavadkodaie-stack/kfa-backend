@@ -12,7 +12,8 @@ export type EmailNoticeKind =
   | 'email_changed'
   | 'new_device_login'
   | 'admin_granted'
-  | 'failed_login_ip_surge';
+  | 'failed_login_ip_surge'
+  | 'backup_failed';
 
 /** The outcome of a membership review, as the athlete sees it. */
 export type ReviewResultStatus = 'APPROVED' | 'REJECTED';
@@ -39,6 +40,16 @@ export interface ReviewResultMessage {
 }
 
 /**
+ * An already-encrypted backup file, attached to a message. Only the owner
+ * mailboxes receive one; the plaintext dump never reaches an adapter.
+ */
+export interface BackupEmailMessage {
+  readonly to: string;
+  readonly filename: string;
+  readonly content: Buffer;
+}
+
+/**
  * Transport for the email identity flow.
  *
  * Both methods are best effort by contract: the caller decides what a failure
@@ -49,6 +60,11 @@ export interface EmailProvider {
   sendCode(input: EmailCodeMessage): Promise<void>;
   sendNotice(input: EmailNoticeMessage): Promise<void>;
   sendReviewResult(input: ReviewResultMessage): Promise<void>;
+  /**
+   * Delivers the nightly encrypted backup as an attachment. Best effort like
+   * the rest of the contract: the caller decides what a failure means.
+   */
+  sendBackup(input: BackupEmailMessage): Promise<void>;
   /**
    * Present only on the fake adapter, so tests (and only tests) can read back
    * the static code. A real transport never exposes one.
@@ -70,6 +86,8 @@ export class FakeEmailProvider implements EmailProvider {
   readonly fixedCode = '123456';
   /** Kept so a suite can check what a decision sent, and in which language. */
   readonly reviewResults: ReviewResultMessage[] = [];
+  /** Kept so a suite can check what a backup run delivered, and its size. */
+  readonly backups: BackupEmailMessage[] = [];
 
   /** There is no transport in development, so the message stops here. */
   async sendCode(_input: EmailCodeMessage): Promise<void> {}
@@ -80,6 +98,11 @@ export class FakeEmailProvider implements EmailProvider {
   /** Recorded only in memory: the fake is refused in production by the factory. */
   async sendReviewResult(input: ReviewResultMessage): Promise<void> {
     this.reviewResults.push(input);
+  }
+
+  /** Same for backups: the ciphertext stays in this array, nothing is sent. */
+  async sendBackup(input: BackupEmailMessage): Promise<void> {
+    this.backups.push(input);
   }
 }
 

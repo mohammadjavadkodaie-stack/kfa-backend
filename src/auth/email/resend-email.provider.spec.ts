@@ -55,6 +55,30 @@ describe('ResendEmailProvider', () => {
     expect(body.text).not.toContain(ADDRESS);
   });
 
+  it('attaches an encrypted backup as base64 content', async () => {
+    const fetchMock = fetchMockFactory().mockResolvedValue(response(200));
+    const content = Buffer.from('test-only-ciphertext', 'utf8');
+    const filename = 'kfa-backup-20261125T000000-abcd1234.dump.enc';
+
+    await provider(fetchMock).sendBackup({ to: ADDRESS, filename, content });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+
+    expect(body.attachments).toEqual([{ filename, content: content.toString('base64') }]);
+    expect(body.text).toContain(filename);
+    expect(body.text).not.toContain(KEY);
+  });
+
+  it('sends no attachment for ordinary mail', async () => {
+    const fetchMock = fetchMockFactory().mockResolvedValue(response(200));
+
+    await provider(fetchMock).sendNotice({ to: ADDRESS, kind: 'email_changed' });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty(
+      'attachments',
+    );
+  });
+
   it('uses different idempotency keys for separate sends', async () => {
     const fetchMock = fetchMockFactory().mockResolvedValue(response(200));
     await provider(fetchMock).sendCode({ to: ADDRESS, purpose: 'register', code: '111111' });

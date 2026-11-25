@@ -24,6 +24,9 @@ COPY --from=build --chown=kfa:kfa /app/dist ./dist
 COPY --from=build --chown=kfa:kfa /app/node_modules ./node_modules
 COPY --from=build --chown=kfa:kfa /app/prisma ./prisma
 COPY --from=build --chown=kfa:kfa /app/package.json ./package.json
+# The nightly backup runs inside this image (dist/scripts/run-backup.js) and
+# shells out to pg_dump, so the PostgreSQL client is part of the runtime stage.
+RUN apk add --no-cache postgresql-client
 USER kfa
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD wget -q -O - http://127.0.0.1:3001/health || exit 1
